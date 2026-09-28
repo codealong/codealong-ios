@@ -1,10 +1,13 @@
 import SwiftUI
 
-/// Every session on your linked Macs in one list, most urgent first, as the Mac's board ranks them.
+/// Every session on your linked Macs in one quiet list, most urgent first, as the Mac's board ranks
+/// them. Nothing above the content: the controls are the glass toolbar at the bottom, where the
+/// thumb is (Macs, search, a new session), as iOS 26's own apps have them.
 struct InboxView: View {
     @Environment(Store.self) private var store
     @State private var showingMacs = false
     @State private var showingNew = false
+    @State private var query = ""
     @State private var path: [String] = []
 
     var body: some View {
@@ -12,64 +15,69 @@ struct InboxView: View {
             List {
                 // A Mac that dropped this phone still shows what it last sent, so say why it's old.
                 if !forgotten.isEmpty {
-                    Section {
-                        Label {
-                            Text("\(forgotten.map(\.name).formatted()) doesn't have this phone linked any more, so what's here is from before. Link it again with a new code.")
-                        } icon: {
-                            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                        }
-                        Button("Link again") { showingMacs = true }
+                    Button { showingMacs = true } label: {
+                        Label("\(forgotten.map { Names.short($0.name) }.formatted()) no longer has this phone linked. Link again", systemImage: "exclamationmark.triangle.fill")
+                            .font(.subheadline)
+                            .foregroundStyle(.orange)
                     }
+                    .listRowSeparator(.hidden)
                 }
                 ForEach(sections, id: \.title) { section in
-                    Section(section.title) {
+                    Section {
                         ForEach(section.rows, id: \.key) { row in
-                            NavigationLink(value: row.key) {
-                                SessionRowView(row: row)
-                            }
-                            .swipeActions(edge: .trailing) {
-                                Button("Archive", systemImage: "archivebox") { store.archive(row.key) }
-                                    .tint(.gray)
-                            }
-                            .swipeActions(edge: .leading) {
-                                if row.status == .unread {
-                                    Button("Seen", systemImage: "checkmark") { store.markSeen(row.key) }
-                                        .tint(.accentColor)
+                            SessionRowView(row: row, showDevice: store.devices.count > 1)
+                                .contentShape(.rect)
+                                .onTapGesture { path.append(row.key) }
+                                .swipeActions(edge: .trailing) {
+                                    Button("Archive", systemImage: "archivebox") { store.archive(row.key) }
+                                        .tint(.gray)
                                 }
-                            }
+                                .swipeActions(edge: .leading) {
+                                    if row.status == .unread {
+                                        Button("Seen", systemImage: "checkmark") { store.markSeen(row.key) }
+                                            .tint(.accentColor)
+                                    }
+                                }
                         }
+                    } header: {
+                        Text(section.title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .textCase(nil)
                     }
                 }
             }
-            .listStyle(.insetGrouped)
-            .overlay {
-                if store.devices.isEmpty {
-                    ContentUnavailableView {
-                        Label("Link a Mac", systemImage: "laptopcomputer.and.iphone")
-                    } description: {
-                        Text("Make a link code on your Mac, in Settings › Devices, then enter it here.")
-                    } actions: {
-                        Button("Link a Mac") { showingMacs = true }
-                            .buttonStyle(.borderedProminent)
-                    }
-                } else if store.sessions.isEmpty {
-                    ContentUnavailableView("Nothing going on", systemImage: "checkmark.circle", description: Text("No sessions in the last three days."))
-                }
-            }
-            .navigationTitle("Codealong")
+            .listStyle(.plain)
+            // Just a breath below the status bar: there's no title above the list.
+            .contentMargins(.top, 0, for: .scrollContent)
+            .overlay { emptyState }
+            .searchable(text: $query, prompt: "Search")
+            .toolbar(.hidden, for: .navigationBar)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .bottomBar) {
                     Button { showingMacs = true } label: {
-                        Label("Macs", systemImage: "laptopcomputer")
+                        Label("Macs", systemImage: macsSymbol)
+                            .labelStyle(.iconOnly)
                     }
-                    .badge(store.devices.filter(\.online).count)
+                    .tint(macsNeedAttention ? .orange : nil)
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarSpacer(.fixed, placement: .bottomBar)
+                DefaultToolbarItem(kind: .search, placement: .bottomBar)
+                ToolbarSpacer(.fixed, placement: .bottomBar)
+                ToolbarItem(placement: .bottomBar) {
                     Button { showingNew = true } label: {
                         Label("New session", systemImage: "square.and.pencil")
+                            .labelStyle(.iconOnly)
                     }
                     .disabled(store.devices.isEmpty)
                 }
+            }
+            .navigationDestination(for: String.self) { key in
+                // A view of its own per session: going from one to another by a link keeps nothing.
+                SessionView(key: key).id(key)
+            }
+            .sheet(isPresented: $showingMacs) {
+                DevicesView()
             }
             .sheet(isPresented: $showingNew) {
                 NewSessionView()
@@ -79,13 +87,6 @@ struct InboxView: View {
             .onChange(of: store.openWhenListed) { _, _ in openListed() }
             .alert(store.notice ?? "", isPresented: Binding(get: { store.notice != nil }, set: { if !$0 { store.notice = nil } })) {
                 Button("OK", role: .cancel) { store.notice = nil }
-            }
-            .navigationDestination(for: String.self) { key in
-                // A view of its own per session: going from one to another by a link keeps nothing.
-                SessionView(key: key).id(key)
-            }
-            .sheet(isPresented: $showingMacs) {
-                DevicesView()
             }
             .alert("Link with this Mac?", isPresented: Binding(get: { store.offeredLink != nil }, set: { if !$0 { store.offeredLink = nil } })) {
                 Button("Link") {
@@ -100,6 +101,31 @@ struct InboxView: View {
             }
         }
     }
+
+    @ViewBuilder
+    private var emptyState: some View {
+        if store.devices.isEmpty {
+            ContentUnavailableView {
+                Label("Link a Mac", systemImage: "laptopcomputer.and.iphone")
+            } description: {
+                Text("Make a link code on your Mac in Codealong's Settings › Devices, then scan it or enter it here.")
+            } actions: {
+                Button("Link a Mac") { showingMacs = true }
+                    .buttonStyle(.glassProminent)
+            }
+        } else if !query.isEmpty && sections.isEmpty {
+            ContentUnavailableView.search(text: query)
+        } else if sections.isEmpty {
+            ContentUnavailableView("All quiet", systemImage: "checkmark.circle", description: Text("Nothing needs you, and nothing ran in the last three days."))
+        }
+    }
+
+    /// The Macs button: a Mac that isn't connected, or dropped this phone, turns it orange.
+    private var macsNeedAttention: Bool {
+        store.devices.contains { !$0.online || !$0.linkedBack }
+    }
+
+    private var macsSymbol: String { "laptopcomputer" }
 
     private func openListed() {
         if let key = store.openWhenListed, store.sessions.contains(where: { $0.key == key }) {
@@ -119,6 +145,11 @@ struct InboxView: View {
     }
 
     private var sections: [Group] {
+        let words = query.lowercased().split(separator: " ")
+        let shown = words.isEmpty ? store.sessions : store.sessions.filter { row in
+            let text = "\(row.title) \(row.project) \(row.repo) \(row.branch ?? "") \(row.deviceName) \(row.detail ?? "")".lowercased()
+            return words.allSatisfy { text.contains($0) }
+        }
         let buckets: [(String, (Status) -> Bool)] = [
             ("Needs you", { $0 == .needs || $0 == .error }),
             ("Your turn", { $0 == .unread }),
@@ -126,8 +157,22 @@ struct InboxView: View {
             ("Recent", { $0 == .idle || $0 == .stopped }),
         ]
         return buckets.compactMap { title, test in
-            let rows = store.sessions.filter { test($0.status) }
+            let rows = shown.filter { test($0.status) }
             return rows.isEmpty ? nil : Group(title: title, rows: rows)
         }
+    }
+}
+
+/// How a Mac's name reads where space is short: without its owner ("Gordon’s MacBook Pro" is
+/// "MacBook Pro"), since every Mac here is yours.
+enum Names {
+    static func short(_ name: String) -> String {
+        for mark in ["’s ", "'s "] {
+            if let r = name.range(of: mark), r.lowerBound > name.startIndex {
+                let rest = name[r.upperBound...]
+                if !rest.isEmpty { return String(rest) }
+            }
+        }
+        return name
     }
 }

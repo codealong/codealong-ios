@@ -72,7 +72,7 @@ struct SessionView: View {
                 VStack(spacing: 0) {
                     Text(row?.title ?? "Session").font(.headline).lineLimit(1)
                     if let row {
-                        Text("\(row.deviceName) · \(row.project)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                        Text("\(Names.short(row.deviceName)) · \(row.project)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                     }
                 }
             }
@@ -141,26 +141,30 @@ struct SessionView: View {
             if let said {
                 Text(said).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
             }
+            // The reply box floats over the conversation in glass, as a control, not a bar.
             HStack(alignment: .bottom, spacing: 8) {
                 TextField(canAct ? "Reply" : (whyNot ?? "Reply"), text: $draft, axis: .vertical)
                     .lineLimit(1...6)
                     .focused($typing)
                     .disabled(!canAct || sending)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(.background.secondary, in: .rect(cornerRadius: 18))
+                    .padding(.vertical, 6)
                 Button {
                     Task { await send() }
                 } label: {
-                    Image(systemName: sending ? "ellipsis" : "arrow.up.circle.fill").font(.title)
+                    Image(systemName: sending ? "ellipsis.circle.fill" : "arrow.up.circle.fill")
+                        .font(.title2)
+                        .symbolRenderingMode(.hierarchical)
                 }
                 .disabled(!canAct || sending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .accessibilityLabel("Send")
             }
+            .padding(.leading, 16)
+            .padding(.trailing, 6)
+            .padding(.vertical, 4)
+            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22))
         }
         .padding(.horizontal)
-        .padding(.vertical, 8)
-        .background(.bar)
+        .padding(.bottom, 6)
     }
 
     /// Only a Mac with remote control on takes a reply or an answer from here.
@@ -295,8 +299,8 @@ private struct ApprovalCard: View {
                 Text(why).font(.footnote).foregroundStyle(.secondary)
             }
         }
-        .padding(12)
-        .background(.orange.opacity(0.1), in: .rect(cornerRadius: 14))
+        .padding(14)
+        .background(.orange.opacity(0.1), in: .rect(cornerRadius: 20))
     }
 }
 
