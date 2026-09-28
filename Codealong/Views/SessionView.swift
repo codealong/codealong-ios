@@ -33,6 +33,10 @@ struct SessionView: View {
     /// Scrolled to the newest: new items keep it there. Scrolled up to read, it stays put.
     @State private var atBottom = true
     @FocusState private var typing: Bool
+    /// The send button's size, which a line of the reply box matches; it grows with the text size.
+    @ScaledMetric(relativeTo: .body) private var sendSize: CGFloat = 32
+    /// Between the send button and the reply box's edge.
+    private let replyInset: CGFloat = 6
 
     private var row: SessionRow? { store.sessions.first { $0.key == key } }
     /// What waits on you after this one; the first is next.
@@ -187,13 +191,15 @@ struct SessionView: View {
                 NextButton(next: next, more: after.count - 1, showDevice: store.devices.count > 1, showProject: project.isEmpty) { moveOn(to: next) }
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
-            // The reply box floats over the conversation in glass, as a control, not a bar.
+            // The reply box floats over the conversation in glass, as a control, not a bar. A line
+            // of text is as tall as the send button, so the button sits centered in the pill, and
+            // as the text grows it stays at the bottom, as far from the edges as before.
             HStack(alignment: .bottom, spacing: 8) {
                 TextField(canAct ? "Reply" : (whyNot ?? "Reply"), text: $draft, axis: .vertical)
                     .lineLimit(1...6)
                     .focused($typing)
                     .disabled(!canAct || sending)
-                    .padding(.vertical, 6)
+                    .frame(minHeight: sendSize)
                     // ⌘⏎ on a keyboard sends and goes on, as on the Mac.
                     .onKeyPress(.return, phases: .down) { press in
                         guard press.modifiers.contains(.command), canSend else { return .ignored }
@@ -203,10 +209,23 @@ struct SessionView: View {
                 Button {
                     Task { await send() }
                 } label: {
-                    Image(systemName: sending ? "ellipsis.circle.fill" : "arrow.up.circle.fill")
-                        .font(.title2)
-                        .symbolRenderingMode(.hierarchical)
+                    // Accent while there's something to send, a quiet grey while there isn't.
+                    let ready = canSend || sending
+                    ZStack {
+                        Circle().fill(ready ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.quaternary))
+                        if sending {
+                            ProgressView().controlSize(.small).tint(.white)
+                        } else {
+                            Image(systemName: "arrow.up")
+                                .font(.system(size: sendSize / 2, weight: .bold))
+                                .foregroundStyle(ready ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary))
+                        }
+                    }
+                    .frame(width: sendSize, height: sendSize)
+                    // The margin around it takes a tap too.
+                    .contentShape(.circle.inset(by: -replyInset))
                 }
+                .buttonStyle(.plain)
                 .disabled(!canSend)
                 .accessibilityLabel("Send")
                 // Held, as Messages offers its send options: send and go straight on.
@@ -223,9 +242,9 @@ struct SessionView: View {
                 }
             }
             .padding(.leading, 16)
-            .padding(.trailing, 6)
-            .padding(.vertical, 4)
-            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22))
+            .padding(.trailing, replyInset)
+            .padding(.vertical, replyInset)
+            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: sendSize / 2 + replyInset))
         }
         .padding(.horizontal)
         .padding(.bottom, 6)
