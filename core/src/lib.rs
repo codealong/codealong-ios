@@ -8,9 +8,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
+use codealong_peer::api;
 use codealong_peer::client::Client;
-use codealong_peer::feed::remote_key;
+use codealong_peer::feed::{remote_key, split_remote};
 use codealong_peer::model::{Session, Status as PeerStatus};
+use codealong_peer::{net, proto};
 
 uniffi::setup_scaffolding!();
 
@@ -126,9 +128,9 @@ pub struct Core {
 #[uniffi::export]
 impl Core {
     /// `dir` is where the core keeps its links and the last feeds, `key` this phone's 32-byte
-    /// device key, and `name` what the Macs call it.
+    /// device key, `name` what the Macs call it, and `tablet` whether it's an iPad.
     #[uniffi::constructor]
-    pub fn new(dir: String, key: Vec<u8>, name: String, listener: Box<dyn Listener>) -> Result<Arc<Core>, CoreError> {
+    pub fn new(dir: String, key: Vec<u8>, name: String, tablet: bool, listener: Box<dyn Listener>) -> Result<Arc<Core>, CoreError> {
         let bytes: [u8; 32] = key.try_into().map_err(|_| CoreError::Failed("The device key is the wrong length.".into()))?;
         let secret = iroh::SecretKey::from_bytes(&bytes);
         let wake = Arc::new((Mutex::new(false), Condvar::new()));
@@ -138,6 +140,7 @@ impl Core {
             secret,
             name,
             env!("CARGO_PKG_VERSION").to_string(),
+            if tablet { proto::TABLET } else { proto::PHONE },
             Box::new(move || {
                 let (lock, cv) = &*signal;
                 *lock.lock().unwrap_or_else(|e| e.into_inner()) = true;
@@ -178,9 +181,34 @@ impl Core {
     }
 
     /// Links with the Mac whose link code this is (Settings › Devices on the Mac, or `codealong
-    /// devices code`). Returns the Mac's name.
+    /// devices code`), given as the code or the link its QR code holds. Returns the Mac's name.
     pub fn link(&self, code: String) -> Result<String, CoreError> {
-        Ok(self.client.link(&code)?)
+        Ok(self.client.link(net::code_in(&code))?)
+    }
+
+    /// A session's conversation, to page through and follow (`Conversation`).
+    pub fn conversation(&self, key: String) -> Result<Arc<Conversation>, CoreError> {
+        let (device, own) = split_remote(&key).ok_or_else(|| CoreError::Failed("That isn't a session on one of your Macs.".into()))?;
+        Ok(Arc::new(Conversation { client: self.client.clone(), device: device.to_string(), key: own.to_string(), st: Mutex::new(Thread::default()) }))
+    }
+
+    /// Marks sessions seen on the Macs they're on, so Your turn clears everywhere.
+    pub fn mark_seen(&self, keys: Vec<String>) {
+        let mut by_device: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        for k in &keys {
+            if let Some((device, own)) = split_remote(k) {
+                by_device.entry(device.to_string()).or_default().push(own.to_string());
+            }
+        }
+        for (device, keys) in by_device {
+            let _ = self.client.mark_seen(&device, &keys);
+        }
+    }
+
+    /// Archives a session, or brings it back, on the Mac it's on.
+    pub fn archive(&self, key: String, archived: bool) -> Result<(), CoreError> {
+        let (device, own) = split_remote(&key).ok_or_else(|| CoreError::Failed("That isn't a session on one of your Macs.".into()))?;
+        Ok(self.client.archive(device, own, archived)?)
     }
 
     pub fn unlink(&self, device: String) -> Result<(), CoreError> {
@@ -263,5 +291,184 @@ fn urgency(s: PeerStatus) -> u8 {
         PeerStatus::Working => 2,
         PeerStatus::Unread => 3,
         PeerStatus::Idle | PeerStatus::Stopped => 4,
+    }
+}
+
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ItemKind {
+    You,
+    Agent,
+    Tool,
+    Note,
+}
+
+/// One thing said or done in a session. A tool call carries its output once it's in: the Mac
+/// records a result as a line of its own, and the conversation puts the two together.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct Item {
+    /// Unique in the session.
+    pub id: String,
+    pub at: i64,
+    pub kind: ItemKind,
+    /// Prose for you, the agent and notes (Markdown); a one-line label for a tool call.
+    pub text: String,
+    pub input: Option<String>,
+    pub output: Option<String>,
+    pub failed: bool,
+}
+
+/// A tool call the session waits on you to allow.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct Pending {
+    pub id: String,
+    pub label: String,
+    pub input: Option<String>,
+    /// Why it can't be answered from here, when it can't.
+    pub cannot: Option<String>,
+}
+
+/// A session's conversation as far as it's been read: a page back from the newest, older pages
+/// as you scroll up, and what came after as the session goes on. Each call returns the whole of
+/// it, oldest first, for the list to show as is.
+#[derive(uniffi::Object)]
+pub struct Conversation {
+    client: Client,
+    device: String,
+    key: String,
+    st: Mutex<Thread>,
+}
+
+#[derive(Default)]
+struct Thread {
+    loaded: bool,
+    items: Vec<api::Item>,
+    before: Option<u64>,
+    after: u64,
+}
+
+impl Thread {
+    /// Takes a page in: older pages go in front, newer ones after, and anything already here
+    /// (a page can overlap the last) isn't taken twice.
+    fn take(&mut self, page: api::Page, older: bool) {
+        let have: std::collections::HashSet<(u64, u32)> = self.items.iter().map(|i| (i.cursor, i.n)).collect();
+        let fresh: Vec<api::Item> = page.items.into_iter().filter(|i| !have.contains(&(i.cursor, i.n))).collect();
+        if older {
+            self.items.splice(0..0, fresh);
+            self.before = page.before;
+        } else {
+            self.items.extend(fresh);
+            self.after = page.after.max(self.after);
+            if !self.loaded {
+                self.before = page.before;
+            }
+        }
+        self.loaded = true;
+    }
+
+    /// The items as the list shows them: each result folded into the call it answers, when that
+    /// call has been read; a result whose call is further back waits for it.
+    fn shown(&self) -> Vec<Item> {
+        let mut results: std::collections::HashMap<&str, &api::Item> = std::collections::HashMap::new();
+        for i in self.items.iter().filter(|i| i.kind == "result") {
+            if let Some(id) = &i.id {
+                results.insert(id.as_str(), i);
+            }
+        }
+        self.items
+            .iter()
+            .filter_map(|i| {
+                let kind = match i.kind.as_str() {
+                    "you" => ItemKind::You,
+                    "agent" => ItemKind::Agent,
+                    "tool" => ItemKind::Tool,
+                    "note" => ItemKind::Note,
+                    // A result shows with its call, and one whose call is further back waits for it.
+                    "result" => return None,
+                    _ => ItemKind::Note,
+                };
+                let result = (kind == ItemKind::Tool).then(|| i.id.as_deref().and_then(|id| results.get(id))).flatten();
+                Some(Item {
+                    id: format!("{}:{}", i.cursor, i.n),
+                    at: i.at,
+                    kind,
+                    text: i.text.clone(),
+                    input: i.input.clone(),
+                    output: result.and_then(|r| r.output.clone()).or_else(|| i.output.clone()),
+                    failed: i.failed || result.is_some_and(|r| r.failed),
+                })
+            })
+            .collect()
+    }
+}
+
+#[uniffi::export]
+impl Conversation {
+    /// The newest page, the first time; afterwards what came since.
+    pub fn refresh(&self) -> Result<Vec<Item>, CoreError> {
+        let (loaded, after) = {
+            let st = self.st.lock().unwrap_or_else(|e| e.into_inner());
+            (st.loaded, st.after)
+        };
+        let page = if loaded { self.client.newer(&self.device, &self.key, after)? } else { self.client.page(&self.device, &self.key, None)? };
+        let mut st = self.st.lock().unwrap_or_else(|e| e.into_inner());
+        st.take(page, false);
+        Ok(st.shown())
+    }
+
+    /// The page before the oldest read so far.
+    pub fn older(&self) -> Result<Vec<Item>, CoreError> {
+        let before = self.st.lock().unwrap_or_else(|e| e.into_inner()).before;
+        let Some(before) = before else { return Ok(self.st.lock().unwrap_or_else(|e| e.into_inner()).shown()) };
+        let page = self.client.page(&self.device, &self.key, Some(before))?;
+        let mut st = self.st.lock().unwrap_or_else(|e| e.into_inner());
+        st.take(page, true);
+        Ok(st.shown())
+    }
+
+    /// There's more before the oldest read so far.
+    pub fn has_older(&self) -> bool {
+        self.st.lock().unwrap_or_else(|e| e.into_inner()).before.is_some()
+    }
+
+    pub fn pending(&self) -> Result<Option<Pending>, CoreError> {
+        Ok(self.client.pending(&self.device, &self.key)?.map(|p| Pending { id: p.id, label: p.label, input: p.input, cannot: p.cannot }))
+    }
+
+    /// Allows or denies the tool call `id`, if it's still the one the session waits on.
+    pub fn answer(&self, id: String, allow: bool) -> Result<String, CoreError> {
+        Ok(self.client.answer(&self.device, &self.key, &id, if allow { api::Answer::Allow } else { api::Answer::Deny })?)
+    }
+
+    /// Sends the session a prompt, where it runs on its Mac. Says how it went.
+    pub fn send(&self, text: String) -> Result<String, CoreError> {
+        let sent = self.client.send(&self.device, &self.key, &text)?;
+        Ok(sent.message)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(kind: &str, cursor: u64, id: Option<&str>, output: Option<&str>) -> api::Item {
+        api::Item { at: cursor as i64, kind: kind.into(), text: format!("{kind} {cursor}"), id: id.map(String::from), input: None, output: output.map(String::from), failed: false, cursor, n: 0 }
+    }
+
+    #[test]
+    fn results_fold_into_their_calls_whichever_page_they_came_in() {
+        let mut t = Thread::default();
+        // The newest page has a result whose call is further back.
+        t.take(api::Page { items: vec![item("result", 30, Some("c1"), Some("ok")), item("agent", 40, None, None)], before: Some(20), after: 50 }, false);
+        assert_eq!(t.shown().iter().map(|i| i.kind).collect::<Vec<_>>(), [ItemKind::Agent]);
+        // The page before brings the call, which then shows with its output.
+        t.take(api::Page { items: vec![item("you", 10, None, None), item("tool", 20, Some("c1"), None)], before: None, after: 30 }, true);
+        let shown = t.shown();
+        assert_eq!(shown.iter().map(|i| i.kind).collect::<Vec<_>>(), [ItemKind::You, ItemKind::Tool, ItemKind::Agent]);
+        assert_eq!(shown[1].output.as_deref(), Some("ok"));
+        assert!(t.before.is_none());
+        // What came since goes after, and an item read twice shows once.
+        t.take(api::Page { items: vec![item("agent", 40, None, None), item("you", 60, None, None)], before: Some(40), after: 70 }, false);
+        assert_eq!(t.shown().len(), 4);
+        assert_eq!(t.after, 70);
     }
 }

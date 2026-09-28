@@ -6,16 +6,29 @@ import Security
 enum DeviceKey {
     private static let service = "Codealong device key"
 
-    static func loadOrCreate() -> Data {
+    /// The key, made the first time. Every link depends on it staying the same, so when the
+    /// Keychain won't keep it (a build without the keychain entitlement, say) it goes in a file in
+    /// `dir` instead, and into the Keychain once it takes it.
+    static func loadOrCreate(fallback dir: URL) -> Data {
         if let key = read() {
             return key
+        }
+        let file = dir.appending(path: "device-key")
+        if let kept = try? Data(contentsOf: file), kept.count == 32 {
+            save(kept)
+            if read() == kept {
+                try? FileManager.default.removeItem(at: file)
+            }
+            return kept
         }
         var bytes = Data(count: 32)
         let status = bytes.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
         precondition(status == errSecSuccess, "The system gave no random bytes for the device key.")
         save(bytes)
-        // A key the Keychain didn't keep would change on every launch and break every link.
-        return read() ?? bytes
+        if read() != bytes {
+            try? bytes.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        }
+        return bytes
     }
 
     private static func read() -> Data? {

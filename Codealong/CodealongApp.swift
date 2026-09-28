@@ -9,6 +9,7 @@ struct CodealongApp: App {
         WindowGroup {
             InboxView()
                 .environment(store)
+                .onOpenURL { store.open($0) }
         }
         // Connected only while the app is open: iOS suspends it in the background anyway, and a
         // reconnect is quick, with the last feeds on screen meanwhile.

@@ -36,14 +36,16 @@ Mac's board sorts them). So:
 - The phone has to work with Macs on older and newer builds: a message a peer doesn't know ends
   the connection there, so only send new messages to Macs that say they know them.
 
-Until `codealong-peer` lands in `origin/main`, `core/Cargo.toml` points at the worktree it's
-being made in (`../codealong-peer`, branch `peer-crate`).
+To take a newer one: set `rev` in `core/Cargo.toml` to a commit in the main repo's `origin/main`,
+then `scripts/build-core.sh` (cargo fetches it with your git login).
 
 ## How the phone is a device
 
 - It has an Ed25519 device key in the Keychain (this device only) and links with a Mac's link
-  code (`cal1…`: the Mac's key and a one-time secret) over iroh. The Mac adds it to its
-  `devices.json` like any device, sends it its feed, and answers its requests.
+  code (`cal1…`: the Mac's key and a one-time secret) over iroh, typed or pasted, or as the
+  `codealong://link/<code>` its QR code holds, which the camera opens here (the app asks first).
+  Its hello says it's a phone (or a tablet), so the Mac lists it apart in Settings › Devices,
+  sends it its feed, answers its requests, and never dials it or asks it to search.
 - It never sends a feed and answers every request with a refusal.
 - It reads with `session-page`, `session-newer`, `session-pending` and `search`. It can only
   act (`session-send`, `session-answer`, `start`) where the Mac has remote control on

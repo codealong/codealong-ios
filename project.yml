@@ -11,6 +11,9 @@ settings:
     SWIFT_VERSION: "6.0"
     # The core is built for Apple silicon simulators only (scripts/build-core.sh).
     EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
+    # Signed to run locally in the simulator: an unsigned app has no keychain, and the device key
+    # lives there. A build for a phone needs your team (DEVELOPMENT_TEAM).
+    CODE_SIGN_IDENTITY[sdk=iphonesimulator*]: "-"
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
 targets:
@@ -47,6 +50,10 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         NSLocalNetworkUsageDescription: Codealong connects straight to your Macs when they're on the same network as this phone.
+        # codealong://link/<code>: a Mac's link code as its QR code holds it, so the camera opens it here.
+        CFBundleURLTypes:
+          - CFBundleURLName: dev.codealong.link
+            CFBundleURLSchemes: [codealong]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.codealong.app

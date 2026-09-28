@@ -9,5 +9,5 @@ fi
 xcodegen generate --quiet
 xcodebuild -project Codealong.xcodeproj -scheme Codealong -configuration Debug \
   -destination 'generic/platform=iOS Simulator' -derivedDataPath DerivedData \
-  CODE_SIGNING_ALLOWED=NO build -quiet
+  build -quiet
 echo "Built DerivedData/Build/Products/Debug-iphonesimulator/Codealong.app"

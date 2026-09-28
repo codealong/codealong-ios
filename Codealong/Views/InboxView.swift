@@ -8,10 +8,33 @@ struct InboxView: View {
     var body: some View {
         NavigationStack {
             List {
+                // A Mac that dropped this phone still shows what it last sent, so say why it's old.
+                if !forgotten.isEmpty {
+                    Section {
+                        Label {
+                            Text("\(forgotten.map(\.name).formatted()) doesn't have this phone linked any more, so what's here is from before. Link it again with a new code.")
+                        } icon: {
+                            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                        }
+                        Button("Link again") { showingMacs = true }
+                    }
+                }
                 ForEach(sections, id: \.title) { section in
                     Section(section.title) {
                         ForEach(section.rows, id: \.key) { row in
-                            SessionRowView(row: row)
+                            NavigationLink(value: row.key) {
+                                SessionRowView(row: row)
+                            }
+                            .swipeActions(edge: .trailing) {
+                                Button("Archive", systemImage: "archivebox") { store.archive(row.key) }
+                                    .tint(.gray)
+                            }
+                            .swipeActions(edge: .leading) {
+                                if row.status == .unread {
+                                    Button("Seen", systemImage: "checkmark") { store.markSeen(row.key) }
+                                        .tint(.accentColor)
+                                }
+                            }
                         }
                     }
                 }
@@ -40,10 +63,29 @@ struct InboxView: View {
                     .badge(store.devices.filter(\.online).count)
                 }
             }
+            .navigationDestination(for: String.self) { key in
+                SessionView(key: key)
+            }
             .sheet(isPresented: $showingMacs) {
                 DevicesView()
             }
+            .alert("Link with this Mac?", isPresented: Binding(get: { store.offeredLink != nil }, set: { if !$0 { store.offeredLink = nil } })) {
+                Button("Link") {
+                    if let code = store.offeredLink {
+                        Task { await store.link(code) }
+                    }
+                    store.offeredLink = nil
+                }
+                Button("Cancel", role: .cancel) { store.offeredLink = nil }
+            } message: {
+                Text("This phone will see the sessions on the Mac that showed this code, and the Mac will list it as a phone.")
+            }
         }
+    }
+
+    /// Connected Macs that don't have this phone on their list.
+    private var forgotten: [DeviceRow] {
+        store.devices.filter { $0.online && !$0.linkedBack }
     }
 
     private struct Group {

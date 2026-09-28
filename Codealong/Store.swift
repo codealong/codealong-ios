@@ -11,6 +11,8 @@ final class Store {
     private(set) var problem: String?
     private(set) var linking = false
     var linkError: String?
+    /// A link code the app was opened with (a QR code the camera read), waiting for you to say yes.
+    var offeredLink: String?
 
     @ObservationIgnored private var core: Core?
 
@@ -18,11 +20,11 @@ final class Store {
         let dir = URL.applicationSupportDirectory.appending(path: "Codealong", directoryHint: .isDirectory)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         do {
-            core = try Core(dir: dir.path(percentEncoded: false), key: DeviceKey.loadOrCreate(), name: UIDevice.current.name, listener: Relay { [weak self] in
+            core = try Core(dir: dir.path(percentEncoded: false), key: DeviceKey.loadOrCreate(fallback: dir), name: UIDevice.current.name, tablet: UIDevice.current.userInterfaceIdiom == .pad, listener: Relay { [weak self] in
                 Task { @MainActor in self?.refresh() }
             })
         } catch {
-            problem = "\(error)"
+            problem = words(error)
         }
         refresh()
     }
@@ -40,7 +42,7 @@ final class Store {
             do {
                 try core.start()
             } catch {
-                await MainActor.run { self.problem = "\(error)" }
+                await MainActor.run { self.problem = words(error) }
             }
             // A link code handed to the app when it's launched for a test links it at once.
             if let code = ProcessInfo.processInfo.environment["CODEALONG_LINK_CODE"], !code.isEmpty {
@@ -61,7 +63,7 @@ final class Store {
         do {
             _ = try await Task.detached { try core.link(code: code) }.value
         } catch {
-            linkError = "\(error)"
+            linkError = words(error)
         }
         linking = false
         refresh()
@@ -71,6 +73,27 @@ final class Store {
         guard let core else { return }
         try? core.unlink(device: device.key)
         refresh()
+    }
+
+    /// A link from outside the app: only a Mac's link code, which waits for you to say yes, since
+    /// any page could open one.
+    func open(_ url: URL) {
+        guard url.scheme == "codealong", url.host() == "link" else { return }
+        offeredLink = url.absoluteString
+    }
+
+    func conversation(_ key: String) -> Conversation? {
+        try? core?.conversation(key: key)
+    }
+
+    func markSeen(_ key: String) {
+        guard let core else { return }
+        Task.detached { core.markSeen(keys: [key]) }
+    }
+
+    func archive(_ key: String) {
+        guard let core else { return }
+        Task.detached { try? core.archive(key: key, archived: true) }
     }
 }
 

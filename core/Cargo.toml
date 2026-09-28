@@ -11,12 +11,13 @@ publish = false
 
 [lib]
 name = "codealong_mobile"
-crate-type = ["staticlib", "lib"]
+# A static library alone: with an rlib beside it, the LTO below never reaches it.
+crate-type = ["staticlib"]
 
 [dependencies]
-# Until codealong-peer lands in origin/main this is the worktree it's being made in; then it's a
-# git dependency pinned to an origin/main commit (see CLAUDE.md).
-codealong-peer = { path = "../../codealong-peer/src-tauri/peer" }
+# The main repo's crate, pinned to a commit in its origin/main; move the pin to take a newer one
+# (CLAUDE.md, "The main repo is the source of the protocol").
+codealong-peer = { git = "https://github.com/codealong/codealong.git", rev = "2fa927460729e5dbb436cf26edc8590449ba02f6" }
 iroh = "1"
 serde_json = "1"
 uniffi = "0.32"
