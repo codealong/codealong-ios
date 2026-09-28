@@ -472,3 +472,144 @@ mod tests {
         assert_eq!(t.after, 70);
     }
 }
+
+// ---- starting a session ----
+
+/// A worktree on a Mac, to start a session in.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct Worktree {
+    /// Its id on its Mac (the worktree's path there).
+    pub id: String,
+    pub project: String,
+    pub repo: String,
+    /// Its short name: the folder's, or the branch's.
+    pub name: String,
+    pub branch: Option<String>,
+    pub last_activity: i64,
+}
+
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct StartPlace {
+    /// As the Mac names it: `terminal`, `background`, `claude-app`, `codex-app`, `codealong`.
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct StartAccount {
+    pub name: String,
+    pub harness: String,
+    pub places: Vec<StartPlace>,
+    /// Where a start from the phone goes unless you pick another (`start_place`).
+    pub place: Option<String>,
+    /// Why it can't start anything, when it can't.
+    pub unavailable: Option<String>,
+    /// The model it starts on unless you pick one.
+    pub default_model: Option<String>,
+    pub preferred: bool,
+}
+
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct StartModel {
+    pub id: String,
+    pub label: String,
+}
+
+/// What a Mac can start: its accounts, where each can start, and the models Claude Code can ask for.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct StartChoices {
+    pub accounts: Vec<StartAccount>,
+    pub models: Vec<StartModel>,
+}
+
+/// How a start went: the new session's key when the Mac chose its id, so the app can open it once
+/// it's listed, and a sentence when there's something to know.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct StartedSession {
+    pub key: Option<String>,
+    pub message: Option<String>,
+}
+
+/// Where a start from the phone goes unless you pick another: somewhere that needs nobody at the
+/// Mac, since a locked Mac opens no terminal. Codealong itself (over ACP) first, then Claude Code's
+/// background service, then where the account usually starts.
+fn start_place(a: &api::StartAccount) -> Option<String> {
+    let has = |p: api::Place| a.places.iter().any(|o| o.place == p);
+    [api::Place::Codealong, api::Place::Background].into_iter().find(|p| has(*p)).or(a.chosen.filter(|p| has(*p))).or_else(|| a.places.first().map(|o| o.place)).map(|p| p.word().to_string())
+}
+
+#[uniffi::export]
+impl Core {
+    /// A Mac's worktrees from its feed, most recently active first; worktrees in no project stay
+    /// off, as on its board.
+    pub fn worktrees(&self, device: String) -> Vec<Worktree> {
+        self.client.with_feeds(|feeds| {
+            let mut out: Vec<Worktree> = feeds
+                .iter()
+                .filter(|(d, _)| d.key == device)
+                .flat_map(|(_, r)| r.lanes.iter())
+                .filter(|l| !l.hidden)
+                .map(|l| Worktree { id: l.id.clone(), project: l.project.clone(), repo: l.repo.clone(), name: l.callsign.clone(), branch: l.branch.clone(), last_activity: l.last_activity })
+                .collect();
+            out.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
+            out
+        })
+    }
+
+    /// What `device` can start, asked of it.
+    pub fn start_choices(&self, device: String) -> Result<StartChoices, CoreError> {
+        let o = self.client.start_options(&device)?;
+        Ok(StartChoices {
+            accounts: o
+                .accounts
+                .iter()
+                .map(|a| StartAccount {
+                    name: a.name.clone(),
+                    harness: a.harness.word().to_string(),
+                    places: a.places.iter().map(|p| StartPlace { id: p.place.word().to_string(), label: p.label.clone() }).collect(),
+                    place: start_place(a),
+                    unavailable: a.unavailable.clone(),
+                    default_model: a.default_model.clone(),
+                    preferred: a.preferred,
+                })
+                .collect(),
+            models: o.claude_models.into_iter().map(|m| StartModel { id: m.id, label: m.label }).collect(),
+        })
+    }
+
+    /// Starts a session on `device` in `worktree` (its id there), on `account`, at `place`.
+    pub fn start_session(&self, device: String, worktree: String, account: String, place: String, prompt: String, model: Option<String>) -> Result<StartedSession, CoreError> {
+        let place = api::Place::from_word(&place).ok_or_else(|| CoreError::Failed(format!("{place} isn't a place a session can start.")))?;
+        let spec = api::StartSpec { lane_id: worktree, account, place, prompt, model, worktree: false, todos: Vec::new() };
+        let started = self.client.start_session(&device, &spec)?;
+        let short = device.get(..10).unwrap_or(&device);
+        Ok(StartedSession { key: started.key.map(|k| remote_key(short, &k)), message: started.message })
+    }
+}
+
+#[cfg(test)]
+mod start_tests {
+    use super::*;
+
+    fn account(places: &[api::Place], chosen: Option<api::Place>) -> api::StartAccount {
+        api::StartAccount {
+            name: "claude".into(),
+            harness: codealong_peer::model::Harness::Claude,
+            places: places.iter().map(|p| api::PlaceOption { place: *p, label: p.word().into() }).collect(),
+            chosen,
+            unavailable: None,
+            default_model: None,
+            preferred: false,
+        }
+    }
+
+    #[test]
+    fn a_start_from_the_phone_goes_where_nobody_needs_to_be_at_the_mac() {
+        use api::Place::*;
+        assert_eq!(start_place(&account(&[Terminal, Background, ClaudeApp, Codealong], Some(Terminal))).as_deref(), Some("codealong"));
+        assert_eq!(start_place(&account(&[Terminal, Background], None)).as_deref(), Some("background"));
+        assert_eq!(start_place(&account(&[CodexApp, Terminal], Some(Terminal))).as_deref(), Some("terminal"));
+        assert_eq!(start_place(&account(&[CodexApp, Terminal], None)).as_deref(), Some("codex-app"));
+        assert_eq!(start_place(&account(&[], None)), None);
+    }
+}

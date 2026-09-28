@@ -4,9 +4,11 @@ import SwiftUI
 struct InboxView: View {
     @Environment(Store.self) private var store
     @State private var showingMacs = false
+    @State private var showingNew = false
+    @State private var path: [String] = []
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             List {
                 // A Mac that dropped this phone still shows what it last sent, so say why it's old.
                 if !forgotten.isEmpty {
@@ -62,6 +64,25 @@ struct InboxView: View {
                     }
                     .badge(store.devices.filter(\.online).count)
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { showingNew = true } label: {
+                        Label("New session", systemImage: "square.and.pencil")
+                    }
+                    .disabled(store.devices.isEmpty)
+                }
+            }
+            .sheet(isPresented: $showingNew) {
+                NewSessionView()
+            }
+            // A session started here opens once its Mac lists it.
+            .onChange(of: store.sessions) { _, rows in
+                if let key = store.openWhenListed, rows.contains(where: { $0.key == key }) {
+                    store.openWhenListed = nil
+                    path.append(key)
+                }
+            }
+            .alert(store.notice ?? "", isPresented: Binding(get: { store.notice != nil }, set: { if !$0 { store.notice = nil } })) {
+                Button("OK", role: .cancel) { store.notice = nil }
             }
             .navigationDestination(for: String.self) { key in
                 SessionView(key: key)

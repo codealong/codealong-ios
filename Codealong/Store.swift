@@ -13,6 +13,10 @@ final class Store {
     var linkError: String?
     /// A link code the app was opened with (a QR code the camera read), waiting for you to say yes.
     var offeredLink: String?
+    /// A session just started here, to open as soon as its Mac lists it.
+    var openWhenListed: String?
+    /// Something to tell you once: what's next after a start that needs you at the Mac, say.
+    var notice: String?
 
     @ObservationIgnored private var core: Core?
 
@@ -94,6 +98,28 @@ final class Store {
     func archive(_ key: String) {
         guard let core else { return }
         Task.detached { try? core.archive(key: key, archived: true) }
+    }
+
+    /// A Mac's worktrees, from its feed.
+    func worktrees(_ device: String) -> [Worktree] {
+        core?.worktrees(device: device) ?? []
+    }
+
+    func startChoices(_ device: String) async throws -> StartChoices {
+        let core = try running()
+        return try await Task.detached { try core.startChoices(device: device) }.value
+    }
+
+    func startSession(device: String, worktree: String, account: String, place: String, prompt: String, model: String?) async throws -> StartedSession {
+        let core = try running()
+        return try await Task.detached {
+            try core.startSession(device: device, worktree: worktree, account: account, place: place, prompt: prompt, model: model)
+        }.value
+    }
+
+    private func running() throws -> Core {
+        guard let core else { throw CoreError.Failed(message: problem ?? "Codealong's core didn't start.") }
+        return core
     }
 }
 
