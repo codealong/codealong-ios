@@ -90,7 +90,7 @@ private struct DeviceRowView: View {
         if device.online {
             parts.append(device.loading ? "Connected, still loading" : "Connected")
         } else if let seen = device.lastSeen {
-            parts.append("Last seen \(Live.ago(seen, now: .now)) ago")
+            parts.append("Last seen \(Clock.ago(seen, now: .now)) ago")
         } else {
             parts.append("Not connected")
         }

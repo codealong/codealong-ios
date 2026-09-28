@@ -5,6 +5,7 @@ import SwiftUI
 struct SessionView: View {
     let key: String
     @Environment(Store.self) private var store
+    @Environment(\.dismiss) private var dismiss
     @State private var conversation: Conversation?
     @State private var items: [Item] = []
     @State private var hasOlder = false
@@ -14,6 +15,10 @@ struct SessionView: View {
     @State private var draft = ""
     @State private var sending = false
     @State private var said: String?
+    /// The reply it's writing, while it takes a turn Codealong runs on its Mac.
+    @State private var live: Live?
+    @State private var watching = false
+    @State private var stopping = false
     /// Scrolled to the newest: new items keep it there. Scrolled up to read, it stays put.
     @State private var atBottom = true
     @FocusState private var typing: Bool
@@ -31,6 +36,9 @@ struct SessionView: View {
                     }
                     ForEach(items, id: \.id) { item in
                         ItemView(item: item)
+                    }
+                    if let live {
+                        LiveReply(live: live)
                     }
                     if loading && items.isEmpty {
                         ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
@@ -52,6 +60,9 @@ struct SessionView: View {
             .onChange(of: items.count) { _, _ in
                 if atBottom { proxy.scrollTo("end", anchor: .bottom) }
             }
+            .onChange(of: live?.text) { _, _ in
+                if atBottom { proxy.scrollTo("end", anchor: .bottom) }
+            }
         }
         .safeAreaInset(edge: .bottom) { bottom }
         .navigationTitle(row?.title ?? "Session")
@@ -67,7 +78,13 @@ struct SessionView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Button("Archive", systemImage: "archivebox") { store.archive(key) }
+                    if canStop {
+                        Button("Stop", systemImage: "stop.circle") { Task { await stop() } }
+                    }
+                    Button("Archive", systemImage: "archivebox") {
+                        store.archive(key)
+                        dismiss()
+                    }
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
@@ -76,15 +93,50 @@ struct SessionView: View {
         .task(id: key) { await open() }
         // The Mac's feed says the session moved: bring in what came since.
         .onChange(of: row?.lastActivity) { _, _ in Task { await refresh() } }
+        // A turn that ends while it's shown here has been seen.
+        .onChange(of: row?.status) { _, status in
+            if status == .unread { store.markSeen(key) }
+        }
+        // A reply being written comes as a change the core reports.
+        .onChange(of: store.tick) { _, _ in
+            guard watching, let conv = conversation else { return }
+            let now = conv.live()
+            // The turn ended: the reply stays up until the conversation has it, so the list never
+            // shrinks under where it's scrolled to.
+            if now == nil, live != nil {
+                Task {
+                    await refresh()
+                    live = conv.live()
+                }
+            } else {
+                live = now
+            }
+        }
+        .onDisappear {
+            if watching, let conv = conversation {
+                Task.detached { conv.unwatch() }
+            }
+        }
     }
 
     @ViewBuilder
     private var bottom: some View {
         VStack(spacing: 8) {
             if let pending {
-                ApprovalCard(pending: pending, canAct: canAct, why: whyNot) { allow in
-                    Task { await answer(pending, allow: allow) }
+                ApprovalCard(pending: pending, canAct: canAct, why: whyNot) { choice in
+                    Task { await answer(pending, choice) }
                 }
+            }
+            if canStop {
+                Button(role: .destructive) {
+                    Task { await stop() }
+                } label: {
+                    Label(stopping ? "Stopping…" : "Stop this turn", systemImage: "stop.circle")
+                        .font(.subheadline)
+                }
+                .buttonStyle(.bordered)
+                .disabled(stopping)
+                .frame(maxWidth: .infinity, alignment: .trailing)
             }
             if let said {
                 Text(said).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
@@ -114,6 +166,9 @@ struct SessionView: View {
     /// Only a Mac with remote control on takes a reply or an answer from here.
     private var canAct: Bool { whyNot == nil }
 
+    /// A turn Codealong runs on its Mac can be stopped from here.
+    private var canStop: Bool { canAct && row?.hosted == true && row?.status == .working }
+
     private var whyNot: String? {
         guard let row, let device = store.devices.first(where: { $0.key == row.device }) else { return "That session isn't on a linked Mac any more" }
         if !device.online { return "\(device.name) isn't connected" }
@@ -127,6 +182,11 @@ struct SessionView: View {
         await refresh()
         loading = false
         if row?.status == .unread { store.markSeen(key) }
+        // A session Codealong runs sends its reply as it's written, while it's shown here.
+        if row?.hosted == true {
+            watching = await Task.detached { conv.watch() }.value
+            live = conv.live()
+        }
     }
 
     private func refresh() async {
@@ -169,11 +229,23 @@ struct SessionView: View {
         }
     }
 
-    private func answer(_ p: Pending, allow: Bool) async {
+    private func answer(_ p: Pending, _ choice: Choice) async {
         guard let conv = conversation else { return }
         do {
-            said = try await Task.detached { try conv.answer(id: p.id, allow: allow) }.value
+            said = try await Task.detached { try conv.answer(id: p.id, choice: choice) }.value
             pending = nil
+        } catch {
+            said = words(error)
+        }
+    }
+
+    private func stop() async {
+        guard let conv = conversation else { return }
+        stopping = true
+        defer { stopping = false }
+        do {
+            try await Task.detached { try conv.stop() }.value
+            said = "Stopped."
         } catch {
             said = words(error)
         }
@@ -185,29 +257,38 @@ private struct ApprovalCard: View {
     let pending: Pending
     let canAct: Bool
     let why: String?
-    let answer: (Bool) -> Void
+    let answer: (Choice) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Label {
-                Text(Live.text(pending.label, now: .now)).font(.subheadline.weight(.medium))
+                Text(Clock.text(pending.label, now: .now)).font(.subheadline.weight(.medium))
             } icon: {
                 Image(systemName: "hand.raised.fill").foregroundStyle(.orange)
             }
             if let input = pending.input, !input.isEmpty {
+                // A plan is prose to read; anything else is a command or a change, shown as is.
                 ScrollView {
-                    Text(input).font(.caption.monospaced()).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+                    if pending.plan {
+                        MarkdownText(text: input).font(.subheadline)
+                    } else {
+                        Text(input).font(.caption.monospaced()).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+                    }
                 }
-                .frame(maxHeight: 120)
+                .frame(maxHeight: pending.plan ? 320 : 120)
             }
             if let cannot = pending.cannot {
                 Text(cannot).font(.footnote).foregroundStyle(.secondary)
             } else if canAct {
                 HStack {
-                    Button("Deny", role: .destructive) { answer(false) }
+                    Button("Deny", role: .destructive) { answer(.deny) }
                         .buttonStyle(.bordered)
                     Spacer()
-                    Button("Allow") { answer(true) }
+                    if pending.always {
+                        Button("Always allow") { answer(.always) }
+                            .buttonStyle(.bordered)
+                    }
+                    Button(pending.plan ? "Approve" : "Allow") { answer(.allow) }
                         .buttonStyle(.borderedProminent)
                 }
             } else if let why {
@@ -237,9 +318,7 @@ private struct ItemView: View {
                     .textSelection(.enabled)
             }
         case .agent:
-            Text(markdown(item.text))
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            MarkdownText(text: item.text)
         case .tool:
             VStack(alignment: .leading, spacing: 6) {
                 Button {
@@ -273,6 +352,27 @@ private struct ItemView: View {
     private func markdown(_ s: String) -> AttributedString {
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         return (try? AttributedString(markdown: s, options: options)) ?? AttributedString(s)
+    }
+}
+
+/// The reply a session Codealong runs is writing, as it comes, and the tool it's running.
+private struct LiveReply: View {
+    let live: Live
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if !live.text.isEmpty {
+                MarkdownText(text: live.text)
+            }
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.mini)
+                Text(live.tool.map { Clock.text($0, now: .now) } ?? AttributedString("Writing…"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

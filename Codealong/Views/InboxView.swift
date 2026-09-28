@@ -74,18 +74,15 @@ struct InboxView: View {
             .sheet(isPresented: $showingNew) {
                 NewSessionView()
             }
-            // A session started here opens once its Mac lists it.
-            .onChange(of: store.sessions) { _, rows in
-                if let key = store.openWhenListed, rows.contains(where: { $0.key == key }) {
-                    store.openWhenListed = nil
-                    path.append(key)
-                }
-            }
+            // A session started here, or a link to one, opens once its Mac lists it.
+            .onChange(of: store.sessions) { _, _ in openListed() }
+            .onChange(of: store.openWhenListed) { _, _ in openListed() }
             .alert(store.notice ?? "", isPresented: Binding(get: { store.notice != nil }, set: { if !$0 { store.notice = nil } })) {
                 Button("OK", role: .cancel) { store.notice = nil }
             }
             .navigationDestination(for: String.self) { key in
-                SessionView(key: key)
+                // A view of its own per session: going from one to another by a link keeps nothing.
+                SessionView(key: key).id(key)
             }
             .sheet(isPresented: $showingMacs) {
                 DevicesView()
@@ -101,6 +98,13 @@ struct InboxView: View {
             } message: {
                 Text("This phone will see the sessions on the Mac that showed this code, and the Mac will list it as a phone.")
             }
+        }
+    }
+
+    private func openListed() {
+        if let key = store.openWhenListed, store.sessions.contains(where: { $0.key == key }) {
+            store.openWhenListed = nil
+            path = [key]
         }
     }
 

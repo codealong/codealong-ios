@@ -2,7 +2,7 @@ import Foundation
 
 /// The Mac writes live times into what a session says, `{ago:<ms>}` and `{for:<ms>}`, and code as
 /// backtick spans; this turns them into text for now.
-enum Live {
+enum Clock {
     static func text(_ s: String, now: Date) -> AttributedString {
         var out = ""
         var rest = Substring(s)

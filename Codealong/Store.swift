@@ -9,6 +9,8 @@ final class Store {
     private(set) var devices: [DeviceRow] = []
     private(set) var sessions: [SessionRow] = []
     private(set) var problem: String?
+    /// Goes up with every change the core reports, rows or not: a reply being written comes this way.
+    private(set) var tick = 0
     private(set) var linking = false
     var linkError: String?
     /// A link code the app was opened with (a QR code the camera read), waiting for you to say yes.
@@ -36,6 +38,7 @@ final class Store {
     func refresh() {
         guard let core else { return }
         let snap = core.snapshot()
+        tick &+= 1
         if snap.devices != devices { devices = snap.devices }
         if snap.sessions != sessions { sessions = snap.sessions }
     }
@@ -79,11 +82,16 @@ final class Store {
         refresh()
     }
 
-    /// A link from outside the app: only a Mac's link code, which waits for you to say yes, since
-    /// any page could open one.
+    /// A link from outside the app: a Mac's link code (`codealong://link/<code>`), which waits for
+    /// you to say yes, since any page could open one; or a session to show
+    /// (`codealong://session/<key>`), for a notification or a widget to open.
     func open(_ url: URL) {
-        guard url.scheme == "codealong", url.host() == "link" else { return }
-        offeredLink = url.absoluteString
+        guard url.scheme == "codealong" else { return }
+        switch url.host() {
+        case "link": offeredLink = url.absoluteString
+        case "session": openWhenListed = String(url.path(percentEncoded: false).dropFirst())
+        default: break
+        }
     }
 
     func conversation(_ key: String) -> Conversation? {

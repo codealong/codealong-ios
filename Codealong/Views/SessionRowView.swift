@@ -13,7 +13,7 @@ struct SessionRowView: View {
                         .lineLimit(1)
                     Spacer(minLength: 8)
                     TimelineView(.periodic(from: .now, by: 30)) { context in
-                        Text(Live.ago(row.lastPromptAt, now: context.date))
+                        Text(Clock.ago(row.lastPromptAt, now: context.date))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
@@ -25,7 +25,7 @@ struct SessionRowView: View {
                     .lineLimit(1)
                 if let detail = row.detail, !detail.isEmpty {
                     TimelineView(.periodic(from: .now, by: 30)) { context in
-                        Text(Live.text(detail, now: context.date))
+                        Text(Clock.text(detail, now: context.date))
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .lineLimit(2)

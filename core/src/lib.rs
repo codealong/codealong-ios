@@ -111,6 +111,8 @@ pub struct SessionRow {
     pub last_prompt_at: i64,
     pub last_activity: i64,
     pub status_since: Option<i64>,
+    /// Codealong runs it on its Mac (over ACP): its reply streams, and a turn can be stopped.
+    pub hosted: bool,
 }
 
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
@@ -260,6 +262,7 @@ impl Core {
                             last_prompt_at: s.last_prompt_at,
                             last_activity: s.last_activity,
                             status_since: s.status_since,
+                            hosted: s.hosted,
                         },
                         urgency(s.status),
                     ));
@@ -325,6 +328,27 @@ pub struct Pending {
     pub input: Option<String>,
     /// Why it can't be answered from here, when it can't.
     pub cannot: Option<String>,
+    /// It can be allowed from now on too (`Choice::Always`).
+    pub always: bool,
+    /// It's a plan to approve: `input` is the plan, in Markdown, to read as prose.
+    pub plan: bool,
+}
+
+/// How to answer what a session waits on.
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Choice {
+    Allow,
+    /// Allow this, and calls like it from now on.
+    Always,
+    Deny,
+}
+
+/// The reply a session Codealong runs is writing: what it said since its last tool call, and the
+/// tool it's running.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct Live {
+    pub text: String,
+    pub tool: Option<String>,
 }
 
 /// A session's conversation as far as it's been read: a page back from the newest, older pages
@@ -431,12 +455,39 @@ impl Conversation {
     }
 
     pub fn pending(&self) -> Result<Option<Pending>, CoreError> {
-        Ok(self.client.pending(&self.device, &self.key)?.map(|p| Pending { id: p.id, label: p.label, input: p.input, cannot: p.cannot }))
+        Ok(self.client.pending(&self.device, &self.key)?.map(|p| Pending { id: p.id, label: p.label, input: p.input, cannot: p.cannot, always: p.always, plan: p.plan }))
     }
 
-    /// Allows or denies the tool call `id`, if it's still the one the session waits on.
-    pub fn answer(&self, id: String, allow: bool) -> Result<String, CoreError> {
-        Ok(self.client.answer(&self.device, &self.key, &id, if allow { api::Answer::Allow } else { api::Answer::Deny })?)
+    /// Answers the tool call `id`, if it's still the one the session waits on.
+    pub fn answer(&self, id: String, choice: Choice) -> Result<String, CoreError> {
+        let answer = match choice {
+            Choice::Allow => api::Answer::Allow,
+            Choice::Always => api::Answer::Always,
+            Choice::Deny => api::Answer::Deny,
+        };
+        Ok(self.client.answer(&self.device, &self.key, &id, answer)?)
+    }
+
+    /// Asks the Mac to send this session's reply as it's written, while it's shown. Says false
+    /// when the Mac doesn't know how (an older build), and the conversation then only moves as
+    /// the feed says.
+    pub fn watch(&self) -> bool {
+        self.client.watch(&self.device, std::slice::from_ref(&self.key))
+    }
+
+    /// No more of its reply as it's written: it's not shown any more.
+    pub fn unwatch(&self) {
+        self.client.watch(&self.device, &[]);
+    }
+
+    /// The reply it's writing now, if it's taking a turn and the Mac sends it.
+    pub fn live(&self) -> Option<Live> {
+        self.client.stream(&self.device, &self.key).map(|s| Live { text: s.text, tool: s.tool })
+    }
+
+    /// Stops the turn it's taking (a session Codealong runs; needs remote control there).
+    pub fn stop(&self) -> Result<(), CoreError> {
+        Ok(self.client.cancel(&self.device, &self.key)?)
     }
 
     /// Sends the session a prompt, where it runs on its Mac. Says how it went.
