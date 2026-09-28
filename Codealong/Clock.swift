@@ -34,6 +34,12 @@ enum Clock {
         return brief(secs)
     }
 
+    /// How long until a time in milliseconds, briefly: `4m`, `3h`, `2d`.
+    static func until(_ ms: Int64, now: Date) -> String {
+        let secs = max(60, Double(ms) / 1000 - now.timeIntervalSince1970)
+        return brief(secs)
+    }
+
     private static func span(_ ms: Int64, now: Date) -> String {
         brief(max(0, now.timeIntervalSince1970 - Double(ms) / 1000))
     }

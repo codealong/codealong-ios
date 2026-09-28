@@ -2,9 +2,20 @@ import SwiftUI
 
 /// One session: its conversation, what it waits on you to allow, and a box to reply. It follows the
 /// session as it goes: a change in the Mac's feed brings in what came since.
+///
+/// It also works through what waits on you, as the Mac's session panel does with ⌘⏎: once you've
+/// replied or answered, the most urgent session still waiting on you is a tap away above the box,
+/// and holding Send sends and goes on at once. The chevron at the top skips to it; one skipped
+/// comes round again after the rest.
 struct SessionView: View {
     let key: String
+    /// Shows another session in this one's place.
+    var go: (String) -> Void = { _ in }
     @Environment(Store.self) private var store
+    /// The inbox's project: what's next stays in it.
+    @AppStorage("project") private var project = ""
+    /// You replied or answered here, so what's next is offered.
+    @State private var acted = false
     @Environment(\.dismiss) private var dismiss
     @State private var conversation: Conversation?
     @State private var items: [Item] = []
@@ -24,6 +35,25 @@ struct SessionView: View {
     @FocusState private var typing: Bool
 
     private var row: SessionRow? { store.sessions.first { $0.key == key } }
+    /// What waits on you after this one; the first is next.
+    private var after: [SessionRow] { store.queue(after: key, project: project) }
+
+    /// The conversation as it reads: what was said, and each run of tool calls between as one.
+    private var entries: [Entry] {
+        var out: [Entry] = []
+        var run: [Item] = []
+        for item in items {
+            if item.kind == .tool {
+                run.append(item)
+                continue
+            }
+            if !run.isEmpty { out.append(.tools(run)) }
+            run = []
+            out.append(.said(item))
+        }
+        if !run.isEmpty { out.append(.tools(run)) }
+        return out
+    }
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -34,8 +64,11 @@ struct SessionView: View {
                             .buttonStyle(.borderless)
                             .frame(maxWidth: .infinity)
                     }
-                    ForEach(items, id: \.id) { item in
-                        ItemView(item: item)
+                    ForEach(entries) { entry in
+                        switch entry {
+                        case .said(let item): ItemView(item: item)
+                        case .tools(let calls): ToolRun(calls: calls)
+                        }
                     }
                     if let live {
                         LiveReply(live: live)
@@ -74,6 +107,15 @@ struct SessionView: View {
                     if let row {
                         Text("\(Names.short(row.deviceName)) · \(row.project)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                     }
+                }
+            }
+            if let next = after.first {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { moveOn(to: next) } label: {
+                        Label("Next", systemImage: "chevron.down")
+                    }
+                    .keyboardShortcut("]", modifiers: .command)
+                    .accessibilityLabel("Next that waits on you: \(next.title)")
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
@@ -141,6 +183,10 @@ struct SessionView: View {
             if let said {
                 Text(said).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
             }
+            if acted, let next = after.first {
+                NextButton(next: next, more: after.count - 1, showDevice: store.devices.count > 1, showProject: project.isEmpty) { moveOn(to: next) }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
             // The reply box floats over the conversation in glass, as a control, not a bar.
             HStack(alignment: .bottom, spacing: 8) {
                 TextField(canAct ? "Reply" : (whyNot ?? "Reply"), text: $draft, axis: .vertical)
@@ -148,6 +194,12 @@ struct SessionView: View {
                     .focused($typing)
                     .disabled(!canAct || sending)
                     .padding(.vertical, 6)
+                    // ⌘⏎ on a keyboard sends and goes on, as on the Mac.
+                    .onKeyPress(.return, phases: .down) { press in
+                        guard press.modifiers.contains(.command), canSend else { return .ignored }
+                        Task { await send(thenNext: true) }
+                        return .handled
+                    }
                 Button {
                     Task { await send() }
                 } label: {
@@ -155,8 +207,20 @@ struct SessionView: View {
                         .font(.title2)
                         .symbolRenderingMode(.hierarchical)
                 }
-                .disabled(!canAct || sending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(!canSend)
                 .accessibilityLabel("Send")
+                // Held, as Messages offers its send options: send and go straight on.
+                .contextMenu {
+                    if let next = after.first {
+                        Button {
+                            Task { await send(thenNext: true) }
+                        } label: {
+                            Label("Send and go to next", systemImage: "arrow.forward")
+                            Text(next.title)
+                        }
+                        .disabled(!canSend)
+                    }
+                }
             }
             .padding(.leading, 16)
             .padding(.trailing, 6)
@@ -169,6 +233,8 @@ struct SessionView: View {
 
     /// Only a Mac with remote control on takes a reply or an answer from here.
     private var canAct: Bool { whyNot == nil }
+
+    private var canSend: Bool { canAct && !sending && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     /// A turn Codealong runs on its Mac can be stopped from here.
     private var canStop: Bool { canAct && row?.hosted == true && row?.status == .working }
@@ -183,6 +249,11 @@ struct SessionView: View {
     private func open() async {
         guard conversation == nil, let conv = store.conversation(key) else { return }
         conversation = conv
+        // Moved on to from another: say how that one went.
+        if let outcome = store.outcome {
+            said = outcome
+            store.outcome = nil
+        }
         await refresh()
         loading = false
         if row?.status == .unread { store.markSeen(key) }
@@ -219,15 +290,18 @@ struct SessionView: View {
         }
     }
 
-    private func send() async {
+    /// Sends the box; with `thenNext`, goes on to what waits on you once it's gone. One that
+    /// fails stays, saying why.
+    private func send(thenNext: Bool = false) async {
         guard let conv = conversation else { return }
         let text = draft
         sending = true
         defer { sending = false }
         do {
-            said = try await Task.detached { try conv.send(text: text) }.value
+            let result = try await Task.detached { try conv.send(text: text) }.value
             draft = ""
             typing = false
+            done(result, outcome: "Sent to “\(title)”.", thenNext: thenNext)
         } catch {
             said = words(error)
         }
@@ -236,12 +310,35 @@ struct SessionView: View {
     private func answer(_ p: Pending, _ choice: Choice) async {
         guard let conv = conversation else { return }
         do {
-            said = try await Task.detached { try conv.answer(id: p.id, choice: choice) }.value
+            let result = try await Task.detached { try conv.answer(id: p.id, choice: choice) }.value
             pending = nil
+            done(result, outcome: choice == .deny ? "Denied “\(title)”." : "Allowed “\(title)” to go on.")
         } catch {
             said = words(error)
         }
     }
+
+    /// A reply or an answer went: this one is dealt with until it waits on you anew, and what's
+    /// next is offered, or gone on to.
+    private func done(_ result: String, outcome: String, thenNext: Bool = false) {
+        store.dealtWith(key)
+        if thenNext, let next = after.first {
+            moveOn(to: next, outcome: outcome)
+            return
+        }
+        said = after.isEmpty ? "\(result) Nothing else waits on you." : result
+        withAnimation(.snappy) { acted = true }
+    }
+
+    /// Shows `next` in this one's place, saying there how this one went once you've acted here.
+    /// Left without a reply, this one comes round again after the rest.
+    private func moveOn(to next: SessionRow, outcome: String? = nil) {
+        if !acted && outcome == nil { store.passedOver(key) }
+        store.outcome = outcome ?? (acted ? said : nil)
+        go(next.key)
+    }
+
+    private var title: String { row?.title ?? "Session" }
 
     private func stop() async {
         guard let conv = conversation else { return }
@@ -253,6 +350,59 @@ struct SessionView: View {
         } catch {
             said = words(error)
         }
+    }
+}
+
+/// The next session that waits on you, offered once you've replied or answered: its title, where
+/// it is, and how many more wait after it.
+private struct NextButton: View {
+    let next: SessionRow
+    let more: Int
+    let showDevice: Bool
+    /// The inbox shows every project, so it says which it's in.
+    let showProject: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                StatusMark(status: next.status, stalled: next.stalled)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(next.title)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                    Text(place)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                Text("Next")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                Image(systemName: "chevron.forward")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Next: \(next.title)")
+        .accessibilityHint(more > 0 ? "\(more) more wait on you after it" : "The last that waits on you")
+    }
+
+    /// Where it is, and how many wait after it.
+    private var place: String {
+        var parts: [String] = []
+        if showDevice { parts.append(Names.short(next.deviceName)) }
+        if showProject { parts.append(next.project) }
+        if more > 0 { parts.append("\(more) more after it") }
+        if parts.isEmpty { parts.append("The last that waits on you") }
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -304,18 +454,29 @@ private struct ApprovalCard: View {
     }
 }
 
-/// One thing in the conversation: your prompts on the right, the agent's replies as text, tool
-/// calls as a line that opens to what went in and came out.
+/// A piece of the conversation: something said, or a run of tool calls.
+private enum Entry: Identifiable {
+    case said(Item)
+    case tools([Item])
+
+    var id: String {
+        switch self {
+        case .said(let item): item.id
+        case .tools(let calls): "run:" + (calls.first?.id ?? "")
+        }
+    }
+}
+
+/// One thing said: your prompts on the right, the agent's replies as text, notes small between.
 private struct ItemView: View {
     let item: Item
-    @State private var open = false
 
     var body: some View {
         switch item.kind {
         case .you:
             HStack {
                 Spacer(minLength: 40)
-                Text(markdown(item.text))
+                Text(inline(item.text))
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .background(Color.accentColor.opacity(0.15), in: .rect(cornerRadius: 16))
@@ -324,39 +485,96 @@ private struct ItemView: View {
         case .agent:
             MarkdownText(text: item.text)
         case .tool:
-            VStack(alignment: .leading, spacing: 6) {
-                Button {
-                    withAnimation(.snappy) { open.toggle() }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: item.failed ? "exclamationmark.triangle.fill" : "wrench.and.screwdriver")
-                            .foregroundStyle(item.failed ? .red : .secondary)
-                            .font(.caption)
-                        Text(markdown(item.text))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(open ? nil : 1)
-                        Spacer(minLength: 0)
-                    }
-                }
-                .buttonStyle(.plain)
-                if open {
-                    if let input = item.input, !input.isEmpty { Block(text: input) }
-                    if let output = item.output, !output.isEmpty { Block(text: output, failed: item.failed) }
-                }
-            }
+            ToolLine(item: item)
         case .note:
-            Text(markdown(item.text))
+            Text(inline(item.text))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity)
         }
     }
+}
 
-    private func markdown(_ s: String) -> AttributedString {
-        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        return (try? AttributedString(markdown: s, options: options)) ?? AttributedString(s)
+/// A run of tool calls between what was said: the latest as a line, the ones before it folded
+/// into one that says how many and which tools, as the Mac's panel does. Plain text, no icons:
+/// the calls are the quiet part of the conversation.
+private struct ToolRun: View {
+    let calls: [Item]
+    @State private var open = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Folding one line into one saves nothing, so two calls show as two.
+            if calls.count > 2 {
+                Button {
+                    withAnimation(.snappy) { open.toggle() }
+                } label: {
+                    Text(open ? "Hide \(calls.count - 1) tool calls" : summary)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                if open {
+                    ForEach(calls.dropLast(), id: \.id) { ToolLine(item: $0) }
+                }
+            } else {
+                ForEach(calls.dropLast(), id: \.id) { ToolLine(item: $0) }
+            }
+            if let last = calls.last {
+                ToolLine(item: last)
+            }
+        }
     }
+
+    /// "4 tool calls · Bash, Read · 1 failed" for the ones before the latest.
+    private var summary: String {
+        let earlier = calls.dropLast()
+        var names: [String] = []
+        for call in earlier {
+            let name = call.text.components(separatedBy: " · ").first ?? call.text
+            if !names.contains(name) { names.append(name) }
+        }
+        var parts = ["\(earlier.count) tool calls", names.prefix(3).joined(separator: ", ")]
+        let failed = earlier.filter(\.failed).count
+        if failed > 0 { parts.append("\(failed) failed") }
+        return parts.joined(separator: " · ")
+    }
+}
+
+/// A tool call as one quiet line, red when it failed, that opens to what went in and came out.
+private struct ToolLine: View {
+    let item: Item
+    @State private var open = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                withAnimation(.snappy) { open.toggle() }
+            } label: {
+                Text(inline(item.text))
+                    .font(.caption)
+                    .foregroundStyle(item.failed ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+                    .lineLimit(open ? nil : 1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(item.failed ? "Failed: \(item.text)" : item.text)
+            if open {
+                if let input = item.input, !input.isEmpty { Block(text: input) }
+                if let output = item.output, !output.isEmpty { Block(text: output, failed: item.failed) }
+            }
+        }
+    }
+}
+
+/// Inline Markdown, code spans and emphasis, keeping the text's own line breaks.
+private func inline(_ s: String) -> AttributedString {
+    let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+    return (try? AttributedString(markdown: s, options: options)) ?? AttributedString(s)
 }
 
 /// The reply a session Codealong runs is writing, as it comes, and the tool it's running.

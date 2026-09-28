@@ -101,7 +101,8 @@ struct InboxView: View {
             }
             .navigationDestination(for: String.self) { key in
                 // A view of its own per session: going from one to another by a link keeps nothing.
-                SessionView(key: key).id(key)
+                // Next puts the next session in this one's place, so Back is still the inbox.
+                SessionView(key: key, go: { next in path = [next] }).id(key)
             }
             .sheet(isPresented: $showingMacs) {
                 DevicesView()
@@ -192,14 +193,15 @@ struct InboxView: View {
             let text = "\(row.title) \(row.project) \(row.repo) \(row.branch ?? "") \(row.deviceName) \(row.detail ?? "")".lowercased()
             return words.allSatisfy { text.contains($0) }
         }
-        let buckets: [(String, (Status) -> Bool)] = [
-            ("Needs you", { $0 == .needs || $0 == .error }),
-            ("Your turn", { $0 == .unread }),
-            ("Working", { $0 == .working }),
-            ("Recent", { $0 == .idle || $0 == .stopped }),
+        let titles: [(InboxSection, String)] = [
+            (.needsYou, "Needs you"),
+            (.yourTurn, "Your turn"),
+            (.working, "Working"),
+            (.snoozed, "Snoozed"),
+            (.recent, "Recent"),
         ]
-        return buckets.compactMap { title, test in
-            let rows = shown.filter { test($0.status) }
+        return titles.compactMap { section, title in
+            let rows = shown.filter { $0.section == section }
             return rows.isEmpty ? nil : Group(title: title, rows: rows)
         }
     }

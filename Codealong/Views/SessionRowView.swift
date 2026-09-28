@@ -12,7 +12,8 @@ struct SessionRowView: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
-            StatusMark(status: row.status, stalled: row.stalled)
+            // A snoozed one waits apart, unmarked, as on the Mac.
+            StatusMark(status: row.snoozedUntil == nil ? row.status : .idle, stalled: row.stalled)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(row.title)
@@ -20,10 +21,19 @@ struct SessionRowView: View {
                         .lineLimit(1)
                     Spacer(minLength: 0)
                     TimelineView(.periodic(from: .now, by: 30)) { context in
-                        Text(Clock.ago(row.lastPromptAt, now: context.date))
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
+                        if let until = row.snoozedUntil {
+                            // How long until it's back.
+                            Label(Clock.until(until, now: context.date), systemImage: "moon.zzz")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                                .accessibilityLabel("Snoozed, back in \(Clock.until(until, now: context.date))")
+                        } else {
+                            Text(Clock.ago(row.lastPromptAt, now: context.date))
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
                     }
                 }
                 if let detail = row.detail, !detail.isEmpty {
@@ -46,7 +56,7 @@ struct SessionRowView: View {
     }
 
     private var wantsYou: Bool {
-        row.status == .needs || row.status == .error || row.status == .unread
+        row.section == .needsYou || row.section == .yourTurn
     }
 
     /// Where it is: the project and branch, and the Mac when there's more than one.

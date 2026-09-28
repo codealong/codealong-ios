@@ -20,6 +20,14 @@ final class Store {
     var openWhenListed: String?
     /// Something to tell you once: what's next after a start that needs you at the Mac, say.
     var notice: String?
+    /// How the session you just moved on from went ("Sent to …"), for the next one to say.
+    var outcome: String?
+    /// Sessions you replied to or answered here, with the time of the status each had then: one is
+    /// left out of what's next until it waits on you anew, since the Mac's feed takes a moment to
+    /// show an answer.
+    private var handled: [String: Int64] = [:]
+    /// Sessions you went on from without replying, in the order you left them.
+    private var passed: [String] = []
 
     @ObservationIgnored private var core: Core?
 
@@ -94,6 +102,32 @@ final class Store {
         case "session": openWhenListed = String(url.path(percentEncoded: false).dropFirst())
         default: break
         }
+    }
+
+    /// What waits on you besides the session `key`, the next first: Needs you, then Your turn, in
+    /// the inbox's order, the Mac's session panel's, so next is always the most urgent one left.
+    /// Ones you went on from without replying come round again after the rest, and ones you've
+    /// dealt with stay out until they wait on you anew. `project` narrows it as the inbox is.
+    func queue(after key: String, project: String) -> [SessionRow] {
+        let waiting = sessions.filter { row in
+            guard row.key != key, row.section == .needsYou || row.section == .yourTurn, project.isEmpty || row.project == project else { return false }
+            guard let at = handled[row.key] else { return true }
+            return (row.statusSince ?? row.lastActivity) > at
+        }
+        return waiting.filter { !passed.contains($0.key) } + passed.compactMap { key in waiting.first { $0.key == key } }
+    }
+
+    /// You replied to or answered `key`.
+    func dealtWith(_ key: String) {
+        guard let row = sessions.first(where: { $0.key == key }) else { return }
+        handled[key] = row.statusSince ?? row.lastActivity
+        passed.removeAll { $0 == key }
+    }
+
+    /// You went on from `key` without replying: it comes round again after the rest.
+    func passedOver(_ key: String) {
+        passed.removeAll { $0 == key }
+        passed.append(key)
     }
 
     func conversation(_ key: String) -> Conversation? {

@@ -87,6 +87,18 @@ pub struct DeviceRow {
     pub sessions: u32,
 }
 
+/// The inbox's sections, in order, as the Mac's Sessions view has them. What waits on you is the
+/// first two, which send and next works through.
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InboxSection {
+    NeedsYou,
+    YourTurn,
+    Working,
+    /// Snoozed from its Mac and not running: it waits apart until its time.
+    Snoozed,
+    Recent,
+}
+
 /// A session, as the inbox lists it.
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
 pub struct SessionRow {
@@ -113,12 +125,15 @@ pub struct SessionRow {
     pub status_since: Option<i64>,
     /// Codealong runs it on its Mac (over ACP): its reply streams, and a turn can be stopped.
     pub hosted: bool,
+    pub section: InboxSection,
+    /// When it's back, while it's snoozed and not running.
+    pub snoozed_until: Option<i64>,
 }
 
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
 pub struct Snapshot {
     pub devices: Vec<DeviceRow>,
-    /// Most urgent first, then the one you last sent a prompt, as the Mac's board sorts them.
+    /// In the inbox's order (`inbox_order`).
     pub sessions: Vec<SessionRow>,
     /// The projects those sessions are in, lined up across Macs (`Projects`): by name, with
     /// worktrees in no project last, as the Mac lists them.
@@ -224,7 +239,7 @@ impl Core {
         self.client.with_feeds(|feeds| {
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
             let mut devices = Vec::new();
-            let mut sessions: Vec<(SessionRow, u8)> = Vec::new();
+            let mut sessions: Vec<SessionRow> = Vec::new();
             let projects = Projects::of_feeds(feeds);
             for (d, replica) in feeds {
                 let mut count = 0;
@@ -248,8 +263,9 @@ impl Core {
                         continue;
                     }
                     count += 1;
-                    sessions.push((
-                        SessionRow {
+                    let status: Status = s.status.into();
+                    let snoozed_until = s.snoozed_until.filter(|&t| t > now && status != Status::Working);
+                    sessions.push(SessionRow {
                             key: remote_key(&d.short, &s.key),
                             device: d.key.clone(),
                             device_name: d.name.clone(),
@@ -257,7 +273,7 @@ impl Core {
                             title: s.title.clone(),
                             headline: s.headline.clone(),
                             detail: s.detail.clone(),
-                            status: s.status.into(),
+                            status,
                             stalled: s.stalled_since.is_some(),
                             harness: s.harness.word().to_string(),
                             account: s.account.clone(),
@@ -269,9 +285,9 @@ impl Core {
                             last_activity: s.last_activity,
                             status_since: s.status_since,
                             hosted: s.hosted,
-                        },
-                        urgency(s.status),
-                    ));
+                            section: section(status, snoozed_until),
+                            snoozed_until,
+                        });
                 }
                 devices.push(DeviceRow {
                     key: d.key.clone(),
@@ -285,8 +301,7 @@ impl Core {
                     sessions: count,
                 });
             }
-            sessions.sort_by(|(a, ua), (b, ub)| ua.cmp(ub).then(b.last_prompt_at.cmp(&a.last_prompt_at)).then(b.last_activity.cmp(&a.last_activity)));
-            let sessions: Vec<SessionRow> = sessions.into_iter().map(|(s, _)| s).collect();
+            sessions.sort_by(inbox_order);
             let projects = project_list(sessions.iter().map(|s| s.project.as_str()));
             Snapshot { devices, sessions, projects }
         })
@@ -347,16 +362,35 @@ fn slugs(lane: &Lane) -> Vec<String> {
     [&lane.repo_slug, &lane.repo_slug_now].into_iter().flatten().map(|s| s.to_lowercase()).collect()
 }
 
-/// How urgent a status is, as the Mac's board ranks it (board.rs `urgency`): idle and stopped
-/// rank the same, since a Codex thread is never stopped.
-fn urgency(s: PeerStatus) -> u8 {
-    match s {
-        PeerStatus::Needs => 0,
-        PeerStatus::Error => 1,
-        PeerStatus::Working => 2,
-        PeerStatus::Unread => 3,
-        PeerStatus::Idle | PeerStatus::Stopped => 4,
+/// The inbox section a session goes in: a snoozed one waits apart unless it's running, as on the
+/// Mac (SessionsView.tsx `snoozedApart`).
+fn section(status: Status, snoozed_until: Option<i64>) -> InboxSection {
+    match (status, snoozed_until) {
+        (Status::Working, _) => InboxSection::Working,
+        (_, Some(_)) => InboxSection::Snoozed,
+        (Status::Needs | Status::Error, None) => InboxSection::NeedsYou,
+        (Status::Unread, None) => InboxSection::YourTurn,
+        (Status::Idle | Status::Stopped, None) => InboxSection::Recent,
     }
+}
+
+/// The inbox's order, the Mac's Sessions view's (SessionsView.tsx `timeSections`): section by
+/// section, Needs you the longest wait first, so a new one can't keep pushing an old one down;
+/// Your turn and Working, which read as a feed, the newest status first; snoozed ones the soonest
+/// back first; the rest by the one you last sent a prompt. A status's time doesn't move while it
+/// lasts, so rows hold their places, and send and next goes down the list as it reads.
+fn inbox_order(a: &SessionRow, b: &SessionRow) -> std::cmp::Ordering {
+    let since = |s: &SessionRow| s.status_since.unwrap_or(s.last_activity);
+    let rank = |s: &SessionRow| s.section as u8;
+    rank(a)
+        .cmp(&rank(b))
+        .then_with(|| match a.section {
+            InboxSection::NeedsYou => since(a).cmp(&since(b)),
+            InboxSection::YourTurn | InboxSection::Working => since(b).cmp(&since(a)),
+            InboxSection::Snoozed => a.snoozed_until.cmp(&b.snoozed_until),
+            InboxSection::Recent => b.last_prompt_at.cmp(&a.last_prompt_at).then(b.last_activity.cmp(&a.last_activity)),
+        })
+        .then_with(|| a.key.cmp(&b.key))
 }
 
 #[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -703,6 +737,58 @@ impl Core {
         let started = self.client.start_session(&device, &spec)?;
         let short = device.get(..10).unwrap_or(&device);
         Ok(StartedSession { key: started.key.map(|k| remote_key(short, &k)), message: started.message })
+    }
+}
+
+#[cfg(test)]
+mod order_tests {
+    use super::*;
+
+    fn row(key: &str, status: Status, since: i64, snoozed_until: Option<i64>, last_prompt_at: i64) -> SessionRow {
+        SessionRow {
+            key: key.into(),
+            device: String::new(),
+            device_name: String::new(),
+            device_online: true,
+            title: key.into(),
+            headline: String::new(),
+            detail: None,
+            status,
+            stalled: false,
+            harness: String::new(),
+            account: String::new(),
+            project: String::new(),
+            repo: String::new(),
+            worktree: String::new(),
+            branch: None,
+            last_prompt_at,
+            last_activity: since,
+            status_since: Some(since),
+            hosted: false,
+            section: section(status, snoozed_until),
+            snoozed_until,
+        }
+    }
+
+    #[test]
+    fn the_inbox_reads_as_the_macs_sessions_view() {
+        let mut rows = vec![
+            row("idle-old", Status::Idle, 10, None, 100),
+            row("turn-old", Status::Unread, 20, None, 0),
+            row("needs-new", Status::Needs, 50, None, 0),
+            row("snoozed-later", Status::Needs, 5, Some(900), 0),
+            row("working", Status::Working, 40, Some(800), 0),
+            row("error-old", Status::Error, 30, None, 0),
+            row("turn-new", Status::Unread, 60, None, 0),
+            row("snoozed-sooner", Status::Unread, 5, Some(700), 0),
+            row("idle-new", Status::Stopped, 10, None, 300),
+        ];
+        rows.sort_by(inbox_order);
+        let keys: Vec<&str> = rows.iter().map(|r| r.key.as_str()).collect();
+        // Needs you the longest wait first, errors with them; Your turn the newest first; a
+        // running session stays in Working though snoozed; snoozed ones the soonest back first.
+        assert_eq!(keys, ["error-old", "needs-new", "turn-new", "turn-old", "working", "snoozed-sooner", "snoozed-later", "idle-new", "idle-old"]);
+        assert_eq!(rows[4].section, InboxSection::Working);
     }
 }
 

@@ -5,10 +5,16 @@ one list, most urgent first, and, where a Mac has remote control on, a way to ac
 another of your devices to the Macs, so it links and talks to them as they talk to each other,
 peer to peer, with no server of Codealong's in between.
 
-Status: early. It links with your Macs, lists their sessions, narrowed to a project if you like,
-and shows each one's conversation, a hosted session's reply as it's written. Where a Mac has
-remote control on, it replies, answers approvals, stops a hosted turn and starts sessions. The
-plan is in the main repo's `design/plans/ios.md`.
+Status: early. It links with your Macs, lists their sessions in the sections and order of the
+Mac's Sessions view (snoozed ones apart), narrowed to a project if you like, and shows each one's
+conversation, a hosted session's reply as it's written. Where a Mac has remote control on, it
+replies, answers approvals, stops a hosted turn and starts sessions. The plan is in the main
+repo's `design/plans/ios.md`.
+
+It works through what waits on you as the Mac's session panel does: once you've replied or
+answered, the most urgent session still waiting on you is a tap away above the reply box (Next),
+and holding Send sends and goes straight on (⌘⏎ on a keyboard). The chevron at the top skips to
+it; one skipped comes round again after the rest.
 
 Projects are the Macs' own: each session comes in its Mac's project, and the phone lines them up
 across Macs as a Mac lines up another's worktrees, by repo. A worktree goes into the project any
