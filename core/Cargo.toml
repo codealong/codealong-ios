@@ -1,0 +1,28 @@
+# The phone app's Rust core: a thin layer over codealong-peer's client, which the Mac app's engine
+# shares, so the phone speaks exactly what the Macs speak. UniFFI makes its Swift bindings.
+[workspace]
+members = [".", "bindgen"]
+
+[package]
+name = "codealong-mobile"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "codealong_mobile"
+crate-type = ["staticlib", "lib"]
+
+[dependencies]
+# Until codealong-peer lands in origin/main this is the worktree it's being made in; then it's a
+# git dependency pinned to an origin/main commit (see CLAUDE.md).
+codealong-peer = { path = "../../codealong-peer/src-tauri/peer" }
+iroh = "1"
+serde_json = "1"
+uniffi = "0.32"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = "s"

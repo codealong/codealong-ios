@@ -1,0 +1,10 @@
+# UniFFI's binding generator, built for this Mac only; it reads the core's library and writes the
+# Swift side (scripts/build-core.sh).
+[package]
+name = "uniffi-bindgen"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+uniffi = { version = "0.32", features = ["cli"] }

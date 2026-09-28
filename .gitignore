@@ -1,0 +1,9 @@
+# Generated: the Xcode project (from project.yml), its Info.plist, the Rust core's bindings and
+# framework (scripts/build-core.sh).
+/Codealong.xcodeproj/
+/Codealong/Info.plist
+/Codealong/Generated/
+/build/
+/DerivedData/
+xcuserdata/
+.DS_Store

@@ -1,0 +1,56 @@
+# XcodeGen's spec for Codealong.xcodeproj, which is generated (scripts/build.sh) and not kept in
+# git: agents edit this file, never a pbxproj.
+name: Codealong
+options:
+  bundleIdPrefix: dev.codealong
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    # The core is built for Apple silicon simulators only (scripts/build-core.sh).
+    EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  Codealong:
+    type: application
+    platform: iOS
+    sources:
+      - path: Codealong
+    dependencies:
+      # The Rust core, built by scripts/build-core.sh: a static library, so nothing is embedded.
+      - framework: build/CodealongCore.xcframework
+        embed: false
+      # iroh watches the network with Network.framework and reads DNS settings with libresolv.
+      - sdk: Network.framework
+      - sdk: SystemConfiguration.framework
+      - sdk: Security.framework
+      - sdk: libresolv.tbd
+    info:
+      path: Codealong/Info.plist
+      properties:
+        CFBundleDisplayName: Codealong
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSLocalNetworkUsageDescription: Codealong connects straight to your Macs when they're on the same network as this phone.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.codealong.app
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        CODE_SIGN_STYLE: Automatic
