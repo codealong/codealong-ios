@@ -2,13 +2,15 @@ import SwiftUI
 
 /// Every session on your linked Macs in one quiet list, most urgent first, as the Mac's board ranks
 /// them. Nothing above the content: the controls are the glass toolbar at the bottom, where the
-/// thumb is (Macs, search, a new session), as iOS 26's own apps have them.
+/// thumb is (Macs and projects, search, a new session), as iOS 26's own apps have them.
 struct InboxView: View {
     @Environment(Store.self) private var store
     @State private var showingMacs = false
     @State private var showingNew = false
     @State private var query = ""
     @State private var path: [String] = []
+    /// The project the list is narrowed to, as the Macs line projects up; empty for all of them.
+    @AppStorage("project") private var project = ""
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -25,7 +27,7 @@ struct InboxView: View {
                 ForEach(sections, id: \.title) { section in
                     Section {
                         ForEach(section.rows, id: \.key) { row in
-                            SessionRowView(row: row, showDevice: store.devices.count > 1)
+                            SessionRowView(row: row, showDevice: store.devices.count > 1, showProject: project.isEmpty)
                                 .contentShape(.rect)
                                 .onTapGesture { path.append(row.key) }
                                 .swipeActions(edge: .trailing) {
@@ -52,6 +54,8 @@ struct InboxView: View {
             .contentMargins(.top, 0, for: .scrollContent)
             .overlay { emptyState }
             .searchable(text: $query, prompt: "Search")
+            // A project's name takes the toolbar's room, so search folds into its button then.
+            .searchToolbarBehavior(project.isEmpty ? .automatic : .minimize)
             .toolbar(.hidden, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .bottomBar) {
@@ -60,6 +64,29 @@ struct InboxView: View {
                             .labelStyle(.iconOnly)
                     }
                     .tint(macsNeedAttention ? .orange : nil)
+                }
+                // Beside Macs, in the same glass: a folder while every project shows, the
+                // project's name while the list is narrowed to it.
+                if projects.count > 1 || !project.isEmpty {
+                    ToolbarItem(placement: .bottomBar) {
+                        Menu {
+                            Picker("Project", selection: $project) {
+                                Text("All projects").tag("")
+                                ForEach(projects, id: \.self) { name in
+                                    Text(name).tag(name)
+                                }
+                            }
+                        } label: {
+                            if project.isEmpty {
+                                Label("Projects", systemImage: "folder")
+                                    .labelStyle(.iconOnly)
+                            } else {
+                                Text(project)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .accessibilityLabel(project.isEmpty ? "Projects" : "Project: \(project)")
+                    }
                 }
                 ToolbarSpacer(.fixed, placement: .bottomBar)
                 DefaultToolbarItem(kind: .search, placement: .bottomBar)
@@ -80,7 +107,7 @@ struct InboxView: View {
                 DevicesView()
             }
             .sheet(isPresented: $showingNew) {
-                NewSessionView()
+                NewSessionView(project: project.isEmpty ? nil : project)
             }
             // A session started here, or a link to one, opens once its Mac lists it.
             .onChange(of: store.sessions) { _, _ in openListed() }
@@ -115,6 +142,14 @@ struct InboxView: View {
             }
         } else if !query.isEmpty && sections.isEmpty {
             ContentUnavailableView.search(text: query)
+        } else if sections.isEmpty && !project.isEmpty {
+            ContentUnavailableView {
+                Label("All quiet in \(project)", systemImage: "checkmark.circle")
+            } description: {
+                Text("Nothing in it needs you, and nothing ran in the last three days.")
+            } actions: {
+                Button("Show all projects") { project = "" }
+            }
         } else if sections.isEmpty {
             ContentUnavailableView("All quiet", systemImage: "checkmark.circle", description: Text("Nothing needs you, and nothing ran in the last three days."))
         }
@@ -139,6 +174,12 @@ struct InboxView: View {
         store.devices.filter { $0.online && !$0.linkedBack }
     }
 
+    /// The projects the list can narrow to, as the core lists them. One narrowed to stays while
+    /// it has nothing to show, so the menu still says so.
+    private var projects: [String] {
+        project.isEmpty || store.projects.contains(project) ? store.projects : [project] + store.projects
+    }
+
     private struct Group {
         let title: String
         let rows: [SessionRow]
@@ -146,7 +187,8 @@ struct InboxView: View {
 
     private var sections: [Group] {
         let words = query.lowercased().split(separator: " ")
-        let shown = words.isEmpty ? store.sessions : store.sessions.filter { row in
+        let inProject = project.isEmpty ? store.sessions : store.sessions.filter { $0.project == project }
+        let shown = words.isEmpty ? inProject : inProject.filter { row in
             let text = "\(row.title) \(row.project) \(row.repo) \(row.branch ?? "") \(row.deviceName) \(row.detail ?? "")".lowercased()
             return words.allSatisfy { text.contains($0) }
         }

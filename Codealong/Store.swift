@@ -8,6 +8,7 @@ import UIKit
 final class Store {
     private(set) var devices: [DeviceRow] = []
     private(set) var sessions: [SessionRow] = []
+    private(set) var projects: [String] = []
     private(set) var problem: String?
     /// Goes up with every change the core reports, rows or not: a reply being written comes this way.
     private(set) var tick = 0
@@ -41,6 +42,7 @@ final class Store {
         tick &+= 1
         if snap.devices != devices { devices = snap.devices }
         if snap.sessions != sessions { sessions = snap.sessions }
+        if snap.projects != projects { projects = snap.projects }
     }
 
     func start() {

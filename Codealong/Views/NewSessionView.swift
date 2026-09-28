@@ -3,6 +3,8 @@ import SwiftUI
 /// Starts a session on one of your Macs: which Mac, which of its worktrees, which account and
 /// where it runs there, and the prompt. The Mac starts it as its own window would.
 struct NewSessionView: View {
+    /// The project the inbox is narrowed to: its worktrees come first.
+    var project: String?
     @Environment(Store.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var device: String?
@@ -32,7 +34,7 @@ struct NewSessionView: View {
                     }
                     if let device {
                         NavigationLink {
-                            WorktreePicker(worktrees: store.worktrees(device), chosen: $worktree)
+                            WorktreePicker(worktrees: store.worktrees(device), chosen: $worktree, first: project)
                         } label: {
                             LabeledContent("Worktree") {
                                 Text(worktree.map { "\($0.project) · \($0.name)" } ?? "Choose")
@@ -151,10 +153,12 @@ struct NewSessionView: View {
     }
 }
 
-/// A Mac's worktrees to start in, grouped by project, most recently active first.
+/// A Mac's worktrees to start in, grouped by project, most recently active first, the project
+/// the inbox is narrowed to before the others.
 private struct WorktreePicker: View {
     let worktrees: [Worktree]
     @Binding var chosen: Worktree?
+    let first: String?
     @Environment(\.dismiss) private var dismiss
     @State private var search = ""
 
@@ -169,6 +173,9 @@ private struct WorktreePicker: View {
         for w in hits {
             if groups[w.project] == nil { order.append(w.project) }
             groups[w.project, default: []].append(w)
+        }
+        if let first, let i = order.firstIndex(of: first) {
+            order.insert(order.remove(at: i), at: 0)
         }
         return order.map { ($0, groups[$0] ?? []) }
     }

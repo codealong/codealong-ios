@@ -7,6 +7,8 @@ struct SessionRowView: View {
     let row: SessionRow
     /// More than one Mac is linked, so each row says which it's on.
     let showDevice: Bool
+    /// The list shows every project, so each row says which it's in.
+    var showProject = true
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -51,7 +53,7 @@ struct SessionRowView: View {
     private var place: String {
         var parts: [String] = []
         if showDevice { parts.append(Names.short(row.deviceName)) }
-        parts.append(row.project)
+        if showProject { parts.append(row.project) }
         if let branch = row.branch, !branch.isEmpty { parts.append(branch) }
         return parts.joined(separator: " · ")
     }

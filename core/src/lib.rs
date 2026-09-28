@@ -11,7 +11,7 @@ use std::time::Duration;
 use codealong_peer::api;
 use codealong_peer::client::Client;
 use codealong_peer::feed::{remote_key, split_remote};
-use codealong_peer::model::{Session, Status as PeerStatus};
+use codealong_peer::model::{Lane, Session, Status as PeerStatus, ELSEWHERE};
 use codealong_peer::{net, proto};
 
 uniffi::setup_scaffolding!();
@@ -120,6 +120,9 @@ pub struct Snapshot {
     pub devices: Vec<DeviceRow>,
     /// Most urgent first, then the one you last sent a prompt, as the Mac's board sorts them.
     pub sessions: Vec<SessionRow>,
+    /// The projects those sessions are in, lined up across Macs (`Projects`): by name, with
+    /// worktrees in no project last, as the Mac lists them.
+    pub projects: Vec<String>,
 }
 
 #[derive(uniffi::Object)]
@@ -222,20 +225,23 @@ impl Core {
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
             let mut devices = Vec::new();
             let mut sessions: Vec<(SessionRow, u8)> = Vec::new();
+            let projects = Projects::of_feeds(feeds);
             for (d, replica) in feeds {
                 let mut count = 0;
                 let mut seen = std::collections::HashSet::new();
                 // A session shows under every lane it worked in; its own lane lists it without a
                 // visitor note, so that one goes first.
-                let mut all: Vec<(&codealong_peer::model::Lane, &Session)> = replica.lanes.iter().flat_map(|l| l.sessions.iter().map(move |s| (l, s))).collect();
+                let mut all: Vec<(&Lane, &Session)> = replica.lanes.iter().flat_map(|l| l.sessions.iter().map(move |s| (l, s))).collect();
                 all.sort_by_key(|(_, s)| s.visitor.is_some());
                 for (lane, s) in all {
                     if s.archived || !seen.insert(s.key.as_str()) {
                         continue;
                     }
                     let urgent = matches!(s.status, PeerStatus::Needs | PeerStatus::Error | PeerStatus::Working | PeerStatus::Unread);
-                    // Worktrees in no project stay off the Mac's board unless they need you.
-                    if lane.hidden && !matches!(s.status, PeerStatus::Needs | PeerStatus::Error) {
+                    // Worktrees in no project stay off the Mac's board unless they need you, and
+                    // off here unless another Mac has their repo in a project.
+                    let project = projects.lane(lane);
+                    if lane.hidden && project.is_none() && !matches!(s.status, PeerStatus::Needs | PeerStatus::Error) {
                         continue;
                     }
                     if !urgent && now - s.last_prompt_at > RECENT_MS {
@@ -255,7 +261,7 @@ impl Core {
                             stalled: s.stalled_since.is_some(),
                             harness: s.harness.word().to_string(),
                             account: s.account.clone(),
-                            project: lane.project.clone(),
+                            project: project.unwrap_or_else(|| lane.project.clone()),
                             repo: lane.repo.clone(),
                             worktree: lane.callsign.clone(),
                             branch: s.branch.clone().or_else(|| lane.branch.clone()),
@@ -280,9 +286,65 @@ impl Core {
                 });
             }
             sessions.sort_by(|(a, ua), (b, ub)| ua.cmp(ub).then(b.last_prompt_at.cmp(&a.last_prompt_at)).then(b.last_activity.cmp(&a.last_activity)));
-            Snapshot { devices, sessions: sessions.into_iter().map(|(s, _)| s).collect() }
+            let sessions: Vec<SessionRow> = sessions.into_iter().map(|(s, _)| s).collect();
+            let projects = project_list(sessions.iter().map(|s| s.project.as_str()));
+            Snapshot { devices, sessions, projects }
         })
     }
+}
+
+/// Projects lined up across Macs, as a Mac lines another device's worktrees up with its own
+/// (peers.rs, `project_here`): by repo, since a repo is the same everywhere while what each Mac
+/// calls its project is its own. A worktree goes into the project a Mac has its repo in (the
+/// first Mac that does, in the order they're listed); failing that, into a project of the same
+/// name on any Mac, spelled as the first one spells it; failing that, it's in no project. So a
+/// worktree its own Mac has in no project shows in another Mac's project of its repo.
+struct Projects {
+    /// Lowercase `owner/name` to project.
+    by_repo: std::collections::HashMap<String, String>,
+    names: Vec<String>,
+}
+
+impl Projects {
+    fn new<'a>(lanes: impl IntoIterator<Item = (&'a str, Vec<String>)>) -> Projects {
+        let mut by_repo = std::collections::HashMap::new();
+        let mut names: Vec<String> = Vec::new();
+        for (project, slugs) in lanes.into_iter().filter(|(p, _)| *p != ELSEWHERE) {
+            for slug in slugs {
+                by_repo.entry(slug).or_insert_with(|| project.to_string());
+            }
+            if !names.iter().any(|n| n.eq_ignore_ascii_case(project)) {
+                names.push(project.to_string());
+            }
+        }
+        Projects { by_repo, names }
+    }
+
+    fn of_feeds(feeds: &[(codealong_peer::client::Device, &codealong_peer::feed::Replica)]) -> Projects {
+        Projects::new(feeds.iter().flat_map(|(_, r)| r.lanes.iter()).map(|l| (l.project.as_str(), slugs(l))))
+    }
+
+    /// The project a worktree shows in, or none when it's in none on any Mac.
+    fn of(&self, project: &str, slugs: &[String]) -> Option<String> {
+        slugs.iter().find_map(|s| self.by_repo.get(s)).or_else(|| self.names.iter().find(|n| n.eq_ignore_ascii_case(project))).cloned()
+    }
+
+    fn lane(&self, lane: &Lane) -> Option<String> {
+        self.of(&lane.project, &slugs(lane))
+    }
+}
+
+/// Projects by name, each once, with worktrees in no project last.
+fn project_list<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let mut out: Vec<String> = names.map(String::from).collect();
+    out.sort_by_key(|n| (n == ELSEWHERE, n.to_lowercase()));
+    out.dedup();
+    out
+}
+
+/// Every name a worktree's repo goes by: its remote's, and the one GitHub gives it now.
+fn slugs(lane: &Lane) -> Vec<String> {
+    [&lane.repo_slug, &lane.repo_slug_now].into_iter().flatten().map(|s| s.to_lowercase()).collect()
 }
 
 /// How urgent a status is, as the Mac's board ranks it (board.rs `urgency`): idle and stopped
@@ -591,16 +653,22 @@ fn start_place(a: &api::StartAccount) -> Option<String> {
 
 #[uniffi::export]
 impl Core {
-    /// A Mac's worktrees from its feed, most recently active first; worktrees in no project stay
-    /// off, as on its board.
+    /// A Mac's worktrees from its feed, most recently active first, in their projects as the
+    /// inbox lines them up; worktrees in no project stay off, as on its board.
     pub fn worktrees(&self, device: String) -> Vec<Worktree> {
         self.client.with_feeds(|feeds| {
+            let projects = Projects::of_feeds(feeds);
             let mut out: Vec<Worktree> = feeds
                 .iter()
                 .filter(|(d, _)| d.key == device)
                 .flat_map(|(_, r)| r.lanes.iter())
-                .filter(|l| !l.hidden)
-                .map(|l| Worktree { id: l.id.clone(), project: l.project.clone(), repo: l.repo.clone(), name: l.callsign.clone(), branch: l.branch.clone(), last_activity: l.last_activity })
+                .filter_map(|l| {
+                    let project = projects.lane(l);
+                    if l.hidden && project.is_none() {
+                        return None;
+                    }
+                    Some(Worktree { id: l.id.clone(), project: project.unwrap_or_else(|| l.project.clone()), repo: l.repo.clone(), name: l.callsign.clone(), branch: l.branch.clone(), last_activity: l.last_activity })
+                })
                 .collect();
             out.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
             out
@@ -635,6 +703,45 @@ impl Core {
         let started = self.client.start_session(&device, &spec)?;
         let short = device.get(..10).unwrap_or(&device);
         Ok(StartedSession { key: started.key.map(|k| remote_key(short, &k)), message: started.message })
+    }
+}
+
+#[cfg(test)]
+mod project_tests {
+    use super::*;
+
+    fn slugs(s: &[&str]) -> Vec<String> {
+        s.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn projects_line_up_by_repo_then_by_name() {
+        // What the Macs send, the first Mac's lanes first.
+        let lanes = [
+            ("Codealong", slugs(&["codealong/codealong"])),
+            ("Kestrel", slugs(&[])),
+            ("Elsewhere", slugs(&["someone/scratch"])),
+            ("Work", slugs(&["acme/app"])),
+            ("App", slugs(&["acme/app"])),
+            ("kestrel", slugs(&[])),
+        ];
+        let p = Projects::new(lanes.iter().map(|(n, s)| (*n, s.clone())));
+        // The second Mac's worktree of a repo goes where the first Mac has it, even from no project.
+        assert_eq!(p.of("Elsewhere", &slugs(&["codealong/codealong"])).as_deref(), Some("Codealong"));
+        assert_eq!(p.of("App", &slugs(&["acme/app"])).as_deref(), Some("Work"));
+        // A repo by the name GitHub gives it now lines up too.
+        assert_eq!(p.of("Elsewhere", &slugs(&["old/name", "acme/app"])).as_deref(), Some("Work"));
+        // No repo in common: a project of the same name, spelled as the first Mac spells it.
+        assert_eq!(p.of("kestrel", &[]).as_deref(), Some("Kestrel"));
+        // In no project on any Mac.
+        assert_eq!(p.of("Elsewhere", &slugs(&["someone/scratch"])), None);
+        assert_eq!(p.of("Elsewhere", &[]), None);
+    }
+
+    #[test]
+    fn projects_list_by_name_with_elsewhere_last() {
+        let names = ["kestrel", "Elsewhere", "Codealong", "Kestrel", "Codealong", "api"];
+        assert_eq!(project_list(names.into_iter()), ["api", "Codealong", "kestrel", "Kestrel", "Elsewhere"]);
     }
 }
 

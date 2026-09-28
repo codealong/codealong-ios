@@ -5,8 +5,15 @@ one list, most urgent first, and, where a Mac has remote control on, a way to ac
 another of your devices to the Macs, so it links and talks to them as they talk to each other,
 peer to peer, with no server of Codealong's in between.
 
-Status: a spike. It links with a Mac and lists its sessions; conversations, approvals, replies
-and starting sessions come next. The plan is in the main repo's `design/plans/ios.md`.
+Status: early. It links with your Macs, lists their sessions, narrowed to a project if you like,
+and shows each one's conversation, a hosted session's reply as it's written. Where a Mac has
+remote control on, it replies, answers approvals, stops a hosted turn and starts sessions. The
+plan is in the main repo's `design/plans/ios.md`.
+
+Projects are the Macs' own: each session comes in its Mac's project, and the phone lines them up
+across Macs as a Mac lines up another's worktrees, by repo. A worktree goes into the project any
+of your Macs has its repo in, else into a project of the same name, so one project on two Macs is
+one project here, even where one of them has that repo in no project.
 
 ## How it fits with the Mac app
 
