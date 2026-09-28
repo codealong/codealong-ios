@@ -13,6 +13,7 @@ projects or naming.
 scripts/build-core.sh          # Rust core → build/CodealongCore.xcframework + Codealong/Generated (SIM_ONLY=1: simulator only)
 scripts/build.sh               # core if missing (CORE=1 forces it), xcodegen, then the app for the simulator
 scripts/run.sh                 # install and launch on the booted simulator; LINK_CODE=<code> links it at launch
+scripts/install-device.sh      # a release build on a paired iPhone, signed by your team (README, On your iPhone)
 (cd core && cargo test)        # the core's tests
 ```
 

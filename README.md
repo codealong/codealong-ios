@@ -41,3 +41,19 @@ LINK_CODE=cal1… scripts/run.sh      # launch with a Mac's link code, as if ent
 ```
 
 On the Mac, `codealong devices code` makes a link code (the app running, Devices and iroh on).
+
+## On your iPhone
+
+```bash
+scripts/install-device.sh           # build for iPhone, sign, install and launch on a paired phone
+```
+
+It installs on an iPhone paired with this Mac (connect it once with a cable and trust the Mac),
+signed by your Apple developer team from Xcode › Settings › Accounts (`CODEALONG_TEAM_ID` picks
+another). With a free Personal Team the app runs for 7 days before it needs installing again. The
+phone has to be unlocked while it installs, needs Developer Mode on (Settings › Privacy &
+Security), and the first time asks you to trust the developer (Settings › General › VPN & Device
+Management).
+
+Then link it with each Mac: scan the QR code in the Mac's Settings › Devices with the phone's
+camera, or enter a code from `codealong devices code` under Macs.
