@@ -154,10 +154,38 @@ final class Store {
         return try await Task.detached { try core.startChoices(device: device) }.value
     }
 
-    func startSession(device: String, worktree: String, account: String, place: String, prompt: String, model: String?) async throws -> StartedSession {
+    func startSession(device: String, worktree: String, account: String, place: String, prompt: String, model: String?, newWorktree: Bool) async throws -> StartedSession {
         let core = try running()
         return try await Task.detached {
-            try core.startSession(device: device, worktree: worktree, account: account, place: place, prompt: prompt, model: model)
+            try core.startSession(device: device, worktree: worktree, account: account, place: place, prompt: prompt, model: model, newWorktree: newWorktree)
+        }.value
+    }
+
+    /// What the quick search lists (the core's rules). Reads `tick`, so a view that shows it
+    /// updates with every change the Macs send.
+    func quick(project: String, query: String, said: [SaidHit], ranked: [String]) -> QuickList {
+        _ = tick
+        return core?.quick(project: project, query: query, said: said, ranked: ranked) ?? QuickList(sections: [], nothingWaits: false, working: 0)
+    }
+
+    /// What was said in sessions, searched on every connected Mac.
+    func searchSaid(_ query: String) async -> SaidFound {
+        guard let core else { return SaidFound(hits: [], building: false) }
+        return await Task.detached { core.searchSaid(query: query) }.value
+    }
+
+    /// Where typed text goes, as `device` suggests it.
+    func route(device: String, project: String, text: String) async throws -> RouteAnswer {
+        let core = try running()
+        return try await Task.detached { try core.route(device: device, project: project, text: text) }.value
+    }
+
+    /// Sends a session a prompt where it runs; returns what its Mac said about it.
+    func send(_ key: String, text: String) async throws -> String {
+        let core = try running()
+        return try await Task.detached {
+            let conv = try core.conversation(key: key)
+            return try conv.send(text: text)
         }.value
     }
 

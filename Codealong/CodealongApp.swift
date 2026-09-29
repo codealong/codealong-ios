@@ -7,7 +7,7 @@ struct CodealongApp: App {
 
     var body: some Scene {
         WindowGroup {
-            InboxView()
+            QuickView()
                 .environment(store)
                 .onOpenURL { store.open($0) }
         }

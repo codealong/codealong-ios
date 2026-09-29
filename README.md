@@ -11,6 +11,13 @@ conversation, a hosted session's reply as it's written. Where a Mac has remote c
 replies, answers approvals, stops a hosted turn and starts sessions. The plan is in the main
 repo's `design/plans/ios.md`.
 
+Its one screen is the Mac's quick panel: an input at the top, and under it the sessions that need
+you, then the ones whose turn ended (the ones working when nothing waits), then the rest started in
+the last day. Typing finds sessions, by what was said in them too (each Mac's text search), and
+PRs; the Mac chosen at the bottom suggests where the text goes (its Jev, through the `route`
+request); and the row at the bottom starts a session with it on the Mac, worktree, account and
+place the chips under it say.
+
 It works through what waits on you as the Mac's session panel does: once you've replied or
 answered, the most urgent session still waiting on you is a tap away above the reply box (Next),
 and holding Send sends and goes straight on (⌘⏎ on a keyboard). The chevron at the top skips to
@@ -35,7 +42,7 @@ the feed and the worktrees and sessions it carries, reaching a Mac anywhere thro
 watching client. The Mac's engine builds on it, and so does `core/` here, so the two can't drift.
 
 ```
-Codealong/          SwiftUI: the inbox, the Macs sheet, the store
+Codealong/          SwiftUI: the quick search, a session, the Macs sheet, the store
 core/               Rust: a thin layer over codealong-peer's client, exported with UniFFI
 scripts/            build-core.sh (core → XCFramework + Swift bindings), build.sh, run.sh
 project.yml         XcodeGen's spec; Codealong.xcodeproj is generated from it

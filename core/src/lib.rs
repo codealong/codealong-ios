@@ -16,6 +16,9 @@ use codealong_peer::{net, proto};
 
 uniffi::setup_scaffolding!();
 
+mod quick;
+pub use quick::*;
+
 /// Changes reach Swift at most this often: a busy Mac sends a feed a second, and each can come
 /// with several connections' worth of changes.
 const COALESCE: Duration = Duration::from_millis(150);
@@ -128,6 +131,15 @@ pub struct SessionRow {
     pub section: InboxSection,
     /// When it's back, while it's snoozed and not running.
     pub snoozed_until: Option<i64>,
+    pub started_at: Option<i64>,
+    /// Its process is running: a prompt reaches it as its next message.
+    pub live: bool,
+    /// It's in an app (the Claude or Codex app), not a terminal.
+    pub in_app: bool,
+    /// Its reply asks you something, so what's typed next is its answer.
+    pub asks: bool,
+    /// Its worktree's PR, as "#12 Title", for the quick search to find it by.
+    pub pr: Option<String>,
 }
 
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
@@ -237,58 +249,10 @@ impl Core {
 
     pub fn snapshot(&self) -> Snapshot {
         self.client.with_feeds(|feeds| {
-            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
+            let now = now_ms();
+            let all = all_rows(feeds);
             let mut devices = Vec::new();
-            let mut sessions: Vec<SessionRow> = Vec::new();
-            let projects = Projects::of_feeds(feeds);
-            for (d, replica) in feeds {
-                let mut count = 0;
-                let mut seen = std::collections::HashSet::new();
-                // A session shows under every lane it worked in; its own lane lists it without a
-                // visitor note, so that one goes first.
-                let mut all: Vec<(&Lane, &Session)> = replica.lanes.iter().flat_map(|l| l.sessions.iter().map(move |s| (l, s))).collect();
-                all.sort_by_key(|(_, s)| s.visitor.is_some());
-                for (lane, s) in all {
-                    if s.archived || !seen.insert(s.key.as_str()) {
-                        continue;
-                    }
-                    let urgent = matches!(s.status, PeerStatus::Needs | PeerStatus::Error | PeerStatus::Working | PeerStatus::Unread);
-                    // Worktrees in no project stay off the Mac's board unless they need you, and
-                    // off here unless another Mac has their repo in a project.
-                    let project = projects.lane(lane);
-                    if lane.hidden && project.is_none() && !matches!(s.status, PeerStatus::Needs | PeerStatus::Error) {
-                        continue;
-                    }
-                    if !urgent && now - s.last_prompt_at > RECENT_MS {
-                        continue;
-                    }
-                    count += 1;
-                    let status: Status = s.status.into();
-                    let snoozed_until = s.snoozed_until.filter(|&t| t > now && status != Status::Working);
-                    sessions.push(SessionRow {
-                            key: remote_key(&d.short, &s.key),
-                            device: d.key.clone(),
-                            device_name: d.name.clone(),
-                            device_online: d.online,
-                            title: s.title.clone(),
-                            headline: s.headline.clone(),
-                            detail: s.detail.clone(),
-                            status,
-                            stalled: s.stalled_since.is_some(),
-                            harness: s.harness.word().to_string(),
-                            account: s.account.clone(),
-                            project: project.unwrap_or_else(|| lane.project.clone()),
-                            repo: lane.repo.clone(),
-                            worktree: lane.callsign.clone(),
-                            branch: s.branch.clone().or_else(|| lane.branch.clone()),
-                            last_prompt_at: s.last_prompt_at,
-                            last_activity: s.last_activity,
-                            status_since: s.status_since,
-                            hosted: s.hosted,
-                            section: section(status, snoozed_until),
-                            snoozed_until,
-                        });
-                }
+            for (d, _) in feeds {
                 devices.push(DeviceRow {
                     key: d.key.clone(),
                     short: d.short.clone(),
@@ -298,14 +262,84 @@ impl Core {
                     last_seen: d.last_seen,
                     linked_back: d.linked_back,
                     loading: d.loading,
-                    sessions: count,
+                    sessions: all.iter().filter(|s| s.device == d.key && in_inbox(s, now)).count() as u32,
                 });
             }
+            let mut sessions: Vec<SessionRow> = all.into_iter().filter(|s| in_inbox(s, now)).collect();
             sessions.sort_by(inbox_order);
             let projects = project_list(sessions.iter().map(|s| s.project.as_str()));
             Snapshot { devices, sessions, projects }
         })
     }
+}
+
+pub(crate) fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+}
+
+type Feeds<'a> = [(codealong_peer::client::Device, &'a codealong_peer::feed::Replica)];
+
+/// Whether the inbox lists a session: what wants you or is running, and the rest for three days
+/// after you last prompted them.
+fn in_inbox(s: &SessionRow, now: i64) -> bool {
+    matches!(s.status, Status::Needs | Status::Error | Status::Working | Status::Unread) || now - s.last_prompt_at <= RECENT_MS
+}
+
+/// Every session on the linked Macs once, archived ones left out, in the projects the Macs line
+/// up; unsorted.
+pub(crate) fn all_rows(feeds: &Feeds) -> Vec<SessionRow> {
+    let now = now_ms();
+    let projects = Projects::of_feeds(feeds);
+    let mut sessions = Vec::new();
+    for (d, replica) in feeds {
+        let mut seen = std::collections::HashSet::new();
+        // A session shows under every lane it worked in; its own lane lists it without a
+        // visitor note, so that one goes first.
+        let mut all: Vec<(&Lane, &Session)> = replica.lanes.iter().flat_map(|l| l.sessions.iter().map(move |s| (l, s))).collect();
+        all.sort_by_key(|(_, s)| s.visitor.is_some());
+        for (lane, s) in all {
+            if s.archived || !seen.insert(s.key.as_str()) {
+                continue;
+            }
+            // Worktrees in no project stay off the Mac's board unless they need you, and
+            // off here unless another Mac has their repo in a project.
+            let project = projects.lane(lane);
+            if lane.hidden && project.is_none() && !matches!(s.status, PeerStatus::Needs | PeerStatus::Error) {
+                continue;
+            }
+            let status: Status = s.status.into();
+            let snoozed_until = s.snoozed_until.filter(|&t| t > now && status != Status::Working);
+            sessions.push(SessionRow {
+                key: remote_key(&d.short, &s.key),
+                device: d.key.clone(),
+                device_name: d.name.clone(),
+                device_online: d.online,
+                title: s.title.clone(),
+                headline: s.headline.clone(),
+                detail: s.detail.clone(),
+                status,
+                stalled: s.stalled_since.is_some(),
+                harness: s.harness.word().to_string(),
+                account: s.account.clone(),
+                project: project.unwrap_or_else(|| lane.project.clone()),
+                repo: lane.repo.clone(),
+                worktree: lane.callsign.clone(),
+                branch: s.branch.clone().or_else(|| lane.branch.clone()),
+                last_prompt_at: s.last_prompt_at,
+                last_activity: s.last_activity,
+                status_since: s.status_since,
+                hosted: s.hosted,
+                section: section(status, snoozed_until),
+                snoozed_until,
+                started_at: s.started_at,
+                live: s.live,
+                in_app: s.surface == codealong_peer::model::Surface::App,
+                asks: s.asks,
+                pr: lane.pr.as_ref().map(|p| format!("#{} {}", p.number, p.title)),
+            });
+        }
+    }
+    sessions
 }
 
 /// Projects lined up across Macs, as a Mac lines another device's worktrees up with its own
@@ -633,6 +667,10 @@ pub struct Worktree {
     pub name: String,
     pub branch: Option<String>,
     pub last_activity: i64,
+    /// The Mac it's on (its key).
+    pub device: String,
+    /// It's its repo's main checkout.
+    pub main: bool,
 }
 
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
@@ -677,6 +715,34 @@ pub struct StartedSession {
     pub message: Option<String>,
 }
 
+/// Every Mac's worktrees from its feed, most recently active first, in their projects as the
+/// inbox lines them up; worktrees in no project stay off, as on the Mac's board.
+pub(crate) fn all_worktrees(feeds: &Feeds) -> Vec<Worktree> {
+    let projects = Projects::of_feeds(feeds);
+    let mut out: Vec<Worktree> = feeds
+        .iter()
+        .flat_map(|(d, r)| r.lanes.iter().map(move |l| (d, l)))
+        .filter_map(|(d, l)| {
+            let project = projects.lane(l);
+            if l.hidden && project.is_none() {
+                return None;
+            }
+            Some(Worktree {
+                id: l.id.clone(),
+                project: project.unwrap_or_else(|| l.project.clone()),
+                repo: l.repo.clone(),
+                name: l.callsign.clone(),
+                branch: l.branch.clone(),
+                last_activity: l.last_activity,
+                device: d.key.clone(),
+                main: l.origin == codealong_peer::model::Origin::Main,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
+    out
+}
+
 /// Where a start from the phone goes unless you pick another: somewhere that needs nobody at the
 /// Mac, since a locked Mac opens no terminal. Codealong itself (over ACP) first, then Claude Code's
 /// background service, then where the account usually starts.
@@ -690,23 +756,7 @@ impl Core {
     /// A Mac's worktrees from its feed, most recently active first, in their projects as the
     /// inbox lines them up; worktrees in no project stay off, as on its board.
     pub fn worktrees(&self, device: String) -> Vec<Worktree> {
-        self.client.with_feeds(|feeds| {
-            let projects = Projects::of_feeds(feeds);
-            let mut out: Vec<Worktree> = feeds
-                .iter()
-                .filter(|(d, _)| d.key == device)
-                .flat_map(|(_, r)| r.lanes.iter())
-                .filter_map(|l| {
-                    let project = projects.lane(l);
-                    if l.hidden && project.is_none() {
-                        return None;
-                    }
-                    Some(Worktree { id: l.id.clone(), project: project.unwrap_or_else(|| l.project.clone()), repo: l.repo.clone(), name: l.callsign.clone(), branch: l.branch.clone(), last_activity: l.last_activity })
-                })
-                .collect();
-            out.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
-            out
-        })
+        self.client.with_feeds(|feeds| all_worktrees(feeds).into_iter().filter(|w| w.device == device).collect())
     }
 
     /// What `device` can start, asked of it.
@@ -730,10 +780,11 @@ impl Core {
         })
     }
 
-    /// Starts a session on `device` in `worktree` (its id there), on `account`, at `place`.
-    pub fn start_session(&self, device: String, worktree: String, account: String, place: String, prompt: String, model: Option<String>) -> Result<StartedSession, CoreError> {
+    /// Starts a session on `device` in `worktree` (its id there), on `account`, at `place`; with
+    /// `new_worktree`, Claude Code makes a worktree of its own for it from that one's repo.
+    pub fn start_session(&self, device: String, worktree: String, account: String, place: String, prompt: String, model: Option<String>, new_worktree: bool) -> Result<StartedSession, CoreError> {
         let place = api::Place::from_word(&place).ok_or_else(|| CoreError::Failed(format!("{place} isn't a place a session can start.")))?;
-        let spec = api::StartSpec { lane_id: worktree, account, place, prompt, model, worktree: false, todos: Vec::new() };
+        let spec = api::StartSpec { lane_id: worktree, account, place, prompt, model, effort: None, worktree: new_worktree, todos: Vec::new() };
         let started = self.client.start_session(&device, &spec)?;
         let short = device.get(..10).unwrap_or(&device);
         Ok(StartedSession { key: started.key.map(|k| remote_key(short, &k)), message: started.message })
@@ -767,6 +818,11 @@ mod order_tests {
             hosted: false,
             section: section(status, snoozed_until),
             snoozed_until,
+            started_at: None,
+            live: true,
+            in_app: false,
+            asks: false,
+            pr: None,
         }
     }
 
