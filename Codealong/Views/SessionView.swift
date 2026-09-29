@@ -62,7 +62,11 @@ struct SessionView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
+                // Not lazy: a lazy stack scrolled to its end by the bottom anchor or `scrollTo` goes
+                // by row heights it guessed, and on a phone it could stop there with no rows built
+                // for what's on screen, a blank page until you dragged it. What's shown is a page or
+                // a few of 60 items, few enough to build every row.
+                VStack(alignment: .leading, spacing: 14) {
                     if hasOlder {
                         Button("Earlier") { Task { await older() } }
                             .buttonStyle(.borderless)
