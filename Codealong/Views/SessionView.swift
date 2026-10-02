@@ -7,6 +7,12 @@ import SwiftUI
 /// replied or answered, the most urgent session still waiting on you is a tap away above the box,
 /// and holding Send sends and goes on at once. The chevron at the top skips to it; one skipped
 /// comes round again after the rest.
+///
+/// As on the Mac, it opens at the newest and reads older pages as you scroll up, holding your
+/// place. The prompt behind what's in view, once it's gone off the top, stays pinned there, two
+/// lines of it, so what you asked stays in mind while you read what came of it; a tap brings it
+/// up. A long turn can write more than a page, so when the first page doesn't start with a prompt,
+/// the core reads back for the one before it, and it's pinned from the start.
 struct SessionView: View {
     let key: String
     /// Shows another session in this one's place.
@@ -20,6 +26,21 @@ struct SessionView: View {
     @State private var conversation: Conversation?
     @State private var items: [Item] = []
     @State private var hasOlder = false
+    @State private var loadingOlder = false
+    /// Your prompt before the pages read, when the first doesn't start with one.
+    @State private var earlier: Item?
+    /// Where each of your prompts read so far is against the top of what's in view. Kept as where
+    /// they are on screen, not in the conversation, so a page going in above changes nothing.
+    @State private var promptPlaces: [String: PromptPlace] = [:]
+    /// Where what's in view starts on screen, below the bars: the top your prompts go off.
+    @State private var viewTop: CGFloat = 0
+    /// Moves the conversation to hold your place as a page goes in above.
+    @State private var position = ScrollPosition(edge: .bottom)
+    /// The prompt pinned over the top of the conversation.
+    @State private var pinned: String?
+    /// Where it's scrolled to, kept apart from what's drawn: it changes every frame of a scroll, and
+    /// only what it means (a page to read, a prompt to pin) should redraw.
+    @State private var scroll = ScrollSpot()
     @State private var pending: Pending?
     @State private var problem: String?
     @State private var loading = true
@@ -37,6 +58,9 @@ struct SessionView: View {
     @ScaledMetric(relativeTo: .body) private var sendSize: CGFloat = 32
     /// Between the send button and the reply box's edge.
     private let replyInset: CGFloat = 6
+    /// Reads the page before once you're this close to the top, so it's usually in before you
+    /// get there: a page comes from the Mac, which can take a moment.
+    private let nearTop: CGFloat = 900
 
     private var row: SessionRow? { store.sessions.first { $0.key == key } }
     /// What waits on you after this one; the first is next.
@@ -64,16 +88,30 @@ struct SessionView: View {
             ScrollView {
                 // Not lazy: a lazy stack scrolled to its end by the bottom anchor or `scrollTo` goes
                 // by row heights it guessed, and on a phone it could stop there with no rows built
-                // for what's on screen, a blank page until you dragged it. What's shown is a page or
-                // a few of 60 items, few enough to build every row.
+                // for what's on screen, a blank page until you dragged it. What's shown is the pages
+                // of 60 items read so far, a few unless you scroll a long way back.
                 VStack(alignment: .leading, spacing: 14) {
                     if hasOlder {
-                        Button("Earlier") { Task { await older() } }
-                            .buttonStyle(.borderless)
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(maxWidth: .infinity)
+                            .accessibilityLabel("Loading earlier")
+                    } else if !loading && !items.isEmpty {
+                        Text("The start of the session")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
                             .frame(maxWidth: .infinity)
                     }
                     ForEach(entries) { entry in
                         switch entry {
+                        case .said(let item) where item.kind == .you:
+                            ItemView(item: item)
+                                .onGeometryChange(for: PromptPlace.self) { [viewTop] geo in
+                                    PromptPlace(geo.frame(in: .global), top: viewTop)
+                                } action: { place in
+                                    promptPlaces[item.id] = place
+                                }
+                                .id(item.id)
                         case .said(let item): ItemView(item: item)
                         case .tools(let calls): ToolRun(calls: calls)
                         }
@@ -92,17 +130,49 @@ struct SessionView: View {
                 .padding(.horizontal)
                 .padding(.vertical, 12)
             }
+            .scrollPosition($position)
             .defaultScrollAnchor(.bottom)
             .onScrollGeometryChange(for: Bool.self) { geo in
                 geo.contentOffset.y + geo.containerSize.height >= geo.contentSize.height - 60
             } action: { _, now in
                 atBottom = now
             }
+            // The top of what's in view, below the bars, in the conversation's coordinates. Its
+            // height goes with it: a page too short to scroll is near the top without moving.
+            .onScrollGeometryChange(for: ScrollSpot.Place.self) { geo in
+                .init(offset: geo.contentOffset.y, inset: geo.contentInsets.top, height: geo.contentSize.height)
+            } action: { was, place in
+                scrolled(from: was, to: place)
+            }
+            // A page that went in above while it scrolled goes in once it's still.
+            .onScrollPhaseChange { _, phase in
+                scroll.still = phase == .idle
+                if scroll.still, let waiting = scroll.waiting { show(waiting) }
+            }
             .onChange(of: items.count) { _, _ in
                 if atBottom { proxy.scrollTo("end", anchor: .bottom) }
             }
             .onChange(of: live?.text) { _, _ in
                 if atBottom { proxy.scrollTo("end", anchor: .bottom) }
+            }
+            .onChange(of: promptPlaces) { _, _ in repin() }
+            .onChange(of: earlier?.id) { _, _ in repin() }
+            // Takes no room: it floats over the top of the conversation while it has a prompt.
+            .overlay(alignment: .top) {
+                VStack(spacing: 0) {
+                    Color.clear
+                        .frame(height: 0)
+                        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { viewTop = $0 }
+                    if let prompt = pinnedPrompt {
+                        PinnedPrompt(text: prompt.text) {
+                            Task { await bringUp(prompt.id, proxy: proxy) }
+                        }
+                        .padding(.horizontal)
+                        .padding(.top, 4)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                }
+                .animation(.snappy, value: pinned)
             }
         }
         .safeAreaInset(edge: .bottom) { bottom }
@@ -280,6 +350,8 @@ struct SessionView: View {
         await refresh()
         loading = false
         if row?.status == .unread { store.markSeen(key) }
+        // A turn longer than the first page: the prompt behind it, to pin from the start.
+        await lookBack()
         // A session Codealong runs sends its reply as it's written, while it's shown here.
         if row?.hosted == true {
             watching = await Task.detached { conv.watch() }.value
@@ -290,8 +362,7 @@ struct SessionView: View {
     private func refresh() async {
         guard let conv = conversation else { return }
         do {
-            items = try await Task.detached { try conv.refresh() }.value
-            hasOlder = conv.hasOlder()
+            show(try await Task.detached { try conv.refresh() }.value)
             problem = nil
         } catch {
             problem = words(error)
@@ -304,13 +375,131 @@ struct SessionView: View {
         }
     }
 
-    private func older() async {
-        guard let conv = conversation else { return }
-        let all = try? await Task.detached { try conv.older() }.value
-        if let all {
-            items = all
-            hasOlder = conv.hasOlder()
+    /// The scroll view moved, or what's in it changed size.
+    private func scrolled(from was: ScrollSpot.Place, to place: ScrollSpot.Place) {
+        scroll.top = place.top
+        // A page went in above: what's in view moves down with it, so it holds still. At the end,
+        // or in a conversation shorter than the screen, the scroll view has done it already. By the
+        // offset, not `top`: a short conversation sits at the bottom by a top inset that changes
+        // with its height. (A position's y is `top`, the offset with the inset.)
+        switch scroll.hold {
+        case .pageIn where place.height != was.height:
+            let short = (place.height - was.height) - (place.offset - was.offset)
+            if abs(short) > 0.5 {
+                scroll.hold = .scrolling(to: place.top + short)
+                position.scrollTo(y: place.top + short)
+                scroll.top += short
+            } else {
+                scroll.hold = .none
+                repin()
+            }
+        case .scrolling(let to) where abs(place.top - to) < 1:
+            scroll.hold = .none
+            // After this layout's prompts have said where they are, which comes after this.
+            Task { repin() }
+        default:
+            break
         }
+        readOlderIfNear()
+    }
+
+    /// Reads the page before what's read.
+    private func older() async {
+        guard let conv = conversation, hasOlder, !loadingOlder, scroll.waiting == nil else { return }
+        loadingOlder = true
+        let all = try? await Task.detached { try conv.older() }.value
+        loadingOlder = false
+        guard let all else { return }
+        show(all)
+        // Still near the top, or too short to scroll up at all: the page before that too.
+        readOlderIfNear()
+    }
+
+    /// Shows the conversation as the core has it now. A page that went in above waits for the
+    /// scroll view to be still: moved while it scrolls, what's in view would jump back with the
+    /// scroll's own motion. Once in, the geometry action holds what's in view where it was.
+    private func show(_ all: [Item]) {
+        guard let conv = conversation else { return }
+        let above = !items.isEmpty && all.first?.id != items.first?.id
+        if above && !scroll.still {
+            scroll.waiting = all
+            return
+        }
+        scroll.waiting = nil
+        if above {
+            scroll.hold = .pageIn
+            // A page that changes no height (calls folded into a run already shown) has nothing
+            // to hold.
+            Task {
+                try? await Task.sleep(for: .milliseconds(250))
+                if scroll.hold != .none {
+                    scroll.hold = .none
+                    repin()
+                }
+            }
+        }
+        items = all
+        hasOlder = conv.hasOlder()
+        if above { Task { await lookBack() } }
+    }
+
+    /// Your prompt before the pages read, when what's read doesn't start with one, to pin while
+    /// you read what came of it. The core keeps the pages it reads for scrolling up.
+    private func lookBack() async {
+        guard let conv = conversation, hasOlder, let first = items.first, first.kind != .you else {
+            earlier = nil
+            return
+        }
+        let found = try? await Task.detached { try conv.promptBefore() }.value
+        // A page read meanwhile asks again for its own.
+        if items.first?.id == first.id { earlier = found }
+    }
+
+    private func readOlderIfNear() {
+        // Once the scroll view has laid out what's read: until then it doesn't know where it is.
+        guard hasOlder, !loadingOlder, scroll.waiting == nil, scroll.hold == .none, !items.isEmpty, scroll.top < nearTop else { return }
+        Task { await older() }
+    }
+
+    /// Your prompt pinned over the top: one read, or the one before the pages read.
+    private var pinnedPrompt: Item? {
+        guard let pinned else { return nil }
+        if earlier?.id == pinned { return earlier }
+        return items.first { $0.id == pinned }
+    }
+
+    /// Pins the prompt behind what's in view once the whole of it is above the top: the latest that
+    /// starts above it, unless it's still partly in view; with none read up there, the one before
+    /// the pages read.
+    private func repin() {
+        // Until the page going in above is held, your prompts are measured where it pushed them.
+        guard scroll.hold == .none else { return }
+        let behind = items.last { $0.kind == .you && (promptPlaces[$0.id] ?? .below) != .below }
+        let next: String?
+        if let behind {
+            next = promptPlaces[behind.id] == .gone ? behind.id : nil
+        } else if let earlier, !items.contains(where: { $0.id == earlier.id }) {
+            next = earlier.id
+        } else {
+            next = nil
+        }
+        if next != pinned { pinned = next }
+    }
+
+    /// Brings one of your prompts to the top of the view, reading back to it when it's before the
+    /// pages read.
+    private func bringUp(_ id: String, proxy: ScrollViewProxy) async {
+        while !items.contains(where: { $0.id == id }) || scroll.hold != .none {
+            // A page already on its way, waiting for the scroll to stop or being held comes first.
+            if loadingOlder || scroll.waiting != nil || scroll.hold != .none {
+                try? await Task.sleep(for: .milliseconds(50))
+                continue
+            }
+            let had = items.count
+            await older()
+            if items.count == had && scroll.waiting == nil { return }
+        }
+        withAnimation(.snappy) { proxy.scrollTo(id, anchor: .top) }
     }
 
     /// Sends the box; with `thenNext`, goes on to what waits on you once it's gone. One that
@@ -474,6 +663,82 @@ private struct ApprovalCard: View {
         }
         .padding(14)
         .background(.orange.opacity(0.1), in: .rect(cornerRadius: 20))
+    }
+}
+
+/// Where the conversation is scrolled to, and a page waiting for it to stop. A class, so a scroll
+/// writes it without redrawing.
+@MainActor private final class ScrollSpot {
+    /// The top of what's in view, in the conversation's coordinates. Nothing is near it until the
+    /// scroll view says where it is.
+    var top: CGFloat = .infinity
+    /// The scroll view isn't moving: a page can go in above without its motion undoing the hold.
+    var still = true
+    /// The conversation with a page above, waiting for the scroll view to be still.
+    var waiting: [Item]?
+    /// How far along holding your place a page going in above is.
+    var hold = Hold.none
+
+    enum Hold: Equatable {
+        case none
+        /// It's going in; the next layout says how far it pushed what's in view.
+        case pageIn
+        /// What's in view is being moved back to where it was.
+        case scrolling(to: CGFloat)
+    }
+
+    struct Place: Equatable {
+        var offset: CGFloat
+        var inset: CGFloat
+        var height: CGFloat
+        var top: CGFloat { offset + inset }
+    }
+}
+
+/// Where one of your prompts is against the top of what's in view.
+private enum PromptPlace: Equatable {
+    /// The whole of it is above the top.
+    case gone
+    /// It starts above the top and is still partly in view.
+    case atTop
+    case below
+
+    init(_ frame: CGRect, top: CGFloat) {
+        if frame.maxY < top + 8 {
+            self = .gone
+        } else if frame.minY < top + 2 {
+            self = .atTop
+        } else {
+            self = .below
+        }
+    }
+}
+
+/// Your prompt behind what's in view, two lines of it over the top of the conversation; a tap
+/// brings the whole of it up.
+private struct PinnedPrompt: View {
+    let text: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(text.split(whereSeparator: \.isWhitespace).joined(separator: " "))
+                    .font(.subheadline)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "arrow.up")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 18))
+        .accessibilityLabel("Your prompt: \(text)")
+        .accessibilityHint("Shows it in the conversation")
     }
 }
 

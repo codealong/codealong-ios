@@ -7,9 +7,10 @@ peer to peer, with no server of Codealong's in between.
 
 Status: early. It links with your Macs, lists their sessions in the sections and order of the
 Mac's Sessions view (snoozed ones apart), narrowed to a project if you like, and shows each one's
-conversation, a hosted session's reply as it's written. Where a Mac has remote control on, it
-replies, answers approvals, stops a hosted turn and starts sessions. The plan is in the main
-repo's `design/plans/ios.md`.
+conversation, reading back as you scroll up with what you asked pinned over its reply, and a
+hosted session's reply as it's written. Where a Mac has remote control on, it replies, answers
+approvals, stops a hosted turn and starts sessions. The plan is in the main repo's
+`design/plans/ios.md`.
 
 Its one screen is the Mac's quick panel: an input at the top, and under it the sessions that need
 you, then the ones whose turn ended (the ones working when nothing waits), then the rest started in

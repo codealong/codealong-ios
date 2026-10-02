@@ -24,6 +24,9 @@ pub use quick::*;
 const COALESCE: Duration = Duration::from_millis(150);
 /// Sessions that are idle or stopped show for this long after their last prompt.
 const RECENT_MS: i64 = 3 * 24 * 60 * 60 * 1000;
+/// Pages read back past the oldest shown, looking for the prompt behind it, before giving up, as
+/// the Mac's panel does.
+const LOOK_BACK: usize = 16;
 
 /// What Swift implements to hear that `Core::snapshot` has something new.
 #[uniffi::export(callback_interface)]
@@ -498,6 +501,9 @@ struct Thread {
     items: Vec<api::Item>,
     before: Option<u64>,
     after: u64,
+    /// Pages read back looking for the prompt behind the oldest shown, by the place each was asked
+    /// for: scrolling up takes them from here instead of asking the Mac again.
+    read_back: std::collections::HashMap<u64, api::Page>,
 }
 
 impl Thread {
@@ -542,7 +548,7 @@ impl Thread {
                 };
                 let result = (kind == ItemKind::Tool).then(|| i.id.as_deref().and_then(|id| results.get(id))).flatten();
                 Some(Item {
-                    id: format!("{}:{}", i.cursor, i.n),
+                    id: item_id(i),
                     at: i.at,
                     kind,
                     text: i.text.clone(),
@@ -553,6 +559,37 @@ impl Thread {
             })
             .collect()
     }
+}
+
+/// An item's id, the same whichever page it was read in.
+fn item_id(i: &api::Item) -> String {
+    format!("{}:{}", i.cursor, i.n)
+}
+
+/// Reads back from `at` a page at a time, through `read`, for your latest prompt there.
+fn look_back(mut at: Option<u64>, mut read: impl FnMut(u64) -> Result<api::Page, CoreError>) -> Result<Option<Item>, CoreError> {
+    for _ in 0..LOOK_BACK {
+        let Some(cursor) = at else { return Ok(None) };
+        let page = read(cursor)?;
+        if let Some(found) = prompt_in(&page) {
+            return Ok(Some(found));
+        }
+        at = page.before;
+    }
+    Ok(None)
+}
+
+/// The latest of your prompts in a page.
+fn prompt_in(page: &api::Page) -> Option<Item> {
+    page.items.iter().rev().find(|i| i.kind == "you").map(|i| Item {
+        id: item_id(i),
+        at: i.at,
+        kind: ItemKind::You,
+        text: i.text.clone(),
+        input: None,
+        output: None,
+        failed: false,
+    })
 }
 
 #[uniffi::export]
@@ -573,10 +610,30 @@ impl Conversation {
     pub fn older(&self) -> Result<Vec<Item>, CoreError> {
         let before = self.st.lock().unwrap_or_else(|e| e.into_inner()).before;
         let Some(before) = before else { return Ok(self.st.lock().unwrap_or_else(|e| e.into_inner()).shown()) };
-        let page = self.client.page(&self.device, &self.key, Some(before))?;
+        let kept = self.st.lock().unwrap_or_else(|e| e.into_inner()).read_back.remove(&before);
+        let page = match kept {
+            Some(page) => page,
+            None => self.client.page(&self.device, &self.key, Some(before))?,
+        };
         let mut st = self.st.lock().unwrap_or_else(|e| e.into_inner());
         st.take(page, true);
         Ok(st.shown())
+    }
+
+    /// Your prompt behind the oldest item read so far, when what's read doesn't start with one: a
+    /// long turn can write more than a page, and what you asked stays pinned over its reply. Reads
+    /// back a page at a time, keeping the pages for scrolling up, and gives up after `LOOK_BACK`.
+    pub fn prompt_before(&self) -> Result<Option<Item>, CoreError> {
+        let before = self.st.lock().unwrap_or_else(|e| e.into_inner()).before;
+        look_back(before, |at| {
+            let kept = self.st.lock().unwrap_or_else(|e| e.into_inner()).read_back.get(&at).cloned();
+            let page = match kept {
+                Some(page) => page,
+                None => self.client.page(&self.device, &self.key, Some(at))?,
+            };
+            self.st.lock().unwrap_or_else(|e| e.into_inner()).read_back.insert(at, page.clone());
+            Ok(page)
+        })
     }
 
     /// There's more before the oldest read so far.
@@ -651,6 +708,37 @@ mod tests {
         t.take(api::Page { items: vec![item("agent", 40, None, None), item("you", 60, None, None)], before: Some(40), after: 70 }, false);
         assert_eq!(t.shown().len(), 4);
         assert_eq!(t.after, 70);
+    }
+
+    #[test]
+    fn the_prompt_behind_a_long_turn_is_read_back_for() {
+        // Pages of a turn longer than one, each ending where the one before it was asked for.
+        let pages: std::collections::HashMap<u64, api::Page> = [
+            (40, api::Page { items: vec![item("agent", 30, None, None), item("tool", 35, None, None)], before: Some(30), after: 40 }),
+            (30, api::Page { items: vec![item("you", 10, None, None), item("you", 20, None, None), item("agent", 25, None, None)], before: Some(10), after: 30 }),
+            (10, api::Page { items: vec![item("you", 5, None, None)], before: None, after: 10 }),
+        ]
+        .into();
+        let mut asked = vec![];
+        let found = look_back(Some(40), |at| {
+            asked.push(at);
+            Ok(pages[&at].clone())
+        })
+        .unwrap()
+        .unwrap();
+        // The latest prompt in the first page that has one, and no page past it.
+        assert_eq!((found.id.as_str(), found.kind), ("20:0", ItemKind::You));
+        assert_eq!(asked, [40, 30]);
+        // At the session's start there's nothing to read back.
+        assert!(look_back(None, |_| unreachable!()).unwrap().is_none());
+        // It gives up rather than read a whole long session back.
+        let mut reads = 0;
+        let none = look_back(Some(1000), |at| {
+            reads += 1;
+            Ok(api::Page { items: vec![item("agent", at, None, None)], before: Some(at - 1), after: at })
+        });
+        assert!(none.unwrap().is_none());
+        assert_eq!(reads, LOOK_BACK);
     }
 }
 
