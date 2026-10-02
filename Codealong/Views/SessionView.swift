@@ -42,6 +42,12 @@ struct SessionView: View {
     /// only what it means (a page to read, a prompt to pin) should redraw.
     @State private var scroll = ScrollSpot()
     @State private var pending: Pending?
+    /// An answer on its way to the Mac: the card takes no other until it's there, so a second tap
+    /// can't send another whose failure hides how the first went.
+    @State private var answering: Choice?
+    /// The call last answered here. The Mac can still say it waits on it for a moment after, and
+    /// it isn't offered again.
+    @State private var answered: String?
     @State private var problem: String?
     @State private var loading = true
     @State private var draft = ""
@@ -243,7 +249,7 @@ struct SessionView: View {
     private var bottom: some View {
         VStack(spacing: 8) {
             if let pending {
-                ApprovalCard(pending: pending, canAct: canAct, why: whyNot) { choice in
+                ApprovalCard(pending: pending, canAct: canAct, why: whyNot, answering: answering) { choice in
                     Task { await answer(pending, choice) }
                 }
             }
@@ -369,7 +375,8 @@ struct SessionView: View {
         }
         // What it waits on you for comes from the Mac only when it's waiting.
         if row?.status == .needs {
-            pending = try? await Task.detached { try conv.pending() }.value
+            let now = try? await Task.detached { try conv.pending() }.value
+            pending = now?.id == answered ? nil : now
         } else {
             pending = nil
         }
@@ -520,9 +527,12 @@ struct SessionView: View {
     }
 
     private func answer(_ p: Pending, _ choice: Choice) async {
-        guard let conv = conversation else { return }
+        guard let conv = conversation, answering == nil else { return }
+        answering = choice
+        defer { answering = nil }
         do {
             let result = try await Task.detached { try conv.answer(id: p.id, choice: choice) }.value
+            answered = p.id
             pending = nil
             done(result, outcome: choice == .deny ? "Denied “\(title)”." : "Allowed “\(title)” to go on.")
         } catch {
@@ -623,6 +633,8 @@ private struct ApprovalCard: View {
     let pending: Pending
     let canAct: Bool
     let why: String?
+    /// The answer on its way, if one is.
+    let answering: Choice?
     let answer: (Choice) -> Void
 
     var body: some View {
@@ -647,22 +659,32 @@ private struct ApprovalCard: View {
                 Text(cannot).font(.footnote).foregroundStyle(.secondary)
             } else if canAct {
                 HStack {
-                    Button("Deny", role: .destructive) { answer(.deny) }
+                    Button(answering == .deny ? "Denying…" : "Deny", role: .destructive) { answer(.deny) }
                         .buttonStyle(.bordered)
                     Spacer()
                     if pending.always {
-                        Button("Always allow") { answer(.always) }
+                        Button(answering == .always ? "Allowing…" : "Always allow") { answer(.always) }
                             .buttonStyle(.bordered)
                     }
-                    Button(pending.plan ? "Approve" : "Allow") { answer(.allow) }
+                    Button(allowLabel) { answer(.allow) }
                         .buttonStyle(.borderedProminent)
                 }
+                .disabled(answering != nil)
             } else if let why {
                 Text(why).font(.footnote).foregroundStyle(.secondary)
             }
         }
         .padding(14)
         .background(.orange.opacity(0.1), in: .rect(cornerRadius: 20))
+    }
+
+    private var allowLabel: String {
+        switch (pending.plan, answering == .allow) {
+        case (true, true): "Approving…"
+        case (true, false): "Approve"
+        case (false, true): "Allowing…"
+        case (false, false): "Allow"
+        }
     }
 }
 
