@@ -8,10 +8,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-use codealong_peer::api;
+use codealong_peer::api::{self, params};
 use codealong_peer::client::Client;
 use codealong_peer::feed::{remote_key, split_remote};
-use codealong_peer::model::{Lane, Session, Status as PeerStatus, ELSEWHERE};
+use codealong_peer::model::{Harness, Lane, OriginHow, Reuse, Session, SessionLimit, Status as PeerStatus, Surface, ELSEWHERE};
 use codealong_peer::{net, proto};
 
 uniffi::setup_scaffolding!();
@@ -120,6 +120,9 @@ pub struct SessionRow {
     pub status: Status,
     /// It says it's working but nothing has happened for a long while.
     pub stalled: bool,
+    /// Working only in that it waits on a command its turn left running in the background (a
+    /// CI watch, a build), which wakes it when it ends: drawn waiting, not running.
+    pub waits_in_background: bool,
     pub harness: String,
     pub account: String,
     pub project: String,
@@ -143,6 +146,31 @@ pub struct SessionRow {
     pub asks: bool,
     /// Its worktree's PR, as "#12 Title", for the quick search to find it by.
     pub pr: Option<String>,
+    /// Its turn is running and its Mac can stop it: what the harness's own Stop sends, or Escape
+    /// in its terminal.
+    pub stoppable: bool,
+    /// Its turn is running and a message can reach the agent in that turn at once (Send now).
+    pub steerable: bool,
+    /// The model it's on, as its harness names it, where its Mac says.
+    pub model: Option<String>,
+    /// The name you gave it, where its harness keeps one.
+    pub name: Option<String>,
+    /// The session it came from, when its harness or Codealong wrote that down.
+    pub origin: Option<SessionOrigin>,
+    /// Its last turn ended on its account's usage limit and nothing has been said since: what that
+    /// comes to, in a sentence or two, with `{in:<ms>}` for when it lifts.
+    pub limit: Option<String>,
+}
+
+/// The session one came from: forked from it, or started by its agent.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct SessionOrigin {
+    /// Its key here (`@<device>:<key>`).
+    pub key: String,
+    /// Its title, while its Mac still lists it.
+    pub title: Option<String>,
+    /// A copy of its conversation going on by itself; otherwise its agent started this one.
+    pub fork: bool,
 }
 
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
@@ -295,6 +323,7 @@ pub(crate) fn all_rows(feeds: &Feeds) -> Vec<SessionRow> {
     let projects = Projects::of_feeds(feeds);
     let mut sessions = Vec::new();
     for (d, replica) in feeds {
+        let titles: std::collections::HashMap<&str, &str> = replica.lanes.iter().flat_map(|l| l.sessions.iter()).map(|s| (s.key.as_str(), s.title.as_str())).collect();
         let mut seen = std::collections::HashSet::new();
         // A session shows under every lane it worked in; its own lane lists it without a
         // visitor note, so that one goes first.
@@ -322,6 +351,7 @@ pub(crate) fn all_rows(feeds: &Feeds) -> Vec<SessionRow> {
                 detail: s.detail.clone(),
                 status,
                 stalled: s.stalled_since.is_some(),
+                waits_in_background: s.waits_in_background(),
                 harness: s.harness.word().to_string(),
                 account: s.account.clone(),
                 project: project.unwrap_or_else(|| lane.project.clone()),
@@ -339,10 +369,42 @@ pub(crate) fn all_rows(feeds: &Feeds) -> Vec<SessionRow> {
                 in_app: s.surface == codealong_peer::model::Surface::App,
                 asks: s.asks,
                 pr: lane.pr.as_ref().map(|p| format!("#{} {}", p.number, p.title)),
+                // Macs before 2026-09-29 don't say, and stop only the sessions Codealong runs.
+                stoppable: s.stoppable || (s.hosted && status == Status::Working),
+                steerable: s.steerable,
+                model: s.model.clone(),
+                name: s.name.clone(),
+                origin: s.origin.as_ref().map(|o| SessionOrigin { key: remote_key(&d.short, &o.key), title: titles.get(o.key.as_str()).map(|t| t.to_string()), fork: o.how == OriginHow::Fork }),
+                limit: s.limit.as_ref().filter(|_| status != Status::Working).map(|l| limit_words(&s.account, l, now)),
             });
         }
     }
     sessions
+}
+
+/// What a usage limit that stopped a session comes to, as the Mac's session header says it
+/// (lanes.ts `limitWords`): which limit, when it lifts, and whether another account has room. A
+/// move to that account is made on the Mac, which opens a terminal there.
+fn limit_words(account: &str, limit: &SessionLimit, now: i64) -> String {
+    let lifted = limit.resets_at.is_some_and(|t| t <= now);
+    let name = match limit.meter.as_deref() {
+        Some("session") => "5-hour limit".to_string(),
+        Some("week") => "weekly limit".to_string(),
+        Some(m) if m.starts_with("model:") => format!("weekly {} limit", &m["model:".len()..]),
+        _ => "usage limit".to_string(),
+    };
+    let spent = if limit.spend_capped { ", with no extra usage to carry it" } else { "" };
+    let when = match limit.resets_at {
+        _ if lifted => " It has lifted since: send it something to go on.".to_string(),
+        Some(t) => format!(" It lifts {{in:{t}}}."),
+        None => String::new(),
+    };
+    let room = match &limit.move_to {
+        _ if lifted => String::new(),
+        Some(to) => format!(" {to} has room: move it there on its Mac to go on now."),
+        None => " No other account has room.".to_string(),
+    };
+    format!("It stopped at {account}\u{2019}s {name}{spent}.{when}{room}")
 }
 
 /// Projects lined up across Macs, as a Mac lines another device's worktrees up with its own
@@ -451,9 +513,59 @@ pub struct Item {
     pub input: Option<String>,
     pub output: Option<String>,
     pub failed: bool,
+    /// A prompt of yours the session took back before its agent answered, so the agent never saw
+    /// it.
+    pub withdrawn: bool,
+    /// The questions a call asks you, in place of its input, with what you answered once it's in.
+    pub questions: Vec<Question>,
+    /// A page on the web the call made or opened: an artifact Claude Code published.
+    pub link: Option<WebLink>,
 }
 
-/// A tool call the session waits on you to allow.
+/// A question an agent asks you (Claude Code's `AskUserQuestion`), with its choices, and, once
+/// answered, what you picked.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct Question {
+    /// Its text, which its answer is keyed by.
+    pub question: String,
+    /// A word or two naming it.
+    pub header: Option<String>,
+    pub options: Vec<QuestionChoice>,
+    /// More than one choice can be picked.
+    pub multi_select: bool,
+    /// It was answered (in the conversation; never for one that waits on you).
+    pub answered: bool,
+    /// The choices picked.
+    pub picked: Vec<String>,
+    /// Words of your own, in place of a choice or beside them.
+    pub own: Vec<String>,
+}
+
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct QuestionChoice {
+    pub label: String,
+    pub description: Option<String>,
+}
+
+/// Your answer to one of the questions a session waits on you for: the choices picked, or your
+/// own words.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct QuestionAnswer {
+    pub question: String,
+    pub multi_select: bool,
+    pub picks: Vec<String>,
+}
+
+/// A page on the web that a tool call made or opened.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct WebLink {
+    pub url: String,
+    pub title: String,
+    /// What the call did with it, in a word or two: "Published · version 3".
+    pub note: Option<String>,
+}
+
+/// What a session waits on you for: a tool call to allow, a plan to approve, or questions.
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
 pub struct Pending {
     pub id: String,
@@ -463,8 +575,52 @@ pub struct Pending {
     pub cannot: Option<String>,
     /// It can be allowed from now on too (`Choice::Always`).
     pub always: bool,
+    /// It can't be allowed just this once: its agent offers no answer that does, so there's no
+    /// Allow, only Always where `always` says so.
+    pub no_once: bool,
     /// It's a plan to approve: `input` is the plan, in Markdown, to read as prose.
     pub plan: bool,
+    /// Questions it asks you: answered with your picks (`answer_questions`), or declined.
+    pub questions: Vec<Question>,
+    /// What the session wrote with this isn't in its conversation yet, only where it runs: its
+    /// harness writes it once it's answered.
+    pub unwritten: bool,
+}
+
+/// A question as the session asks it, with what was answered (`answers`, from the call's result)
+/// sorted into the choices picked and your own words, as the Mac's QuestionList.tsx `picksOf`
+/// does. Claude Code records several picks as a list, or, in older versions, as one string joined
+/// with commas.
+fn question_of(q: &api::Question, answers: Option<&std::collections::BTreeMap<String, Vec<String>>>) -> Question {
+    let labels: std::collections::HashSet<&str> = q.options.iter().map(|o| o.label.as_str()).collect();
+    let given = answers.and_then(|a| a.get(&q.question));
+    let (mut picked, mut own) = (Vec::<String>::new(), Vec::<String>::new());
+    for a in given.into_iter().flatten() {
+        if labels.contains(a.as_str()) {
+            picked.push(a.clone());
+            continue;
+        }
+        let parts: Vec<&str> = if q.multi_select { a.split(", ").collect() } else { Vec::new() };
+        let known: Vec<&str> = parts.iter().copied().filter(|p| labels.contains(p)).collect();
+        if known.is_empty() {
+            own.push(a.clone());
+            continue;
+        }
+        picked.extend(known.iter().map(|p| p.to_string()));
+        let rest: Vec<&str> = parts.iter().copied().filter(|p| !labels.contains(p)).collect();
+        if !rest.is_empty() {
+            own.push(rest.join(", "));
+        }
+    }
+    Question {
+        question: q.question.clone(),
+        header: q.header.clone(),
+        options: q.options.iter().map(|o| QuestionChoice { label: o.label.clone(), description: o.description.clone() }).collect(),
+        multi_select: q.multi_select,
+        answered: given.is_some(),
+        picked,
+        own,
+    }
 }
 
 /// How to answer what a session waits on.
@@ -547,6 +703,8 @@ impl Thread {
                     _ => ItemKind::Note,
                 };
                 let result = (kind == ItemKind::Tool).then(|| i.id.as_deref().and_then(|id| results.get(id))).flatten();
+                // Your answers to its questions are on the call's result.
+                let answers = result.map(|r| &r.answers).filter(|a| !a.is_empty()).or(Some(&i.answers).filter(|a| !a.is_empty()));
                 Some(Item {
                     id: item_id(i),
                     at: i.at,
@@ -555,6 +713,9 @@ impl Thread {
                     input: i.input.clone(),
                     output: result.and_then(|r| r.output.clone()).or_else(|| i.output.clone()),
                     failed: i.failed || result.is_some_and(|r| r.failed),
+                    withdrawn: i.withdrawn,
+                    questions: i.questions.iter().map(|q| question_of(q, answers)).collect(),
+                    link: i.link.as_ref().or(result.and_then(|r| r.link.as_ref())).map(|l| WebLink { url: l.url.clone(), title: l.title.clone(), note: l.note.clone() }),
                 })
             })
             .collect()
@@ -589,6 +750,9 @@ fn prompt_in(page: &api::Page) -> Option<Item> {
         input: None,
         output: None,
         failed: false,
+        withdrawn: i.withdrawn,
+        questions: Vec::new(),
+        link: None,
     })
 }
 
@@ -642,7 +806,17 @@ impl Conversation {
     }
 
     pub fn pending(&self) -> Result<Option<Pending>, CoreError> {
-        Ok(self.client.pending(&self.device, &self.key)?.map(|p| Pending { id: p.id, label: p.label, input: p.input, cannot: p.cannot, always: p.always, plan: p.plan }))
+        Ok(self.client.pending(&self.device, &self.key)?.map(|p| Pending {
+            questions: p.questions.iter().map(|q| question_of(q, None)).collect(),
+            id: p.id,
+            label: p.label,
+            input: p.input,
+            cannot: p.cannot,
+            always: p.always,
+            no_once: p.no_once,
+            plan: p.plan,
+            unwritten: p.unwritten,
+        }))
     }
 
     /// Answers the tool call `id`, if it's still the one the session waits on.
@@ -652,7 +826,21 @@ impl Conversation {
             Choice::Always => api::Answer::Always,
             Choice::Deny => api::Answer::Deny,
         };
-        Ok(self.client.answer(&self.device, &self.key, &id, answer)?)
+        Ok(self.client.answer(&self.device, &self.key, params::Answer { id, answer: Some(answer), ..Default::default() })?)
+    }
+
+    /// Answers the questions call `id` asks with your picks, if it's still the one the session
+    /// waits on.
+    pub fn answer_questions(&self, id: String, answers: Vec<QuestionAnswer>) -> Result<String, CoreError> {
+        let answers = answers_json(&answers).ok_or_else(|| CoreError::Failed("Pick an answer first.".into()))?;
+        Ok(self.client.answer(&self.device, &self.key, params::Answer { id, answer: Some(api::Answer::Allow), answers: Some(answers), ..Default::default() })?)
+    }
+
+    /// Denies call `id` and tells the agent what to do instead, as Claude Code's own "No, and
+    /// tell Claude what to do differently" does. Macs before 2026-10-05 deny it and drop the
+    /// words.
+    pub fn deny_saying(&self, id: String, message: String) -> Result<String, CoreError> {
+        Ok(self.client.answer(&self.device, &self.key, params::Answer { id, answer: Some(api::Answer::Deny), message: Some(message), ..Default::default() })?)
     }
 
     /// Asks the Mac to send this session's reply as it's written, while it's shown. Says false
@@ -672,15 +860,97 @@ impl Conversation {
         self.client.stream(&self.device, &self.key).map(|s| Live { text: s.text, tool: s.tool })
     }
 
-    /// Stops the turn it's taking (a session Codealong runs; needs remote control there).
-    pub fn stop(&self) -> Result<(), CoreError> {
-        Ok(self.client.cancel(&self.device, &self.key)?)
+    /// Stops the turn it's taking (one whose row says `stoppable`; needs remote control there).
+    /// Says what happened.
+    pub fn stop(&self) -> Result<String, CoreError> {
+        Ok(self.client.cancel(&self.device, &self.key)?.unwrap_or_else(|| "Stopped.".into()))
     }
 
-    /// Sends the session a prompt, where it runs on its Mac. Says how it went.
-    pub fn send(&self, text: String) -> Result<String, CoreError> {
-        let sent = self.client.send(&self.device, &self.key, &text)?;
+    /// Sends the session a prompt, where it runs on its Mac; with `now`, into the turn it's taking
+    /// at once (one whose row says `steerable`). Says how it went.
+    pub fn send(&self, text: String, now: bool) -> Result<String, CoreError> {
+        let sent = self.client.send(&self.device, &self.key, &text, now)?;
         Ok(sent.message)
+    }
+
+    /// How a message sent to it would reach it, as its Mac says; None for one Codealong runs, and
+    /// from Macs before 2026-09-30, which don't say.
+    pub fn way(&self) -> Option<Way> {
+        self.client.way(&self.device, &self.key).ok().flatten().map(Way::from)
+    }
+
+    /// Goes on with it where `place` says (one of its account's `resumes`), on `model` and
+    /// `effort` where that place takes them, on `prompt`. Says how it went, as a send does.
+    pub fn resume(&self, place: String, model: Option<String>, effort: Option<String>, prompt: String) -> Result<String, CoreError> {
+        let place = api::Place::from_word(&place).ok_or_else(|| CoreError::Failed(format!("{place} isn't a place a session can go on in.")))?;
+        let takes = place_takes_model(place);
+        let resume = api::ResumeIn { place, model: model.filter(|_| takes), effort: effort.filter(|_| takes) };
+        Ok(self.client.resume(&self.device, &self.key, resume, &prompt)?.message)
+    }
+
+    /// Switches it, while it runs, to another of its account's models, for it alone. Says what
+    /// happened.
+    pub fn switch_model(&self, model: String) -> Result<String, CoreError> {
+        Ok(self.client.switch_model(&self.device, &self.key, &model)?)
+    }
+}
+
+/// The questions' answers as a session takes them: each question's text to the choice picked or
+/// the words written, or, where it takes several, to all of them. None when nothing's answered.
+fn answers_json(answers: &[QuestionAnswer]) -> Option<serde_json::Value> {
+    let mut out = serde_json::Map::new();
+    for a in answers {
+        let picks: Vec<&str> = a.picks.iter().map(|p| p.trim()).filter(|p| !p.is_empty()).collect();
+        if picks.is_empty() {
+            continue;
+        }
+        let v = if a.multi_select { serde_json::json!(picks) } else { serde_json::json!(picks[0]) };
+        out.insert(a.question.clone(), v);
+    }
+    (!out.is_empty()).then_some(serde_json::Value::Object(out))
+}
+
+/// Whether a session started or going on there can be asked for a model and effort: on the
+/// command line, or of Codealong's adapter. The apps choose their own.
+fn place_takes_model(place: api::Place) -> bool {
+    matches!(place, api::Place::Terminal | api::Place::Background | api::Place::Codealong)
+}
+
+/// How a message sent to a session would reach it, as its Mac says (the engine's send.rs
+/// `way_in`).
+#[derive(uniffi::Enum, Clone, Debug, PartialEq)]
+pub enum Way {
+    /// Typed into its tab or pane in this terminal app.
+    Typed { app: String },
+    /// Pasted into its background job by Claude Code's background service.
+    Background,
+    /// A message from Codealong on Claude Code's socket for messages between sessions.
+    Message,
+    /// It isn't running: it goes on with the prompt, in a new tab of this terminal app unless
+    /// you pick another place.
+    Resume { app: String },
+    /// A Claude app session that isn't running: the app opens it with the prompt on the clipboard.
+    ClaudeApp,
+    /// The Codex app starts a turn, or the thread opens with the prompt filled in.
+    CodexApp,
+    /// Posted to OpenCode's service.
+    Opencode,
+    /// Nothing takes a prompt from outside: the app comes forward with it on the clipboard.
+    Antigravity,
+}
+
+impl From<api::Way> for Way {
+    fn from(w: api::Way) -> Way {
+        match w {
+            api::Way::Typed { app } => Way::Typed { app },
+            api::Way::Background => Way::Background,
+            api::Way::Message => Way::Message,
+            api::Way::Resume { app } => Way::Resume { app },
+            api::Way::ClaudeApp => Way::ClaudeApp,
+            api::Way::CodexApp => Way::CodexApp,
+            api::Way::Opencode => Way::Opencode,
+            api::Way::Antigravity => Way::Antigravity,
+        }
     }
 }
 
@@ -689,7 +959,7 @@ mod tests {
     use super::*;
 
     fn item(kind: &str, cursor: u64, id: Option<&str>, output: Option<&str>) -> api::Item {
-        api::Item { at: cursor as i64, kind: kind.into(), text: format!("{kind} {cursor}"), id: id.map(String::from), input: None, output: output.map(String::from), failed: false, cursor, n: 0 }
+        api::Item { at: cursor as i64, kind: kind.into(), text: format!("{kind} {cursor}"), id: id.map(String::from), input: None, output: output.map(String::from), failed: false, withdrawn: false, questions: vec![], answers: Default::default(), link: None, cursor, n: 0 }
     }
 
     #[test]
@@ -708,6 +978,76 @@ mod tests {
         t.take(api::Page { items: vec![item("agent", 40, None, None), item("you", 60, None, None)], before: Some(40), after: 70 }, false);
         assert_eq!(t.shown().len(), 4);
         assert_eq!(t.after, 70);
+    }
+
+    #[test]
+    fn questions_show_what_was_picked_and_answers_go_as_a_session_takes_them() {
+        let q = api::Question {
+            question: "Which?".into(),
+            header: Some("Pick".into()),
+            options: vec![api::Choice { label: "Red".into(), description: None }, api::Choice { label: "Blue".into(), description: Some("Calm".into()) }],
+            multi_select: true,
+        };
+        let mut call = item("tool", 20, Some("q1"), None);
+        call.questions = vec![q.clone()];
+        let mut result = item("result", 30, Some("q1"), Some("ok"));
+        // An older Claude Code joins several picks with commas; words of your own go beside them.
+        result.answers = [("Which?".to_string(), vec!["Red, Blue, green-ish".to_string()])].into();
+        result.link = Some(api::Link { url: "https://claude.ai/artifact/x".into(), title: "Dashboard".into(), note: None });
+        let mut t = Thread::default();
+        t.take(api::Page { items: vec![call, result], before: None, after: 40 }, false);
+        let shown = t.shown();
+        let asked = &shown[0].questions[0];
+        assert_eq!((asked.answered, asked.picked.clone(), asked.own.clone()), (true, vec!["Red".to_string(), "Blue".into()], vec!["green-ish".to_string()]));
+        assert_eq!(shown[0].link.as_ref().map(|l| l.title.as_str()), Some("Dashboard"));
+        // Still waiting, nothing is answered.
+        assert!(!question_of(&q, None).answered);
+
+        let answers = |a: &[(&str, bool, &[&str])]| answers_json(&a.iter().map(|(q, m, p)| QuestionAnswer { question: q.to_string(), multi_select: *m, picks: p.iter().map(|s| s.to_string()).collect() }).collect::<Vec<_>>());
+        assert_eq!(answers(&[("Which?", true, &["Red", "Blue"]), ("Why?", false, &["Because", "ignored"]), ("Skipped", false, &[" "])]), Some(serde_json::json!({ "Which?": ["Red", "Blue"], "Why?": "Because" })));
+        assert_eq!(answers(&[("Which?", false, &[])]), None);
+    }
+
+    #[test]
+    fn the_reply_box_says_how_a_message_gets_there() {
+        let mut s = Session::new(Harness::Claude, "claude2", "abc");
+        s.live = true;
+        assert_eq!(placeholder(&s, Some(&Way::Typed { app: "Ghostty".into() }), None), "Send to claude2 via Ghostty");
+        s.status = PeerStatus::Working;
+        assert_eq!(placeholder(&s, Some(&Way::Background), None), "Send to claude2 via its background job: it takes this in as it works");
+        s.asks = true;
+        s.status = PeerStatus::Needs;
+        assert_eq!(placeholder(&s, Some(&Way::Message), None), "Answer claude2 as a message from Codealong");
+        // Not running, it goes on where it's picked to, else in the terminal its Mac said.
+        let (mut off, ghostty) = (Session::new(Harness::Claude, "claude", "def"), Way::Resume { app: "Ghostty".into() });
+        assert_eq!(placeholder(&off, Some(&ghostty), None), "Send to claude: it isn\u{2019}t running, so this resumes it in Ghostty");
+        assert_eq!(placeholder(&off, Some(&ghostty), Some((api::Place::Background, false))), "Send to claude: it isn\u{2019}t running, so this resumes it in the background");
+        assert_eq!(placeholder(&off, Some(&ghostty), Some((api::Place::Codealong, false))), "Send to claude: it isn\u{2019}t running, so Codealong runs it from now on");
+        // A Mac that doesn't say: as its state suggests.
+        assert_eq!(placeholder(&off, None, None), "Send to claude: it isn\u{2019}t running, so this resumes it in a terminal");
+        off.hosted = true;
+        off.status = PeerStatus::Working;
+        assert_eq!(placeholder(&off, None, None), "Send to claude: it takes this after its current turn");
+    }
+
+    #[test]
+    fn models_are_named_as_people_say_them() {
+        let listed = vec![StartModel { id: "opus".into(), label: "Opus 5.5 (1M context)".into() }];
+        assert_eq!(model_name("opus".into(), listed), "Opus 5.5 1M");
+        assert_eq!(model_name("claude-opus-5-5".into(), vec![]), "Opus 5.5");
+        assert_eq!(model_name("claude-fable-5-1[1m]".into(), vec![]), "Fable 5.1 1M");
+        assert_eq!(model_name("claude-haiku-4-5-20251001".into(), vec![]), "Haiku 4.5");
+        assert_eq!(model_name("claude-sonnet-4-20250514".into(), vec![]), "Sonnet 4");
+        assert_eq!(model_name("gpt-5.5".into(), vec![]), "gpt-5.5");
+    }
+
+    #[test]
+    fn a_usage_limit_says_when_it_lifts_and_who_has_room() {
+        let limit = SessionLimit { meter: Some("session".into()), resets_at: Some(5_000), spend_capped: false, at: 1, move_to: Some("claude2".into()), model: None };
+        assert_eq!(limit_words("claude", &limit, 1_000), "It stopped at claude\u{2019}s 5-hour limit. It lifts {in:5000}. claude2 has room: move it there on its Mac to go on now.");
+        assert_eq!(limit_words("claude", &limit, 9_000), "It stopped at claude\u{2019}s 5-hour limit. It has lifted since: send it something to go on.");
+        let week = SessionLimit { meter: Some("model:Opus".into()), resets_at: None, spend_capped: true, move_to: None, ..limit };
+        assert_eq!(limit_words("claude", &week, 1_000), "It stopped at claude\u{2019}s weekly Opus limit, with no extra usage to carry it. No other account has room.");
     }
 
     #[test]
@@ -759,6 +1099,31 @@ pub struct Worktree {
     pub device: String,
     /// It's its repo's main checkout.
     pub main: bool,
+    /// Codealong's own chats: a session started here gets a folder of its own, in no project.
+    pub chat: bool,
+    /// What it holds, for a worktree that takes one piece of work after another; none for one
+    /// kept for a single piece of work.
+    pub reuse: Option<WorktreeReuse>,
+}
+
+/// What a reusable worktree holds (the Mac's board.rs `reuse_of`).
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorktreeReuse {
+    /// No work: new work can start here.
+    Free,
+    /// Work under way.
+    Open,
+    /// Its PR is open.
+    Review,
+    /// Its PR merged: new work can start once it's back on the default branch.
+    Landed,
+}
+
+impl Worktree {
+    /// New work can start here without joining other work: reusable, and holding none.
+    pub(crate) fn takes_new_work(&self) -> bool {
+        matches!(self.reuse, Some(WorktreeReuse::Free | WorktreeReuse::Landed))
+    }
 }
 
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
@@ -766,6 +1131,9 @@ pub struct StartPlace {
     /// As the Mac names it: `terminal`, `background`, `claude-app`, `codex-app`, `codealong`.
     pub id: String,
     pub label: String,
+    /// For `background`: its harness has no background service of its own, so it runs in a
+    /// terminal opened behind the Mac's windows.
+    pub behind: bool,
 }
 
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
@@ -780,6 +1148,19 @@ pub struct StartAccount {
     /// The model it starts on unless you pick one.
     pub default_model: Option<String>,
     pub preferred: bool,
+    /// The models a start on its command line can ask for; none when it takes none.
+    pub models: Vec<StartModel>,
+    /// The effort levels a start on its command line can ask for, lowest first.
+    pub efforts: Vec<StartModel>,
+    /// Its command line makes a new worktree for a session when asked.
+    pub worktree: bool,
+    /// Of `places`, where one of its sessions that isn't running can go on; empty from Macs
+    /// before 2026-10-06, which resume one only in a terminal.
+    pub resumes: Vec<StartPlace>,
+    /// Where one of its sessions goes on from the phone unless you pick another (`start_place`).
+    pub resume: Option<String>,
+    /// Its running sessions that its Mac types into can be switched to another of `models`.
+    pub switches_model: bool,
 }
 
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
@@ -812,18 +1193,26 @@ pub(crate) fn all_worktrees(feeds: &Feeds) -> Vec<Worktree> {
         .flat_map(|(d, r)| r.lanes.iter().map(move |l| (d, l)))
         .filter_map(|(d, l)| {
             let project = projects.lane(l);
-            if l.hidden && project.is_none() {
+            // Codealong's chats are on the board hidden, so there's always one to start in.
+            if l.hidden && project.is_none() && !l.starts_chats {
                 return None;
             }
             Some(Worktree {
                 id: l.id.clone(),
-                project: project.unwrap_or_else(|| l.project.clone()),
+                project: if l.starts_chats { ELSEWHERE.to_string() } else { project.unwrap_or_else(|| l.project.clone()) },
                 repo: l.repo.clone(),
                 name: l.callsign.clone(),
                 branch: l.branch.clone(),
                 last_activity: l.last_activity,
                 device: d.key.clone(),
                 main: l.origin == codealong_peer::model::Origin::Main,
+                chat: l.starts_chats,
+                reuse: l.reuse.map(|r| match r {
+                    Reuse::Free => WorktreeReuse::Free,
+                    Reuse::Open => WorktreeReuse::Open,
+                    Reuse::Review => WorktreeReuse::Review,
+                    Reuse::Landed => WorktreeReuse::Landed,
+                }),
             })
         })
         .collect();
@@ -832,11 +1221,62 @@ pub(crate) fn all_worktrees(feeds: &Feeds) -> Vec<Worktree> {
 }
 
 /// Where a start from the phone goes unless you pick another: somewhere that needs nobody at the
-/// Mac, since a locked Mac opens no terminal. Codealong itself (over ACP) first, then Claude Code's
-/// background service, then where the account usually starts.
-fn start_place(a: &api::StartAccount) -> Option<String> {
-    let has = |p: api::Place| a.places.iter().any(|o| o.place == p);
-    [api::Place::Codealong, api::Place::Background].into_iter().find(|p| has(*p)).or(a.chosen.filter(|p| has(*p))).or_else(|| a.places.first().map(|o| o.place)).map(|p| p.word().to_string())
+/// Mac, since a locked Mac opens no terminal. Codealong itself (over ACP) first, then a background
+/// service (not a terminal behind the Mac's windows, which is a terminal all the same), then
+/// where the account usually starts. `among` is the places to choose from.
+fn start_place(a: &api::StartAccount, among: &[api::Place]) -> Option<String> {
+    first_place(a, among, [api::Place::Codealong, api::Place::Background])
+}
+
+/// Where one of its sessions goes on from the phone unless you pick another: its harness's own
+/// background service first, where it stays the harness's session, to attach a terminal to later;
+/// then Codealong; then as a start goes.
+fn resume_place(a: &api::StartAccount) -> Option<String> {
+    first_place(a, &a.resumes, [api::Place::Background, api::Place::Codealong])
+}
+
+/// The first of `order` among `among` that needs nobody at the Mac, else the account's usual
+/// place, else the first.
+fn first_place(a: &api::StartAccount, among: &[api::Place], order: [api::Place; 2]) -> Option<String> {
+    let has = |p: api::Place| among.contains(&p);
+    let behind = a.places.iter().any(|o| o.place == api::Place::Background && o.behind);
+    order
+        .into_iter()
+        .find(|p| has(*p) && !(*p == api::Place::Background && behind))
+        .or(a.chosen.filter(|p| has(*p)))
+        .or_else(|| among.first().copied())
+        .map(|p| p.word().to_string())
+}
+
+/// How sure a Mac's suggestion must be of a reusable worktree with work under way for new work
+/// to join that work: less sure, it matched the repo more than the work (reusable.ts `JOIN_AT`).
+pub(crate) const JOIN_AT: f64 = 0.5;
+
+/// Where new work goes from the worktree `picked` (at likelihood `p`, by the ids `ranked` most
+/// likely first), as the Mac's reusable.ts `newWorkIn` has it: a reusable worktree that holds no
+/// work, as picked; one with work under way when the pick is sure of it and it isn't the main
+/// checkout; otherwise the repo's reusable worktree that holds no work, the one ranked highest,
+/// then free before landed, then the latest active; with none free, the main checkout if it's
+/// reusable, then the repo's reusable one ranked highest. None when the repo has none reusable.
+pub(crate) fn new_work_in<'a>(picked: &'a Worktree, p: f64, all: &'a [Worktree], ranked: &[String]) -> Option<&'a Worktree> {
+    if picked.takes_new_work() || (picked.reuse.is_some() && !picked.main && p >= JOIN_AT) {
+        return Some(picked);
+    }
+    let rank = |w: &Worktree| ranked.iter().position(|id| *id == w.id).unwrap_or(usize::MAX);
+    let repo: Vec<&Worktree> = all.iter().filter(|w| w.reuse.is_some() && w.device == picked.device && w.project == picked.project && w.repo == picked.repo).collect();
+    let free = repo.iter().filter(|w| w.takes_new_work()).min_by_key(|w| (rank(w), w.reuse != Some(WorktreeReuse::Free), std::cmp::Reverse(w.last_activity)));
+    free.or_else(|| repo.iter().find(|w| w.main)).or_else(|| repo.iter().min_by_key(|w| (rank(w), std::cmp::Reverse(w.last_activity)))).copied()
+}
+
+/// The worktree new work starts in on a Mac, in `project` (empty for any), unless you pick one:
+/// in the most recently active repo, where new work goes from its latest worktree
+/// (`new_work_in`), else its main checkout, as the Mac's panel picks one; else the latest
+/// worktree. `worktrees` are one Mac's, most recently active first.
+fn start_worktree(worktrees: &[Worktree], project: &str) -> Option<Worktree> {
+    let here: Vec<&Worktree> = worktrees.iter().filter(|w| !w.chat && (project.is_empty() || w.project == project)).collect();
+    let latest = *here.first()?;
+    let picked = new_work_in(latest, 0.0, worktrees, &[]).or_else(|| here.iter().copied().find(|w| w.repo == latest.repo && w.project == latest.project && w.main));
+    Some(picked.unwrap_or(latest).clone())
 }
 
 #[uniffi::export]
@@ -847,35 +1287,167 @@ impl Core {
         self.client.with_feeds(|feeds| all_worktrees(feeds).into_iter().filter(|w| w.device == device).collect())
     }
 
+    /// The worktree new work starts in on `device`, in `project` (empty for any), unless you
+    /// pick another (`start_worktree`).
+    pub fn start_worktree(&self, device: String, project: String) -> Option<Worktree> {
+        start_worktree(&self.worktrees(device), &project)
+    }
+
     /// What `device` can start, asked of it.
     pub fn start_choices(&self, device: String) -> Result<StartChoices, CoreError> {
         let o = self.client.start_options(&device)?;
-        Ok(StartChoices {
-            accounts: o
-                .accounts
-                .iter()
-                .map(|a| StartAccount {
-                    name: a.name.clone(),
-                    harness: a.harness.word().to_string(),
-                    places: a.places.iter().map(|p| StartPlace { id: p.place.word().to_string(), label: p.label.clone() }).collect(),
-                    place: start_place(a),
-                    unavailable: a.unavailable.clone(),
-                    default_model: a.default_model.clone(),
-                    preferred: a.preferred,
-                })
-                .collect(),
-            models: o.claude_models.into_iter().map(|m| StartModel { id: m.id, label: m.label }).collect(),
-        })
+        Ok(start_choices(o))
     }
 
     /// Starts a session on `device` in `worktree` (its id there), on `account`, at `place`; with
-    /// `new_worktree`, Claude Code makes a worktree of its own for it from that one's repo.
-    pub fn start_session(&self, device: String, worktree: String, account: String, place: String, prompt: String, model: Option<String>, new_worktree: bool) -> Result<StartedSession, CoreError> {
+    /// `new_worktree`, its harness makes a worktree of its own for it from that one's repo.
+    pub fn start_session(&self, device: String, worktree: String, account: String, place: String, prompt: String, model: Option<String>, effort: Option<String>, new_worktree: bool) -> Result<StartedSession, CoreError> {
         let place = api::Place::from_word(&place).ok_or_else(|| CoreError::Failed(format!("{place} isn't a place a session can start.")))?;
-        let spec = api::StartSpec { lane_id: worktree, account, place, prompt, model, effort: None, worktree: new_worktree, todos: Vec::new() };
+        let takes = place_takes_model(place);
+        let spec = api::StartSpec { lane_id: worktree, account, place, prompt, model: model.filter(|_| takes), effort: effort.filter(|_| takes), worktree: new_worktree, todos: Vec::new(), from: None };
         let started = self.client.start_session(&device, &spec)?;
         let short = device.get(..10).unwrap_or(&device);
         Ok(StartedSession { key: started.key.map(|k| remote_key(short, &k)), message: started.message })
+    }
+
+    /// Forks a session into a copy that goes on without a window on its Mac, on `prompt` when
+    /// there's one. Macs before 2026-09-30 refuse it.
+    pub fn fork(&self, key: String, prompt: String) -> Result<StartedSession, CoreError> {
+        let (device, own) = split_remote(&key).ok_or_else(|| CoreError::Failed("That isn't a session on one of your Macs.".into()))?;
+        let started = self.client.fork(device, own, &prompt)?;
+        Ok(StartedSession { key: started.key.map(|k| remote_key(device, &k)), message: started.message })
+    }
+
+    /// Names a session on the Mac it's on, where its harness keeps its name. Macs before
+    /// 2026-09-30 refuse it.
+    pub fn rename(&self, key: String, name: String) -> Result<(), CoreError> {
+        let (device, own) = split_remote(&key).ok_or_else(|| CoreError::Failed("That isn't a session on one of your Macs.".into()))?;
+        Ok(self.client.rename(device, own, name.trim())?)
+    }
+
+    /// What a session's reply box says before you write: who it goes to and how it gets there
+    /// (`way`, as its Mac said); for one that isn't running, where it goes on (`resume_place`,
+    /// with `behind` for a terminal behind the Mac's windows).
+    pub fn reply_placeholder(&self, key: String, way: Option<Way>, resume_place: Option<String>, behind: bool) -> String {
+        let Some((device, own)) = split_remote(&key) else { return "Reply".into() };
+        let resuming = resume_place.as_deref().and_then(api::Place::from_word).map(|p| (p, behind));
+        self.client.with_feeds(|feeds| {
+            let session = feeds.iter().filter(|(d, _)| d.short == device || d.key == device).flat_map(|(_, r)| r.lanes.iter().flat_map(|l| l.sessions.iter())).find(|s| s.key == own);
+            session.map_or_else(|| "Reply".into(), |s| placeholder(s, way.as_ref(), resuming))
+        })
+    }
+}
+
+/// A model as people say it (start.ts `modelName`): its account's label for it where it lists
+/// it, else Claude's own ids spelled out (`claude-opus-5-5` is Opus 5.5), else as its harness
+/// names it.
+#[uniffi::export]
+pub fn model_name(model: String, models: Vec<StartModel>) -> String {
+    if let Some(known) = models.iter().find(|m| m.id == model) {
+        let label = known.label.split(':').next().unwrap_or(&known.label);
+        return label.strip_suffix(" (1M context)").map_or_else(|| label.to_string(), |l| format!("{l} 1M"));
+    }
+    let lower = model.to_lowercase();
+    let (base, long) = match lower.strip_suffix("[1m]") {
+        Some(b) => (&model[..b.len()], true),
+        None => (model.as_str(), false),
+    };
+    let parts: Vec<&str> = base.split('-').collect();
+    let digits = |s: &str, max: usize| !s.is_empty() && s.len() <= max && s.chars().all(|c| c.is_ascii_digit());
+    let name = match parts.as_slice() {
+        // claude-<family>-<major>[-<minor>][-<date>]
+        ["claude", family, major, rest @ ..] if !family.is_empty() && family.chars().all(|c| c.is_ascii_alphabetic()) && digits(major, 3) => {
+            // A date after the version names a snapshot of it, which reads as the version.
+            let date = |d: &str| d.len() == 8 && digits(d, 8);
+            let minor = match rest {
+                [] => None,
+                [d] if date(d) => None,
+                [m] if digits(m, 2) => Some(*m),
+                [m, d] if digits(m, 2) && date(d) => Some(*m),
+                _ => return format!("{base}{}", if long { " 1M" } else { "" }),
+            };
+            let mut f = family.chars();
+            let family: String = f.next().map(|c| c.to_ascii_uppercase()).into_iter().chain(f).collect();
+            format!("{family} {major}{}", minor.map(|m| format!(".{m}")).unwrap_or_default())
+        }
+        _ => base.to_string(),
+    };
+    if long { format!("{name} 1M") } else { name }
+}
+
+/// What a Mac can start, as the phone offers it.
+fn start_choices(o: api::StartOptions) -> StartChoices {
+    let listed = |m: &[api::ModelOption]| -> Vec<StartModel> { m.iter().map(|m| StartModel { id: m.id.clone(), label: m.label.clone() }).collect() };
+    let (claude, claude_efforts) = (listed(&o.claude_models), listed(&o.claude_efforts));
+    let accounts = o
+        .accounts
+        .iter()
+        .map(|a| {
+            // Macs before the models were listed for each account list Claude Code's alone, and
+            // make a new worktree only for it.
+            let older = a.models.is_empty() && a.harness == Harness::Claude;
+            let place = |p: api::Place| a.places.iter().find(|o| o.place == p).map(|o| StartPlace { id: p.word().to_string(), label: o.label.clone(), behind: o.behind });
+            StartAccount {
+                name: a.name.clone(),
+                harness: a.harness.word().to_string(),
+                places: a.places.iter().filter_map(|o| place(o.place)).collect(),
+                place: start_place(a, &a.places.iter().map(|o| o.place).collect::<Vec<_>>()),
+                unavailable: a.unavailable.clone(),
+                default_model: a.default_model.clone(),
+                preferred: a.preferred,
+                models: if older { claude.clone() } else { listed(&a.models) },
+                efforts: if a.efforts.is_empty() && a.harness == Harness::Claude { claude_efforts.clone() } else { listed(&a.efforts) },
+                worktree: a.worktree || older,
+                resumes: a.resumes.iter().filter_map(|p| place(*p)).collect(),
+                resume: resume_place(a),
+                switches_model: a.switches_model,
+            }
+        })
+        .collect();
+    StartChoices { accounts, models: claude }
+}
+
+/// What sending to a session that isn't running does, after "it isn't running, so" (start.ts
+/// `resumeWords`). `app` is the terminal its Mac resumes it in.
+fn resume_words(place: api::Place, app: &str, behind: bool) -> String {
+    match place {
+        api::Place::Background if behind => format!("this resumes it in {app}, behind its Mac\u{2019}s windows"),
+        api::Place::Background => "this resumes it in the background".into(),
+        api::Place::ClaudeApp => "the Claude app on its Mac opens it with this on the clipboard".into(),
+        api::Place::CodexApp => "this goes on in the Codex app".into(),
+        api::Place::Codealong => "Codealong runs it from now on".into(),
+        api::Place::Terminal => format!("this resumes it in {app}"),
+    }
+}
+
+/// What a session's reply box says before you write, as the Mac's does (SessionReply.tsx
+/// `replyPlaceholder`): who it goes to, and how it gets there, as its Mac said (`way`), or, from
+/// a Mac that doesn't say, as its state suggests. A session that isn't running goes on where
+/// `resuming` says, else in a terminal.
+fn placeholder(s: &Session, way: Option<&Way>, resuming: Option<(api::Place, bool)>) -> String {
+    let to = if s.asks { format!("Answer {}", s.account) } else { format!("Send to {}", s.account) };
+    let busy = matches!(s.status, PeerStatus::Working | PeerStatus::Needs);
+    if s.hosted {
+        return if busy { format!("{to}: it takes this after its current turn") } else { to };
+    }
+    let working = if s.status == PeerStatus::Working { ": it takes this in as it works" } else { "" };
+    let off = "it isn\u{2019}t running, so";
+    match way {
+        Some(Way::Typed { app }) => format!("{to} via {app}{working}"),
+        Some(Way::Background) => format!("{to} via its background job{working}"),
+        Some(Way::Message) => format!("{to} as a message from Codealong{working}"),
+        Some(Way::CodexApp) => format!("{to} via the Codex app{working}"),
+        Some(Way::Opencode) => format!("{to} via OpenCode{working}"),
+        Some(Way::Resume { app }) => {
+            let (place, behind) = resuming.unwrap_or((api::Place::Terminal, false));
+            format!("{to}: {off} {}", resume_words(place, app, behind))
+        }
+        Some(Way::ClaudeApp) => format!("{to}: {off} {}", resume_words(api::Place::ClaudeApp, "", false)),
+        Some(Way::Antigravity) => format!("{to}: Antigravity on its Mac comes forward with this on the clipboard"),
+        None if s.harness == Harness::Antigravity && s.surface == Surface::App => format!("{to}: Antigravity on its Mac comes forward with this on the clipboard"),
+        None if !s.live && s.harness == Harness::Claude && s.surface == Surface::App => format!("{to}: {off} {}", resume_words(api::Place::ClaudeApp, "", false)),
+        None if !s.live && s.surface == Surface::Cli && matches!(s.harness, Harness::Claude | Harness::Codex | Harness::Antigravity) => format!("{to}: {off} this resumes it in a terminal"),
+        None => format!("{to}{working}"),
     }
 }
 
@@ -894,6 +1466,7 @@ mod order_tests {
             detail: None,
             status,
             stalled: false,
+            waits_in_background: false,
             harness: String::new(),
             account: String::new(),
             project: String::new(),
@@ -911,6 +1484,12 @@ mod order_tests {
             in_app: false,
             asks: false,
             pr: None,
+            stoppable: false,
+            steerable: false,
+            model: None,
+            name: None,
+            origin: None,
+            limit: None,
         }
     }
 
@@ -983,21 +1562,50 @@ mod start_tests {
         api::StartAccount {
             name: "claude".into(),
             harness: codealong_peer::model::Harness::Claude,
-            places: places.iter().map(|p| api::PlaceOption { place: *p, label: p.word().into() }).collect(),
+            places: places.iter().map(|p| api::PlaceOption { place: *p, label: p.word().into(), behind: false }).collect(),
             chosen,
             unavailable: None,
             default_model: None,
             preferred: false,
+            models: vec![],
+            efforts: vec![],
+            worktree: false,
+            resumes: vec![],
+            switches_model: false,
         }
     }
 
     #[test]
     fn a_start_from_the_phone_goes_where_nobody_needs_to_be_at_the_mac() {
         use api::Place::*;
-        assert_eq!(start_place(&account(&[Terminal, Background, ClaudeApp, Codealong], Some(Terminal))).as_deref(), Some("codealong"));
-        assert_eq!(start_place(&account(&[Terminal, Background], None)).as_deref(), Some("background"));
-        assert_eq!(start_place(&account(&[CodexApp, Terminal], Some(Terminal))).as_deref(), Some("terminal"));
-        assert_eq!(start_place(&account(&[CodexApp, Terminal], None)).as_deref(), Some("codex-app"));
-        assert_eq!(start_place(&account(&[], None)), None);
+        let at = |places: &[api::Place], chosen| start_place(&account(places, chosen), places);
+        assert_eq!(at(&[Terminal, Background, ClaudeApp, Codealong], Some(Terminal)).as_deref(), Some("codealong"));
+        assert_eq!(at(&[Terminal, Background], None).as_deref(), Some("background"));
+        assert_eq!(at(&[CodexApp, Terminal], Some(Terminal)).as_deref(), Some("terminal"));
+        assert_eq!(at(&[CodexApp, Terminal], None).as_deref(), Some("codex-app"));
+        assert_eq!(at(&[], None), None);
+        // A background that's a terminal behind the Mac's windows is a terminal all the same.
+        let mut behind = account(&[Terminal, Background], Some(Terminal));
+        behind.places[1].behind = true;
+        assert_eq!(start_place(&behind, &[Terminal, Background]).as_deref(), Some("terminal"));
+    }
+
+    #[test]
+    fn older_macs_list_claude_codes_models_alone() {
+        let mut claude = account(&[api::Place::Terminal, api::Place::Background, api::Place::Codealong], None);
+        claude.resumes = vec![api::Place::Terminal, api::Place::Background, api::Place::Codealong];
+        let mut codex = account(&[api::Place::Terminal], None);
+        codex.name = "codex".into();
+        codex.harness = Harness::Codex;
+        codex.models = vec![api::ModelOption { id: "gpt-5.5".into(), label: "GPT-5.5".into() }];
+        let o = api::StartOptions { accounts: vec![claude, codex], codex_projects: vec![], claude_models: vec![api::ModelOption { id: "opus".into(), label: "Opus".into() }], claude_efforts: vec![] };
+        let c = start_choices(o);
+        // A Mac that lists no models for Claude Code's account lists them for all of Claude Code.
+        assert_eq!((c.accounts[0].models[0].id.as_str(), c.accounts[0].worktree), ("opus", true));
+        assert_eq!((c.accounts[1].models[0].id.as_str(), c.accounts[1].worktree), ("gpt-5.5", false));
+        assert_eq!(c.accounts[0].resumes.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["terminal", "background", "codealong"]);
+        // A start from the phone goes to Codealong; a session going on stays its harness's.
+        assert_eq!((c.accounts[0].place.as_deref(), c.accounts[0].resume.as_deref()), (Some("codealong"), Some("background")));
+        assert!(c.accounts[1].resumes.is_empty() && c.accounts[1].resume.is_none());
     }
 }

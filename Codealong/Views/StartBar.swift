@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// Where a new session starts, as the chips under the quick search set it: the Mac, the worktree,
-/// whether Claude Code makes a worktree of its own, the account and model, and where it runs.
+/// whether its harness makes a worktree of its own, the account, model and effort, and where it
+/// runs.
 struct Composer {
     var device: String?
     /// The worktree picked by hand, by id on `device`; none goes by `worktree(store:project:)`'s default.
@@ -12,43 +13,65 @@ struct Composer {
     var account: String?
     var place: String?
     var model: String?
+    var effort: String?
 
     var chosenAccount: StartAccount? { choices?.accounts.first { $0.name == account } }
 
-    /// Only Claude Code on the command line makes a worktree from here: the apps have their own
-    /// choice on their new-session pages.
+    /// The account's command line makes a worktree of its own for a session when asked: the apps
+    /// have their own choice on their new-session pages.
     var takesNewWorktree: Bool {
-        chosenAccount?.harness == "Claude Code" && (place == "terminal" || place == "background")
+        chosenAccount?.worktree == true && (place == "terminal" || place == "background")
+    }
+
+    /// The place chosen takes a model and effort: the command line and Codealong do, the apps
+    /// choose their own.
+    var takesModel: Bool {
+        place == "terminal" || place == "background" || place == "codealong"
+    }
+
+    /// Background is a terminal opened behind the Mac's windows, for a harness with no background
+    /// service of its own.
+    var behind: Bool {
+        place == "background" && chosenAccount?.places.first { $0.id == "background" }?.behind == true
     }
 
     var modelLabel: String? {
-        guard let model else { return nil }
-        return choices?.models.first { $0.id == model }?.label ?? model
+        guard let model, takesModel else { return nil }
+        return modelName(model: model, models: chosenAccount?.models ?? [])
     }
 
-    /// The worktree to start in: the one picked, else in the project the list shows, the most
-    /// recently active repo's main checkout, as the Mac's panel picks one.
+    /// The model it starts on unless you pick one, as people say it.
+    var defaultModelLabel: String? {
+        chosenAccount?.defaultModel.map { modelName(model: $0, models: chosenAccount?.models ?? []) }
+    }
+
+    var effortLabel: String? {
+        guard let effort, takesModel else { return nil }
+        return chosenAccount?.efforts.first { $0.id == effort }?.label ?? effort
+    }
+
+    /// The worktree to start in: the one picked, else where new work goes in the project the list
+    /// shows, as the Mac's panel picks one (the core's `start_worktree`).
     @MainActor func worktree(store: Store, project: String) -> Worktree? {
         guard let device else { return nil }
-        let all = store.worktrees(device)
-        if let id = worktreeID, let w = all.first(where: { $0.id == id }) { return w }
-        let here = project.isEmpty ? all : all.filter { $0.project == project }
-        guard let latest = here.first else { return nil }
-        return here.first { $0.repo == latest.repo && $0.main } ?? latest
+        if let id = worktreeID, let w = store.worktrees(device).first(where: { $0.id == id }) { return w }
+        return store.startWorktree(device, project: project)
     }
 
-    /// What starting does, in a sentence, as the Mac's panel says it.
+    /// What starting does, in a sentence, as the Mac's panel says it (start.ts `startDoes`).
     func happens(in w: Worktree, newWorktree tree: Bool) -> String {
-        let who = (account ?? "a session") + (modelLabel.map { " on \($0)" } ?? "")
-        let name = w.main ? "\(w.name) (main)" : w.name
+        let on = [modelLabel, effortLabel.map { "\($0) effort" }].compactMap { $0 }.joined(separator: ", ")
+        let who = (account ?? "a session") + (on.isEmpty ? "" : " on \(on)")
+        // A chat goes in a folder of its own, in no project.
+        let name = w.chat ? "a folder of its own" : w.main ? "\(w.name) (main)" : w.name
+        let tree = tree && !w.chat
         switch place {
-        case "codealong": return "Codealong runs \(who) in \(name)."
+        case "codealong": return "Codealong runs \(who) in \(name). Its replies show here as they're written."
         case "claude-app": return "The Claude app opens a new session in \(name) with this prompt filled in, for someone at the Mac to send."
         case "codex-app": return "The Codex app starts a new thread in \(name) on this prompt."
-        case "background":
-            return tree ? "Claude Code makes a new worktree of \(w.repo) and starts \(who) there in the background." : "Starts \(who) in \(name) in the background."
         default:
-            return tree ? "Claude Code makes a new worktree of \(w.repo) and starts \(who) there in a terminal." : "Starts \(who) in a terminal in \(name)."
+            let how = place == "background" ? (behind ? " in a terminal behind the Mac's windows" : " in the background") : " in a terminal"
+            return tree ? "\(chosenAccount?.harness ?? "Its harness") makes a new worktree of \(w.repo) and starts \(who) there\(how)." : "Starts \(who) in \(name)\(how)."
         }
     }
 }
@@ -160,19 +183,22 @@ struct StartBar: View {
 
     private var worktreeChip: some View {
         Button { pickingWorktree = true } label: {
-            Chip(symbol: "arrow.triangle.branch", text: worktree.map { $0.main ? "\($0.name) (main)" : $0.name } ?? "No worktree")
+            Chip(symbol: worktree?.chat == true ? "bubble.left" : "arrow.triangle.branch", text: worktree.map { $0.chat ? "No project" : $0.main ? "\($0.name) (main)" : $0.name } ?? "No worktree")
         }
         .buttonStyle(.plain)
         .disabled(composer.device == nil)
     }
 
+    /// A chat has no repo to make a worktree of.
+    private var takesNewWorktree: Bool { composer.takesNewWorktree && worktree?.chat != true }
+
     private var newWorktreeChip: some View {
         Button { composer.newWorktree.toggle() } label: {
-            Chip(symbol: composer.newWorktree && composer.takesNewWorktree ? "checkmark.square.fill" : "square", text: "New worktree", chevron: false)
+            Chip(symbol: composer.newWorktree && takesNewWorktree ? "checkmark.square.fill" : "square", text: "New worktree", chevron: false)
         }
         .buttonStyle(.plain)
-        .disabled(!composer.takesNewWorktree)
-        .opacity(composer.takesNewWorktree ? 1 : 0.5)
+        .disabled(!takesNewWorktree)
+        .opacity(takesNewWorktree ? 1 : 0.5)
     }
 
     private var agentChip: some View {
@@ -183,17 +209,25 @@ struct StartBar: View {
                         Text("\(a.name) · \(a.harness)").tag(Optional(a.name))
                     }
                 }
-                if composer.chosenAccount?.harness == "Claude Code" && !choices.models.isEmpty {
+                if let a = composer.chosenAccount, composer.takesModel, !a.models.isEmpty {
                     Picker("Model", selection: $composer.model) {
-                        Text(composer.chosenAccount?.defaultModel.map { "Default (\($0))" } ?? "Default").tag(String?.none)
-                        ForEach(choices.models, id: \.id) { m in
+                        Text(composer.defaultModelLabel.map { "Default (\($0))" } ?? "Default").tag(String?.none)
+                        ForEach(a.models, id: \.id) { m in
                             Text(m.label).tag(Optional(m.id))
+                        }
+                    }
+                }
+                if let a = composer.chosenAccount, composer.takesModel, !a.efforts.isEmpty {
+                    Picker("Effort", selection: $composer.effort) {
+                        Text("Default effort").tag(String?.none)
+                        ForEach(a.efforts, id: \.id) { e in
+                            Text(e.label).tag(Optional(e.id))
                         }
                     }
                 }
             }
         } label: {
-            Chip(symbol: "person", text: composer.account ?? (composer.choicesProblem == nil ? "Account" : "No accounts"), detail: composer.modelLabel ?? composer.chosenAccount?.defaultModel)
+            Chip(symbol: "person", text: composer.account ?? (composer.choicesProblem == nil ? "Account" : "No accounts"), detail: [composer.modelLabel ?? (composer.takesModel ? composer.defaultModelLabel : nil), composer.effortLabel].compactMap { $0 }.joined(separator: " · "))
         }
         .disabled(composer.choices == nil)
     }
@@ -204,7 +238,8 @@ struct StartBar: View {
             Menu {
                 Picker("Runs in", selection: Binding(get: { composer.place }, set: { composer.place = $0; lastPlace = $0 ?? "" })) {
                     ForEach(a.places, id: \.id) { p in
-                        Label(p.label, systemImage: placeSymbol(p.id)).tag(Optional(p.id))
+                        // Background with no service of its own is a terminal behind the Mac's windows.
+                        Label(p.behind ? "\(p.label) (behind its windows)" : p.label, systemImage: placeSymbol(p.id)).tag(Optional(p.id))
                     }
                 }
             } label: {
@@ -253,6 +288,7 @@ struct StartBar: View {
         let a = composer.chosenAccount
         composer.place = a?.places.first { $0.id == lastPlace }?.id ?? a?.place
         composer.model = nil
+        composer.effort = nil
     }
 
     private func loadChoices() async {
@@ -268,6 +304,7 @@ struct StartBar: View {
             // The place you last chose, where this account can go there; else where the core says a start from the phone goes.
             composer.place = first?.places.first { $0.id == lastPlace }?.id ?? first?.place
             composer.model = nil
+            composer.effort = nil
         } catch {
             composer.choicesProblem = words(error)
         }
@@ -288,7 +325,7 @@ private struct Chip: View {
             Text(text)
                 .font(.subheadline.weight(.medium))
                 .lineLimit(1)
-            if let detail {
+            if let detail, !detail.isEmpty {
                 Text(detail)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)

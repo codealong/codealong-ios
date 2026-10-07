@@ -13,7 +13,7 @@ struct QuickSessionRow: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             // A snoozed one waits apart, unmarked, as on the Mac.
-            StatusMark(status: row.snoozedUntil == nil ? row.status : .idle, stalled: row.stalled)
+            StatusMark(status: row.snoozedUntil == nil ? row.status : .idle, stalled: row.stalled, waiting: row.waitsInBackground)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(Marked.text(row.title, words: words))
@@ -212,6 +212,9 @@ struct SuggestionRow: View {
             return ("paperplane", "Send to “\(x.title)”", age + why, place)
         }
         guard let w = suggestion.worktree else { return ("plus", "Start a new session", "", "") }
+        if w.chat {
+            return ("plus", "Start a chat in no project", composer.happens(in: w, newWorktree: false), "No project")
+        }
         let tree = composer.takesNewWorktree && suggestion.newWorktree
         let title = tree ? "Start in a new worktree of \(w.repo)" : "Start in \(w.main ? "\(w.name) (main)" : w.name)"
         let place = [w.project, w.repo].joined(separator: " · ")
@@ -220,18 +223,29 @@ struct SuggestionRow: View {
 }
 
 /// A session's state as a small dot: orange when it needs you, red on an error, blue (breathing)
-/// while it works, the accent color when it's your turn, and nothing when it's idle.
+/// while it works, the accent color when it's your turn, and nothing when it's idle. One working
+/// only in that it waits on a command it left running (a CI watch, a build) is a still clock, as
+/// on the Mac.
 struct StatusMark: View {
     let status: Status
     let stalled: Bool
+    var waiting = false
 
     var body: some View {
-        Image(systemName: "circle.fill")
-            .font(.system(size: 9))
-            .foregroundStyle(color)
-            .symbolEffect(.pulse, options: .repeating, isActive: status == .working && !stalled)
-            .frame(width: 10)
-            .accessibilityLabel(label)
+        if waiting && status == .working && !stalled {
+            Image(systemName: "clock")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.blue)
+                .frame(width: 10)
+                .accessibilityLabel("Waiting on a command it left running")
+        } else {
+            Image(systemName: "circle.fill")
+                .font(.system(size: 9))
+                .foregroundStyle(color)
+                .symbolEffect(.pulse, options: .repeating, isActive: status == .working && !stalled)
+                .frame(width: 10)
+                .accessibilityLabel(label)
+        }
     }
 
     private var color: Color {

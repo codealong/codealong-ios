@@ -333,12 +333,12 @@ struct QuickView: View {
     private func start(in over: Worktree? = nil, newWorktree over2: Bool? = nil) async {
         let worktree = over ?? composer.worktree(store: store, project: project)
         guard let worktree, let account = composer.account, let place = composer.place else { return }
-        let newTree = composer.takesNewWorktree && (over2 ?? composer.newWorktree)
+        let newTree = composer.takesNewWorktree && !worktree.chat && (over2 ?? composer.newWorktree)
         acting = true
         problem = nil
         defer { acting = false }
         do {
-            let started = try await store.startSession(device: worktree.device, worktree: worktree.id, account: account, place: place, prompt: query, model: composer.model, newWorktree: newTree)
+            let started = try await store.startSession(device: worktree.device, worktree: worktree.id, account: account, place: place, prompt: query, model: composer.takesModel ? composer.model : nil, effort: composer.takesModel ? composer.effort : nil, newWorktree: newTree)
             text = ""
             typing = false
             // It opens once its Mac lists it; a start whose id the Mac doesn't know yet says what's next.

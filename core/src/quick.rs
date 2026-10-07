@@ -11,7 +11,7 @@ use codealong_peer::api;
 use codealong_peer::feed::{remote_key, split_remote};
 use codealong_peer::model::PrState;
 
-use crate::{all_rows, all_worktrees, inbox_order, now_ms, Core, CoreError, Feeds, InboxSection, SessionRow, Status, Worktree};
+use crate::{all_rows, all_worktrees, inbox_order, new_work_in, now_ms, Core, CoreError, Feeds, InboxSection, SessionRow, Status, Worktree};
 
 /// How far back the empty list's recent sessions go, and how many it lists at most.
 const RECENT_MS: i64 = 24 * 60 * 60 * 1000;
@@ -49,6 +49,8 @@ pub struct SaidHit {
     /// You wrote it; otherwise the agent did.
     pub you: bool,
     pub at: i64,
+    /// How well that line matched: higher is better. Macs of earlier builds don't say.
+    pub score: u8,
 }
 
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
@@ -145,6 +147,22 @@ fn words_of(query: &str) -> Vec<String> {
     query.to_lowercase().split_whitespace().map(String::from).collect()
 }
 
+/// Whether `word` is in `text` (lowercased). Among other words, a word of one or two letters
+/// counts only whole: "class c" shouldn't find every session with a c in it. Alone it's a search
+/// as you type and matches anywhere. The Mac's quick.ts `wordAt` and its text search have the
+/// same rule.
+fn has_word(text: &str, word: &str, of: usize) -> bool {
+    if of < 2 || word.chars().count() > 2 {
+        return text.contains(word);
+    }
+    let edge = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric());
+    text.match_indices(word).any(|(i, w)| edge(text[..i].chars().next_back()) && edge(text[i + w.len()..].chars().next()))
+}
+
+fn has_words(text: &str, words: &[String]) -> bool {
+    words.iter().all(|w| has_word(text, w, words.len()))
+}
+
 /// Whether what's typed is worth asking a Mac where it goes: a few words, not a word or two of a search.
 #[uniffi::export]
 pub fn worth_routing(text: String) -> bool {
@@ -164,12 +182,7 @@ pub fn worth_searching_said(query: String) -> bool {
 #[uniffi::export]
 pub fn still_said(hits: Vec<SaidHit>, query: String) -> Vec<SaidHit> {
     let words = words_of(&query);
-    hits.into_iter()
-        .filter(|h| {
-            let line = h.snippet.to_lowercase();
-            words.iter().all(|w| line.contains(w.as_str()))
-        })
-        .collect()
+    hits.into_iter().filter(|h| has_words(&h.snippet.to_lowercase(), &words)).collect()
 }
 
 fn status_rank(s: Status) -> u8 {
@@ -224,25 +237,27 @@ pub(crate) fn quick_list(rows: &[SessionRow], prs: &[PrRow], project: &str, quer
         return QuickList { sections, nothing_waits: !waiting, working };
     }
 
-    let has_all = |hay: &str| words.iter().all(|w| hay.contains(w.as_str()));
+    let has_all = |hay: &str| has_words(hay, &words);
     let said: HashMap<&str, &SaidHit> = said.iter().map(|h| (h.key.as_str(), h)).collect();
-    let mut found: Vec<(u8, QuickRow, &SessionRow)> = rows
+    // Found by the title, by what else describes it, or by what was said, how well the line said
+    // matched breaking ties among those, as on the Mac.
+    let mut found: Vec<(u8, u8, QuickRow, &SessionRow)> = rows
         .iter()
         .filter_map(|r| {
             let title = r.title.to_lowercase();
             let hay = [r.title.as_str(), &r.account, &r.worktree, &r.repo, r.branch.as_deref().unwrap_or(""), &r.project, r.pr.as_deref().unwrap_or(""), &r.device_name].join("\n").to_lowercase();
             if has_all(&title) {
-                Some((0, session(r), *r))
+                Some((0, 0, session(r), *r))
             } else if has_all(&hay) {
-                Some((1, session(r), *r))
+                Some((1, 0, session(r), *r))
             } else {
-                said.get(r.key.as_str()).map(|h| (2, QuickRow::Session { row: (*r).clone(), said: Some((*h).clone()) }, *r))
+                said.get(r.key.as_str()).map(|h| (2, h.score, QuickRow::Session { row: (*r).clone(), said: Some((*h).clone()) }, *r))
             }
         })
         .collect();
-    found.sort_by(|a, b| a.0.cmp(&b.0).then(status_rank(a.2.status).cmp(&status_rank(b.2.status))).then(b.2.last_activity.cmp(&a.2.last_activity)).then_with(|| a.2.key.cmp(&b.2.key)));
+    found.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)).then(status_rank(a.3.status).cmp(&status_rank(b.3.status))).then(b.3.last_activity.cmp(&a.3.last_activity)).then_with(|| a.3.key.cmp(&b.3.key)));
     let count = found.len() as u32;
-    let mut found: Vec<(QuickRow, &SessionRow)> = found.into_iter().take(FOUND_SESSIONS).map(|(_, q, r)| (q, r)).collect();
+    let mut found: Vec<(QuickRow, &SessionRow)> = found.into_iter().take(FOUND_SESSIONS).map(|(_, _, q, r)| (q, r)).collect();
     // The ones Jev scored lead, in its order; the rest keep theirs.
     let rank = |r: &SessionRow| ranked.iter().position(|k| *k == r.key).unwrap_or(usize::MAX);
     found.sort_by_key(|(_, r)| rank(r));
@@ -331,6 +346,8 @@ fn here(short: &str, id: &str) -> String {
 /// likeliest action on its likeliest target leads; runners-up follow, so a wrong guess is one
 /// row away from the right one. A session that waits on you for a prompt is opened, never sent
 /// to: what's typed would answer the prompt. One whose reply asks you something is sent to.
+/// New work goes where the Mac's panel would start it (`new_work_in`), and work that belongs in
+/// none of the worktrees, a question about nothing in them, to a chat in no project.
 /// `short` is the answering Mac's short id; `worktrees` are this phone's, keyed `@<short>:<id>`.
 pub(crate) fn suggestions(route: &api::Route, short: &str, rows: &HashMap<String, SessionRow>, worktrees: &HashMap<String, Worktree>) -> Vec<Suggestion> {
     use api::Action;
@@ -350,15 +367,36 @@ pub(crate) fn suggestions(route: &api::Route, short: &str, rows: &HashMap<String
         let kind = if open { SuggestKind::Open } else { SuggestKind::Send };
         Some(Suggestion { kind, key: format!("{}:{}", if open { "open" } else { "send" }, row.key), p, sureness: sureness(p), session: Some(row.clone()), worktree: None, new_worktree: false })
     };
-    let start_in = |pick: Option<&api::Pick>, p: f64| -> Option<Suggestion> {
-        let w = worktrees.get(&here(short, &pick?.id))?;
-        let new_worktree = route.own_worktree >= OWN_WORKTREE;
-        // A new worktree is made from the repo, so two of its worktrees make the same row.
+    // The answering Mac's worktrees, for where new work goes in a repo; ids as it has them.
+    let theirs: Vec<Worktree> = worktrees.iter().filter(|(k, _)| split_remote(k).is_some_and(|(d, _)| d == short)).map(|(_, w)| w.clone()).collect();
+    let ranked: Vec<String> = route.lanes.iter().map(|l| l.id.clone()).collect();
+    let start_in = |pick: Option<&api::Pick>, action_p: f64| -> Option<Suggestion> {
+        let pick = pick?;
+        let picked = theirs.iter().find(|w| here(short, &w.id) == here(short, &pick.id))?;
+        let reusable = new_work_in(picked, pick.p, &theirs, &ranked);
+        let new_worktree = route.own_worktree >= OWN_WORKTREE || reusable.is_none();
+        // A new worktree is made from the repo's main checkout, so two of its worktrees make the
+        // same row.
+        let w = if new_worktree { theirs.iter().find(|w| w.main && w.project == picked.project && w.repo == picked.repo).unwrap_or(picked) } else { reusable.unwrap_or(picked) };
+        // In the very worktree picked it's as likely as that worktree; anywhere else in the repo,
+        // as likely as the repo.
+        let repo_p = route.repos.iter().find(|r| r.id.ends_with(&format!("/{}", picked.repo))).map(|r| r.p);
+        let p = action_p * if !new_worktree && w.id == picked.id { pick.p } else { repo_p.unwrap_or(pick.p) };
         let key = if new_worktree { format!("start:new:{}:{}/{}", w.device, w.project, w.repo) } else { format!("start:{}:{}", w.device, w.id) };
         Some(Suggestion { kind: SuggestKind::Start, key, p, sureness: sureness(p), session: None, worktree: Some(w.clone()), new_worktree })
     };
+    // New work that needs none of the worktrees goes to a chat of its own, in no project, when the
+    // Mac thinks so more than it thinks of any one worktree.
+    let chats = theirs.iter().find(|w| w.chat);
+    let start_chat = |action_p: f64| -> Option<Suggestion> {
+        let w = chats.filter(|_| route.no_repo > 0.0)?;
+        let p = action_p * route.no_repo;
+        Some(Suggestion { kind: SuggestKind::Start, key: format!("start:chat:{}", w.device), p, sureness: sureness(p), session: None, worktree: Some(w.clone()), new_worktree: false })
+    };
     let (s1, s2) = (route.sessions.first(), route.sessions.get(1));
     let (l1, l2) = (route.lanes.first(), route.lanes.get(1));
+    let in_chat = chats.is_some() && route.no_repo > pp(l1);
+    let start_new = |action_p: f64| if in_chat { start_chat(action_p) } else { start_in(l1, action_p) };
     match route.action {
         Action::Send | Action::Find => {
             let find = route.action == Action::Find;
@@ -368,25 +406,32 @@ pub(crate) fn suggestions(route: &api::Route, short: &str, rows: &HashMap<String
                 add(to_session(s2, p * pp(s2), find));
             }
             if prob(Action::Start) >= RUNNER_UP || route.no_session >= RUNNER_UP {
-                add(start_in(l1, prob(Action::Start).max(route.no_session) * pp(l1)));
+                add(start_new(prob(Action::Start).max(route.no_session)));
             }
         }
         Action::Start => {
             let p = prob(Action::Start);
-            add(start_in(l1, p * pp(l1)));
+            add(start_new(p));
             // The session that may already be doing it comes next: sending there may be what's meant.
             if let Some(d) = &route.duplicate {
                 add(to_session(Some(d), prob(Action::Send) * d.p, false));
             }
+            // The worktree the Mac liked best after a chat, or a chat after it, when either is likely.
+            if in_chat && pp(l1) >= RUNNER_UP {
+                add(start_in(l1, p));
+            }
+            if !in_chat && route.no_repo >= RUNNER_UP {
+                add(start_chat(p));
+            }
             if pp(l2) >= RUNNER_UP {
-                add(start_in(l2, p * pp(l2)));
+                add(start_in(l2, p));
             }
             if prob(Action::Send) >= RUNNER_UP && pp(s1) >= RUNNER_UP {
                 add(to_session(s1, prob(Action::Send) * pp(s1), false));
             }
         }
         // Todos are each Mac's own, and the phone doesn't keep them: new work starts instead.
-        Action::Todo => add(start_in(l1, prob(Action::Start).max(prob(Action::Todo)) * pp(l1))),
+        Action::Todo => add(start_in(l1, prob(Action::Start).max(prob(Action::Todo)))),
     }
     out
 }
@@ -415,7 +460,7 @@ impl Core {
         for h in handles {
             if let Ok(Ok((short, found))) = h.join() {
                 out.building |= found.building;
-                out.hits.extend(found.hits.into_iter().map(|h| SaidHit { key: remote_key(&short, &h.key), snippet: h.snippet, you: h.you, at: h.at }));
+                out.hits.extend(found.hits.into_iter().map(|h| SaidHit { key: remote_key(&short, &h.key), snippet: h.snippet, you: h.you, at: h.at, score: h.score }));
             }
         }
         out
@@ -457,6 +502,7 @@ mod tests {
             detail: None,
             status,
             stalled: false,
+            waits_in_background: false,
             harness: "Claude Code".into(),
             account: "claude".into(),
             project: "App".into(),
@@ -474,6 +520,12 @@ mod tests {
             in_app: false,
             asks: false,
             pr: None,
+            stoppable: false,
+            steerable: false,
+            model: None,
+            name: None,
+            origin: None,
+            limit: None,
         }
     }
 
@@ -521,7 +573,7 @@ mod tests {
         let mut other = row("branch", "Fix login", Status::Idle, NOW);
         other.branch = Some("quick-search".into());
         let rows = vec![row("said", "Other work", Status::Needs, NOW), other, row("title", "Quick search on the phone", Status::Idle, NOW - 5)];
-        let said = [SaidHit { key: "said".into(), snippet: "make the quick search".into(), you: true, at: NOW }];
+        let said = [SaidHit { key: "said".into(), snippet: "make the quick search".into(), you: true, at: NOW, score: 0 }];
         let prs = [PrRow { key: "app#3".into(), device: "d".into(), number: 3, title: "Quick search".into(), url: String::new(), state: "open".into(), failing: 0, repo: "app".into(), branch: None, project: "App".into(), updated_at: NOW }];
         let l = quick_list(&rows, &prs, "", "quick search", &said, &[], NOW);
         assert_eq!(keys(&l), [(QuickGroup::Sessions, vec!["title".to_string(), "branch".into(), "said".into()]), (QuickGroup::Prs, vec!["app#3".into()])]);
@@ -538,7 +590,7 @@ mod tests {
         let mut waits = row(&remote_key(short, "s1"), "Waits", Status::Needs, NOW);
         waits.asks = false;
         let rows: HashMap<String, SessionRow> = [(waits.key.clone(), waits)].into_iter().collect();
-        let w = Worktree { id: "/r".into(), project: "App".into(), repo: "app".into(), name: "app".into(), branch: None, last_activity: NOW, device: "abcdef0123ffff".into(), main: true };
+        let w = Worktree { id: "/r".into(), project: "App".into(), repo: "app".into(), name: "app".into(), branch: None, last_activity: NOW, device: "abcdef0123ffff".into(), main: true, chat: false, reuse: None };
         let worktrees: HashMap<String, Worktree> = [(remote_key(short, "/r"), w)].into_iter().collect();
         let route = api::Route {
             action: api::Action::Send,
@@ -548,6 +600,9 @@ mod tests {
             lanes: vec![api::Pick { id: "/r".into(), p: 1.0 }],
             repos: vec![],
             own_worktree: 0.7,
+            own_worktree_asked: 0.7,
+            no_repo: 0.0,
+            habit: Default::default(),
             duplicate: None,
             model: "jev".into(),
             ms: 1,
@@ -563,7 +618,70 @@ mod tests {
     fn routing_waits_for_a_few_words() {
         assert!(!worth_routing("login".into()));
         assert!(worth_routing("fix the login".into()));
-        assert_eq!(still_said(vec![SaidHit { key: "k".into(), snippet: "Quick search".into(), you: false, at: 0 }], "quick sea".into()).len(), 1);
-        assert!(still_said(vec![SaidHit { key: "k".into(), snippet: "Quick".into(), you: false, at: 0 }], "quick sea".into()).is_empty());
+        assert_eq!(still_said(vec![SaidHit { key: "k".into(), snippet: "Quick search".into(), you: false, at: 0, score: 0 }], "quick sea".into()).len(), 1);
+        assert!(still_said(vec![SaidHit { key: "k".into(), snippet: "Quick".into(), you: false, at: 0, score: 0 }], "quick sea".into()).is_empty());
+    }
+
+    #[test]
+    fn short_words_count_whole_among_others_and_better_matches_lead() {
+        let rows = vec![row("a", "Fix class names", Status::Idle, NOW), row("b", "Fix the c compiler", Status::Idle, NOW - 5)];
+        // Alone, a short word is a search as you type; among others, only a whole word.
+        assert_eq!(keys(&quick_list(&rows, &[], "", "c", &[], &[], NOW))[0].1, ["a", "b"]);
+        assert_eq!(keys(&quick_list(&rows, &[], "", "fix c", &[], &[], NOW))[0].1, ["b"]);
+        // Found by what was said, the better match leads.
+        let said = [SaidHit { key: "a".into(), snippet: "webhook".into(), you: true, at: NOW, score: 1 }, SaidHit { key: "b".into(), snippet: "the webhook".into(), you: true, at: NOW, score: 9 }];
+        assert_eq!(keys(&quick_list(&rows, &[], "", "webhook", &said, &[], NOW))[0].1, ["b", "a"]);
+    }
+
+    fn worktree(id: &str, main: bool, reuse: Option<crate::WorktreeReuse>, at: i64) -> Worktree {
+        Worktree { id: id.into(), project: "App".into(), repo: "app".into(), name: id.trim_start_matches('/').into(), branch: None, last_activity: at, device: "abcdef0123ffff".into(), main, chat: false, reuse }
+    }
+
+    fn route(lanes: &[(&str, f64)], own_worktree: f64, no_repo: f64) -> api::Route {
+        api::Route {
+            action: api::Action::Start,
+            actions: vec![(api::Action::Start, 1.0)],
+            sessions: vec![],
+            no_session: 1.0,
+            lanes: lanes.iter().map(|(id, p)| api::Pick { id: id.to_string(), p: *p }).collect(),
+            no_repo,
+            repos: vec![api::Pick { id: "App/app".into(), p: 1.0 }],
+            own_worktree,
+            own_worktree_asked: own_worktree,
+            habit: Default::default(),
+            duplicate: None,
+            model: "jev".into(),
+            ms: 1,
+            input_tokens: 0,
+        }
+    }
+
+    #[test]
+    fn new_work_starts_in_a_free_reusable_worktree_or_a_chat() {
+        use crate::WorktreeReuse::*;
+        let short = "abcdef0123";
+        let mut chats = worktree("/chats", false, None, 0);
+        chats.chat = true;
+        chats.project = crate::ELSEWHERE.into();
+        let all = [worktree("/app", true, Some(Open), NOW), worktree("/app-2", false, Some(Landed), NOW - 10), worktree("/app-3", false, Some(Free), NOW - 20), worktree("/app-old", false, None, NOW - 30), chats];
+        let worktrees: HashMap<String, Worktree> = all.iter().map(|w| (remote_key(short, &w.id), w.clone())).collect();
+        let rows = HashMap::new();
+        let start = |r: &api::Route| suggestions(r, short, &rows, &worktrees).into_iter().map(|s| (s.worktree.unwrap().id, s.new_worktree)).collect::<Vec<_>>();
+        // Picked, the main checkout with work under way: new work goes to the free one, not the
+        // landed one, though that was active since.
+        assert_eq!(start(&route(&[("/app", 0.9)], 0.1, 0.0)), [("/app-3".to_string(), false)]);
+        // Sure it wants a worktree of its own: a new one, made from the main checkout.
+        assert_eq!(start(&route(&[("/app-3", 0.9)], 0.9, 0.0)), [("/app".to_string(), true)]);
+        // A question about none of them goes to a chat, with the worktree after it.
+        assert_eq!(start(&route(&[("/app-3", 0.4)], 0.1, 0.6)), [("/chats".to_string(), false), ("/app-3".to_string(), false)]);
+        // Unsure of a chat, it comes after the worktree.
+        assert_eq!(start(&route(&[("/app-3", 0.7)], 0.1, 0.3)), [("/app-3".to_string(), false), ("/chats".to_string(), false)]);
+
+        // With nothing typed, a start goes to the latest repo's free worktree, else its main
+        // checkout; never to a chat.
+        assert_eq!(crate::start_worktree(&all, "").unwrap().id, "/app-3");
+        let plain = [worktree("/app-old", false, None, NOW), worktree("/app", true, None, NOW - 10)];
+        assert_eq!(crate::start_worktree(&plain, "").unwrap().id, "/app");
+        assert!(crate::start_worktree(&all[4..], "").is_none());
     }
 }

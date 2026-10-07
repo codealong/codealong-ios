@@ -8,6 +8,15 @@ import SwiftUI
 /// and holding Send sends and goes on at once. The chevron at the top skips to it; one skipped
 /// comes round again after the rest.
 ///
+/// The box says how a message gets there, as its Mac says (typed into its terminal, its
+/// background job, a message from Codealong). While it waits on a call that can be answered here,
+/// what you send denies the call and tells it that instead, as Claude Code's own "No, and tell
+/// Claude what to do differently" does. One that isn't running goes on where you pick, on the
+/// model you pick, where its Mac offers a choice; a running one says its model beside the box, and
+/// switches it where its Mac can. Where its turn can take a message at once, the bolt beside Send
+/// sends it into the turn. `/fork [prompt]` forks it into a copy that goes on in the background on
+/// its Mac, and you stay where you are, as on the Mac.
+///
 /// As on the Mac, it opens at the newest and reads older pages as you scroll up, holding your
 /// place. The prompt behind what's in view, once it's gone off the top, stays pinned there, two
 /// lines of it, so what you asked stays in mind while you read what came of it; a tap brings it
@@ -59,6 +68,17 @@ struct SessionView: View {
     @State private var stopping = false
     /// Scrolled to the newest: new items keep it there. Scrolled up to read, it stays put.
     @State private var atBottom = true
+    /// How a message gets to it, as its Mac last said.
+    @State private var way: Way?
+    /// What its Mac can start, for its account's models and the places it can go on in.
+    @State private var choices: StartChoices?
+    /// Where it goes on, and on what, while it isn't running: nil for what its Mac offers first.
+    @State private var resumePlace: String?
+    @State private var resumeModel: String?
+    @State private var resumeEffort: String?
+    @State private var switching = false
+    @State private var renaming = false
+    @State private var newName = ""
     @FocusState private var typing: Bool
     /// The send button's size, which a line of the reply box matches; it grows with the text size.
     @ScaledMetric(relativeTo: .body) private var sendSize: CGFloat = 32
@@ -107,11 +127,22 @@ struct SessionView: View {
                             .font(.caption)
                             .foregroundStyle(.tertiary)
                             .frame(maxWidth: .infinity)
+                        if let origin = row?.origin {
+                            // Where it came from: a fork of another session, or started by one.
+                            let words = "\(origin.fork ? "Forked from" : "Started by") \(origin.title.map { "“\($0)”" } ?? "another session")"
+                            if store.sessions.contains(where: { $0.key == origin.key }) {
+                                Button(words) { go(origin.key) }
+                                    .font(.caption)
+                                    .frame(maxWidth: .infinity)
+                            } else {
+                                Text(words).font(.caption).foregroundStyle(.tertiary).frame(maxWidth: .infinity)
+                            }
+                        }
                     }
                     ForEach(entries) { entry in
                         switch entry {
                         case .said(let item) where item.kind == .you:
-                            ItemView(item: item)
+                            ItemView(item: item, putBack: canAct ? { draft = $0 } : nil)
                                 .onGeometryChange(for: PromptPlace.self) { [viewTop] geo in
                                     PromptPlace(geo.frame(in: .global), top: viewTop)
                                 } action: { place in
@@ -207,6 +238,17 @@ struct SessionView: View {
                     if canStop {
                         Button("Stop", systemImage: "stop.circle") { Task { await stop() } }
                     }
+                    Button("Rename…", systemImage: "pencil") {
+                        newName = row?.name ?? row?.title ?? ""
+                        renaming = true
+                    }
+                    .disabled(!online)
+                    Button("Fork", systemImage: "arrow.triangle.branch") { Task { await fork("") } }
+                        .disabled(!canAct)
+                    if let origin = row?.origin, let title = origin.title {
+                        Button(origin.fork ? "Forked from “\(title)”" : "Started by “\(title)”", systemImage: "arrow.turn.left.up") { go(origin.key) }
+                            .disabled(!store.sessions.contains { $0.key == origin.key })
+                    }
                     Button("Archive", systemImage: "archivebox") {
                         store.archive(key)
                         dismiss()
@@ -217,8 +259,22 @@ struct SessionView: View {
             }
         }
         .task(id: key) { await open() }
+        // How a message gets there changes as it starts and stops running somewhere.
+        .task(id: "\(row?.live == true)\(row?.inApp == true)\(online)") { await readWay() }
+        .alert("Rename", isPresented: $renaming) {
+            TextField("Name", text: $newName)
+            Button("Rename") { Task { await rename() } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Its harness keeps the name, so it shows there too.")
+        }
         // The Mac's feed says the session moved: bring in what came since.
         .onChange(of: row?.lastActivity) { _, _ in Task { await refresh() } }
+        // Opened from the feeds saved before its Mac connected, or back after it went away: read
+        // what it couldn't.
+        .onChange(of: online) { _, now in
+            if now { Task { await reconnected() } }
+        }
         // A turn that ends while it's shown here has been seen.
         .onChange(of: row?.status) { _, status in
             if status == .unread { store.markSeen(key) }
@@ -249,8 +305,27 @@ struct SessionView: View {
     private var bottom: some View {
         VStack(spacing: 8) {
             if let pending {
-                ApprovalCard(pending: pending, canAct: canAct, why: whyNot, answering: answering) { choice in
-                    Task { await answer(pending, choice) }
+                if pending.questions.isEmpty || pending.cannot != nil {
+                    ApprovalCard(pending: pending, hosted: row?.hosted == true, canAct: canAct, why: whyNot, answering: answering) { choice in
+                        Task { await answer(pending, choice) }
+                    }
+                } else {
+                    QuestionsCard(pending: pending, account: row?.account ?? "It", hosted: row?.hosted == true, canAct: canAct, why: whyNot, answering: answering) { answers in
+                        Task { await answer(pending, .allow, questions: answers) }
+                    } decline: {
+                        Task { await answer(pending, .deny) }
+                    }
+                }
+            }
+            if let limit = row?.limit {
+                TimelineView(.periodic(from: .now, by: 30)) { context in
+                    Label {
+                        Text(Clock.text(limit, now: context.date))
+                    } icon: {
+                        Image(systemName: "gauge.with.dots.needle.100percent").foregroundStyle(.orange)
+                    }
+                    .font(.footnote)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
             if canStop {
@@ -274,18 +349,50 @@ struct SessionView: View {
             // The reply box floats over the conversation in glass, as a control, not a bar. A line
             // of text is as tall as the send button, so the button sits centered in the pill, and
             // as the text grows it stays at the bottom, as far from the edges as before.
+            if canAct && (resuming || showsModel) {
+                replyTools
+            }
             HStack(alignment: .bottom, spacing: 8) {
-                TextField(canAct ? "Reply" : (whyNot ?? "Reply"), text: $draft, axis: .vertical)
-                    .lineLimit(1...6)
-                    .focused($typing)
-                    .disabled(!canAct || sending)
-                    .frame(minHeight: sendSize)
-                    // ⌘⏎ on a keyboard sends and goes on, as on the Mac.
-                    .onKeyPress(.return, phases: .down) { press in
-                        guard press.modifiers.contains(.command), canSend else { return .ignored }
-                        Task { await send(thenNext: true) }
-                        return .handled
+                // The words before you write say how a message gets there, which takes more than a
+                // line on a phone: up to two lines of them sit under the field while it's empty, and
+                // the box is as tall as they are.
+                ZStack(alignment: .leading) {
+                    if draft.isEmpty {
+                        Text(placeholder)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
                     }
+                    TextField(text: $draft, prompt: Text(""), axis: .vertical) { Text(placeholder) }
+                        .lineLimit(1...6)
+                        .focused($typing)
+                        .disabled(!canAct || sending)
+                        // ⌘⏎ on a keyboard sends and goes on, as on the Mac.
+                        .onKeyPress(.return, phases: .down) { press in
+                            guard press.modifiers.contains(.command), canSend else { return .ignored }
+                            Task { await send(thenNext: true) }
+                            return .handled
+                        }
+                }
+                .frame(minHeight: sendSize)
+                if canSendNow {
+                    // Into the turn it's taking, at once: Claude Code's send now, Codex's steer.
+                    Button {
+                        Task { await send(now: true) }
+                    } label: {
+                        Image(systemName: "bolt.fill")
+                            .font(.system(size: sendSize / 2.4, weight: .semibold))
+                            .foregroundStyle(Color.accentColor)
+                            .frame(width: sendSize, height: sendSize)
+                            .contentShape(.circle)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canSend)
+                    .accessibilityLabel("Send now")
+                    .accessibilityHint("Into the turn it's taking, rather than once the step it's on ends")
+                }
                 Button {
                     Task { await send() }
                 } label: {
@@ -310,6 +417,15 @@ struct SessionView: View {
                 .accessibilityLabel("Send")
                 // Held, as Messages offers its send options: send and go straight on.
                 .contextMenu {
+                    if canSendNow {
+                        Button {
+                            Task { await send(now: true) }
+                        } label: {
+                            Label("Send now", systemImage: "bolt")
+                            Text("Into the turn it's taking")
+                        }
+                        .disabled(!canSend)
+                    }
                     if let next = after.first {
                         Button {
                             Task { await send(thenNext: true) }
@@ -333,10 +449,122 @@ struct SessionView: View {
     /// Only a Mac with remote control on takes a reply or an answer from here.
     private var canAct: Bool { whyNot == nil }
 
-    private var canSend: Bool { canAct && !sending && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    /// Its Mac is connected: naming it changes only how it's listed, so it needs no remote control.
+    private var online: Bool {
+        guard let row else { return false }
+        return store.devices.contains { $0.key == row.device && $0.online }
+    }
 
-    /// A turn Codealong runs on its Mac can be stopped from here.
-    private var canStop: Bool { canAct && row?.hosted == true && row?.status == .working }
+    private var canSend: Bool {
+        canAct && !sending && !waitsElsewhere && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// What's written can go into the turn it's taking at once.
+    private var canSendNow: Bool { canAct && row?.steerable == true && pending == nil }
+
+    /// Its turn is running and its Mac can stop it.
+    private var canStop: Bool { canAct && row?.stoppable == true }
+
+    /// It waits on a call that can be answered here: what you send denies it and says that instead.
+    private var denying: Bool { pending != nil && pending?.cannot == nil }
+
+    /// It waits on something that can only be answered where it runs: a message waits until it's
+    /// answered there.
+    private var waitsElsewhere: Bool { pending?.cannot != nil }
+
+    /// Its account, as its Mac offers it for starts: its models and the places it can go on in.
+    private var account: StartAccount? { choices?.accounts.first { $0.name == row?.account } }
+
+    /// It isn't running, and its Mac lets you pick where it goes on.
+    private var resuming: Bool {
+        guard case .resume = way, row?.live != true else { return false }
+        return account?.resumes.isEmpty == false
+    }
+
+    /// Where it goes on: the place picked, else the one its Mac's offers suit a phone best.
+    private var resumeAt: StartPlace? {
+        let places = account?.resumes ?? []
+        return places.first { $0.id == resumePlace } ?? places.first { $0.id == account?.resume } ?? places.first
+    }
+
+    /// That place takes a model and effort: the command line and Codealong do, the apps choose.
+    private var resumeTakesModel: Bool {
+        ["terminal", "background", "codealong"].contains(resumeAt?.id ?? "")
+    }
+
+    /// A running one can be switched to another of its account's models: one Codealong runs, or
+    /// one its Mac types into, where its harness's command does it.
+    private var switchesModel: Bool {
+        guard let row, row.live, let account, !account.models.isEmpty else { return false }
+        if row.hosted { return true }
+        if case .typed = way { return account.switchesModel }
+        return false
+    }
+
+    /// A running one says its model beside the box.
+    private var showsModel: Bool { row?.live == true && (switchesModel || row?.model != nil) }
+
+    private var placeholder: String {
+        if !canAct { return whyNot ?? "Reply" }
+        if waitsElsewhere { return "It waits on you where it runs: send once that's answered" }
+        if denying, let row { return "Deny it and tell \(row.account) what to do instead" }
+        return store.replyPlaceholder(key, way: way, resumePlace: resuming ? resumeAt?.id : nil, behind: resuming && resumeAt?.behind == true)
+    }
+
+    /// Where it goes on and on what, while it isn't running; its model, while it is.
+    private var replyTools: some View {
+        HStack(spacing: 8) {
+            if resuming, let account {
+                Menu {
+                    Picker("Goes on in", selection: Binding(get: { resumeAt?.id }, set: { resumePlace = $0 })) {
+                        ForEach(account.resumes, id: \.id) { p in
+                            Text(p.behind ? "\(p.label) (behind its windows)" : p.label).tag(Optional(p.id))
+                        }
+                    }
+                } label: {
+                    ToolChip(symbol: "play.circle", text: "Goes on in \(resumeAt?.label ?? "a terminal")")
+                }
+                if resumeTakesModel && !account.models.isEmpty {
+                    Menu {
+                        Picker("Model", selection: $resumeModel) {
+                            Text(account.defaultModel.map { "Default (\(modelName(model: $0, models: account.models)))" } ?? "Default").tag(String?.none)
+                            ForEach(account.models, id: \.id) { m in Text(m.label).tag(Optional(m.id)) }
+                        }
+                        if !account.efforts.isEmpty {
+                            Picker("Effort", selection: $resumeEffort) {
+                                Text("Default effort").tag(String?.none)
+                                ForEach(account.efforts, id: \.id) { e in Text(e.label).tag(Optional(e.id)) }
+                            }
+                        }
+                    } label: {
+                        let model = (resumeModel ?? account.defaultModel).map { modelName(model: $0, models: account.models) } ?? "Default model"
+                        ToolChip(symbol: "cpu", text: [model, account.efforts.first { $0.id == resumeEffort }?.label].compactMap { $0 }.joined(separator: " · "))
+                    }
+                }
+            } else if showsModel {
+                let shown = row?.model.map { modelName(model: $0, models: account?.models ?? []) } ?? "Model"
+                if switchesModel, let account {
+                    Menu {
+                        // Which of the names it's on isn't known for sure (a reply names the model
+                        // without its context size), so none is checked; the chip says it.
+                        ForEach(account.models, id: \.id) { m in
+                            Button(m.label) { Task { await switchModel(m.id) } }
+                        }
+                    } label: {
+                        ToolChip(symbol: "cpu", text: switching ? "Switching…" : shown)
+                    }
+                    // Not while its turn runs or it waits on you: the command would go in as a
+                    // prompt, or answer it.
+                    .disabled(switching || row?.status == .working || row?.status == .needs)
+                    .accessibilityHint("Switches this session's model, for it alone, once its turn ends")
+                } else {
+                    ToolChip(symbol: "cpu", text: shown, chevron: false)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .tint(.primary)
+    }
 
     private var whyNot: String? {
         guard let row, let device = store.devices.first(where: { $0.key == row.device }) else { return "That session isn't on a linked Mac any more" }
@@ -354,6 +582,12 @@ struct SessionView: View {
             store.outcome = nil
         }
         await refresh()
+        // Opened from the feeds saved before its Mac answered (the app was just opened, or a link
+        // opened it): the Mac is usually there a moment later.
+        for _ in 0..<15 where problem != nil && !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(2))
+            await refresh()
+        }
         loading = false
         if row?.status == .unread { store.markSeen(key) }
         // A turn longer than the first page: the prompt behind it, to pin from the start.
@@ -509,32 +743,112 @@ struct SessionView: View {
         withAnimation(.snappy) { proxy.scrollTo(id, anchor: .top) }
     }
 
-    /// Sends the box; with `thenNext`, goes on to what waits on you once it's gone. One that
-    /// fails stays, saying why.
-    private func send(thenNext: Bool = false) async {
+    /// Its Mac connected while it's shown: what couldn't be read is read, and a session Codealong
+    /// runs is followed again, since a new connection follows nothing.
+    private func reconnected() async {
+        guard let conv = conversation else { return }
+        let empty = items.isEmpty
+        await refresh()
+        if empty { await lookBack() }
+        if row?.hosted == true {
+            watching = await Task.detached { conv.watch() }.value
+            live = conv.live()
+        }
+    }
+
+    /// How a message gets there, as its Mac says it, asked again as it starts or stops running;
+    /// and what its Mac can start, for its account's models and where it can go on.
+    private func readWay() async {
+        guard let conv = conversation ?? store.conversation(key), online, let device = row?.device else { return }
+        way = await Task.detached { conv.way() }.value
+        if choices == nil { choices = try? await store.startChoices(device) }
+    }
+
+    /// Sends the box; with `thenNext`, goes on to what waits on you once it's gone; with `now`,
+    /// into the turn it's taking at once. While it waits on a call that can be answered here, it
+    /// denies the call and tells it what you wrote instead; while it isn't running, it goes on
+    /// where you picked. `/fork [prompt]` forks it instead. One that fails stays, saying why.
+    private func send(thenNext: Bool = false, now: Bool = false) async {
         guard let conv = conversation else { return }
         let text = draft
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed == "/fork" || trimmed.hasPrefix("/fork ") {
+            draft = ""
+            await fork(String(trimmed.dropFirst("/fork".count)).trimmingCharacters(in: .whitespaces))
+            return
+        }
         sending = true
         defer { sending = false }
         do {
-            let result = try await Task.detached { try conv.send(text: text) }.value
+            let result: String
+            let outcome: String
+            if denying, let p = pending {
+                result = try await Task.detached { try conv.denySaying(id: p.id, message: text) }.value
+                answered = p.id
+                pending = nil
+                outcome = "Denied “\(title)”, saying what to do instead."
+            } else if resuming, let place = resumeAt {
+                let (model, effort) = resumeTakesModel ? (resumeModel, resumeEffort) : (nil, nil)
+                result = try await Task.detached { try conv.resume(place: place.id, model: model, effort: effort, prompt: text) }.value
+                outcome = "“\(title)” goes on in \(place.label)."
+            } else {
+                result = try await Task.detached { try conv.send(text: text, now: now) }.value
+                outcome = "Sent to “\(title)”."
+            }
             draft = ""
             typing = false
-            done(result, outcome: "Sent to “\(title)”.", thenNext: thenNext)
+            done(result, outcome: outcome, thenNext: thenNext)
         } catch {
             said = words(error)
         }
     }
 
-    private func answer(_ p: Pending, _ choice: Choice) async {
+    /// Answers what it waits on; with `questions`, the picks for the questions it asks.
+    private func answer(_ p: Pending, _ choice: Choice, questions: [QuestionAnswer]? = nil) async {
         guard let conv = conversation, answering == nil else { return }
         answering = choice
         defer { answering = nil }
         do {
-            let result = try await Task.detached { try conv.answer(id: p.id, choice: choice) }.value
+            let result = try await Task.detached {
+                if let questions { return try conv.answerQuestions(id: p.id, answers: questions) }
+                return try conv.answer(id: p.id, choice: choice)
+            }.value
             answered = p.id
             pending = nil
-            done(result, outcome: choice == .deny ? "Denied “\(title)”." : "Allowed “\(title)” to go on.")
+            let outcome = questions != nil ? "Answered “\(title)”." : choice == .deny ? "Denied “\(title)”." : "Allowed “\(title)” to go on."
+            done(result, outcome: outcome)
+        } catch {
+            said = words(error)
+        }
+    }
+
+    /// Forks it into a copy that goes on in the background on its Mac, on `prompt` when there's
+    /// one; you stay here, as on the Mac.
+    private func fork(_ prompt: String) async {
+        do {
+            let started = try await store.fork(key, prompt: prompt)
+            said = started.message ?? (prompt.isEmpty ? "Forked: the copy waits for a prompt in the background on its Mac." : "Forked: the copy goes on in the background on its Mac.")
+        } catch {
+            said = words(error)
+        }
+    }
+
+    private func rename() async {
+        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name != row?.title else { return }
+        do {
+            try await store.rename(key, to: name)
+        } catch {
+            said = words(error)
+        }
+    }
+
+    private func switchModel(_ model: String) async {
+        guard let conv = conversation else { return }
+        switching = true
+        defer { switching = false }
+        do {
+            said = try await Task.detached { try conv.switchModel(model: model) }.value
         } catch {
             said = words(error)
         }
@@ -567,8 +881,7 @@ struct SessionView: View {
         stopping = true
         defer { stopping = false }
         do {
-            try await Task.detached { try conv.stop() }.value
-            said = "Stopped."
+            said = try await Task.detached { try conv.stop() }.value
         } catch {
             said = words(error)
         }
@@ -588,7 +901,7 @@ private struct NextButton: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
-                StatusMark(status: next.status, stalled: next.stalled)
+                StatusMark(status: next.status, stalled: next.stalled, waiting: next.waitsInBackground)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(next.title)
                         .font(.subheadline.weight(.semibold))
@@ -628,9 +941,12 @@ private struct NextButton: View {
     }
 }
 
-/// A tool call the session waits on you to allow.
+/// A tool call the session waits on you to allow, or a plan to approve. A call its agent offers no
+/// way to allow just this once has no Allow, only Always where it can be allowed from now on.
 private struct ApprovalCard: View {
     let pending: Pending
+    /// Codealong runs it on its Mac.
+    let hosted: Bool
     let canAct: Bool
     let why: String?
     /// The answer on its way, if one is.
@@ -662,12 +978,97 @@ private struct ApprovalCard: View {
                     Button(answering == .deny ? "Denying…" : "Deny", role: .destructive) { answer(.deny) }
                         .buttonStyle(.bordered)
                     Spacer()
-                    if pending.always {
+                    // With no Allow, Always is the answer that lets it go on.
+                    if pending.always && pending.noOnce {
+                        Button(answering == .always ? "Allowing…" : "Always allow") { answer(.always) }
+                            .buttonStyle(.borderedProminent)
+                    } else if pending.always {
                         Button(answering == .always ? "Allowing…" : "Always allow") { answer(.always) }
                             .buttonStyle(.bordered)
                     }
-                    Button(allowLabel) { answer(.allow) }
+                    if !pending.noOnce {
+                        Button(allowLabel) { answer(.allow) }
+                            .buttonStyle(.borderedProminent)
+                    }
+                }
+                .disabled(answering != nil)
+                Text(says).font(.footnote).foregroundStyle(.secondary)
+            } else if let why {
+                Text(why).font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+        .padding(14)
+        .background(.orange.opacity(0.1), in: .rect(cornerRadius: 20))
+    }
+
+    /// What its answers do, as the Mac's card says it.
+    private var says: String {
+        if pending.plan { return "Approve lets it go on with the plan. Deny keeps it planning, or write below what to change." }
+        if pending.noOnce {
+            let how = pending.always ? "allows calls like this only from now on, not just this once" : "offers no way to allow this"
+            return "Its agent \(how). Deny tells it no, and it carries on."
+        }
+        return hosted ? "Allow lets this call run once. Deny tells it no, and it carries on." : "Allow lets this call run once. Deny stops the turn, or write below what to do instead."
+    }
+
+    private var allowLabel: String {
+        switch (pending.plan, answering == .allow) {
+        case (true, true): "Approving…"
+        case (true, false): "Approve"
+        case (false, true): "Allowing…"
+        case (false, false): "Allow"
+        }
+    }
+}
+
+/// Questions a session asks you (Claude Code's `AskUserQuestion`): pick a choice, several where a
+/// question takes more, or write your own answer; your picks go back as its answer, as the Mac's
+/// panel sends them. Decline stops the turn.
+private struct QuestionsCard: View {
+    let pending: Pending
+    let account: String
+    let hosted: Bool
+    let canAct: Bool
+    let why: String?
+    let answering: Choice?
+    let answer: ([QuestionAnswer]) -> Void
+    let decline: () -> Void
+    @State private var picks: [String: [String]] = [:]
+    @State private var own: [String: String] = [:]
+    /// How tall the questions are: the card is as tall, up to a point, and scrolls past it.
+    @State private var height: CGFloat = 0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label {
+                Text("Asks you").font(.subheadline.weight(.medium))
+            } icon: {
+                Image(systemName: "questionmark.bubble.fill").foregroundStyle(.orange)
+            }
+            if pending.unwritten {
+                // What it wrote with them isn't in the conversation above yet.
+                Text("What \(account) wrote with this question shows in the conversation once it’s answered\(hosted ? "" : "; where it runs on its Mac has it now").")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    ForEach(pending.questions, id: \.question) { q in
+                        question(q)
+                    }
+                }
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
+            }
+            .frame(height: min(height, 360))
+            .scrollBounceBehavior(.basedOnSize)
+            if canAct {
+                HStack {
+                    Button(answering == .deny ? "Declining…" : "Decline", role: .destructive, action: decline)
+                        .buttonStyle(.bordered)
+                    Spacer()
+                    Button(answering == .allow ? "Answering…" : "Answer") { answer(answers) }
                         .buttonStyle(.borderedProminent)
+                        .disabled(answers.isEmpty)
                 }
                 .disabled(answering != nil)
             } else if let why {
@@ -678,13 +1079,88 @@ private struct ApprovalCard: View {
         .background(.orange.opacity(0.1), in: .rect(cornerRadius: 20))
     }
 
-    private var allowLabel: String {
-        switch (pending.plan, answering == .allow) {
-        case (true, true): "Approving…"
-        case (true, false): "Approve"
-        case (false, true): "Allowing…"
-        case (false, false): "Allow"
+    private func question(_ q: Question) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if let header = q.header {
+                    Text(header)
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.background, in: .capsule)
+                }
+                Text(Clock.text(q.question, now: .now)).font(.subheadline)
+            }
+            ForEach(q.options, id: \.label) { o in
+                let on = (picks[q.question] ?? []).contains(o.label)
+                Button {
+                    pick(q, o.label)
+                } label: {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Image(systemName: q.multiSelect ? (on ? "checkmark.square.fill" : "square") : (on ? "largecircle.fill.circle" : "circle"))
+                            .foregroundStyle(on ? Color.accentColor : .secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(o.label).foregroundStyle(.primary)
+                            if let d = o.description {
+                                Text(d).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .disabled(!canAct || answering != nil)
+                .accessibilityAddTraits(on ? .isSelected : [])
+            }
+            TextField(q.options.isEmpty ? "Your answer" : "Or write your own answer", text: Binding(get: { own[q.question] ?? "" }, set: { type(q, $0) }), axis: .vertical)
+                .lineLimit(1...4)
+                .textFieldStyle(.roundedBorder)
+                .disabled(!canAct || answering != nil)
         }
+    }
+
+    /// One answer to a question that takes one: a choice clears what was written, as on the Mac.
+    private func pick(_ q: Question, _ label: String) {
+        let chosen = picks[q.question] ?? []
+        picks[q.question] = q.multiSelect ? (chosen.contains(label) ? chosen.filter { $0 != label } : chosen + [label]) : [label]
+        if !q.multiSelect { own[q.question] = "" }
+    }
+
+    private func type(_ q: Question, _ text: String) {
+        own[q.question] = text
+        if !q.multiSelect && !text.trimmingCharacters(in: .whitespaces).isEmpty { picks[q.question] = [] }
+    }
+
+    /// Each question's picks: several, with your words after them, where it takes more; else your
+    /// words or the choice.
+    private var answers: [QuestionAnswer] {
+        pending.questions.compactMap { q in
+            let words = (own[q.question] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let chosen = picks[q.question] ?? []
+            let all = q.multiSelect ? chosen + (words.isEmpty ? [] : [words]) : (words.isEmpty ? Array(chosen.prefix(1)) : [words])
+            return all.isEmpty ? nil : QuestionAnswer(question: q.question, multiSelect: q.multiSelect, picks: all)
+        }
+    }
+}
+
+/// A small chip above the reply box: where a session goes on, or its model.
+private struct ToolChip: View {
+    let symbol: String
+    let text: String
+    var chevron = true
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: symbol).font(.caption)
+            Text(text).font(.footnote.weight(.medium)).lineLimit(1)
+            if chevron {
+                Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .glassEffect(.regular.interactive(), in: .capsule)
     }
 }
 
@@ -777,20 +1253,35 @@ private enum Entry: Identifiable {
     }
 }
 
-/// One thing said: your prompts on the right, the agent's replies as text, notes small between.
+/// One thing said: your prompts on the right, the agent's replies as text, notes small between. A
+/// prompt the session took back before its agent answered says so, and can go back in the box.
 private struct ItemView: View {
     let item: Item
+    var putBack: ((String) -> Void)?
 
     var body: some View {
         switch item.kind {
         case .you:
-            HStack {
-                Spacer(minLength: 40)
-                Text(inline(item.text))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Color.accentColor.opacity(0.15), in: .rect(cornerRadius: 16))
-                    .textSelection(.enabled)
+            VStack(alignment: .trailing, spacing: 6) {
+                HStack {
+                    Spacer(minLength: 40)
+                    Text(inline(item.text))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color.accentColor.opacity(item.withdrawn ? 0.06 : 0.15), in: .rect(cornerRadius: 16))
+                        .foregroundStyle(item.withdrawn ? .secondary : .primary)
+                        .textSelection(.enabled)
+                }
+                if item.withdrawn {
+                    Text("Taken back: the turn was stopped before a reply, so the agent never saw this.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.trailing)
+                    if let putBack {
+                        Button("Put back in the box", systemImage: "arrow.uturn.backward") { putBack(item.text) }
+                            .font(.caption)
+                    }
+                }
             }
         case .agent:
             MarkdownText(text: item.text)
@@ -854,7 +1345,9 @@ private struct ToolRun: View {
     }
 }
 
-/// A tool call as one quiet line, red when it failed, that opens to what went in and came out.
+/// A tool call as one quiet line, red when it failed, that opens to what went in and came out. A
+/// call that asked you questions says so and opens to them, with what you picked; a page on the
+/// web it made or opened (an artifact Claude Code published) is a link under it.
 private struct ToolLine: View {
     let item: Item
     @State private var open = false
@@ -864,7 +1357,7 @@ private struct ToolLine: View {
             Button {
                 withAnimation(.snappy) { open.toggle() }
             } label: {
-                Text(inline(item.text))
+                Text(inline(label))
                     .font(.caption)
                     .foregroundStyle(item.failed ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
                     .lineLimit(open ? nil : 1)
@@ -872,12 +1365,71 @@ private struct ToolLine: View {
                     .contentShape(.rect)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(item.failed ? "Failed: \(item.text)" : item.text)
+            .accessibilityLabel(item.failed ? "Failed: \(label)" : label)
+            if let link = item.link, let url = URL(string: link.url) {
+                HStack(spacing: 6) {
+                    Link(destination: url) {
+                        Label(link.title, systemImage: "arrow.up.right.square")
+                            .font(.caption.weight(.medium))
+                    }
+                    if let note = link.note {
+                        Text(note).font(.caption).foregroundStyle(.tertiary)
+                    }
+                }
+            }
             if open {
-                if let input = item.input, !input.isEmpty { Block(text: input) }
-                if let output = item.output, !output.isEmpty { Block(text: output, failed: item.failed) }
+                if !item.questions.isEmpty {
+                    AskedList(questions: item.questions)
+                    // Declined, or refused: why, from its result. Answered, the picks say it all.
+                    if item.failed, let output = item.output, !output.isEmpty { Block(text: output, failed: true) }
+                } else {
+                    if let input = item.input, !input.isEmpty { Block(text: input) }
+                    if let output = item.output, !output.isEmpty { Block(text: output, failed: item.failed) }
+                }
             }
         }
+    }
+
+    /// A question call's line: what it asks about, by the questions' headers when they all have one.
+    private var label: String {
+        guard let first = item.questions.first else { return item.text }
+        let headers = item.questions.compactMap(\.header)
+        return "Asks you · " + (headers.count == item.questions.count ? headers.joined(separator: ", ") : first.question)
+    }
+}
+
+/// Questions a session asked, with each choice and, once answered, what you picked, as the Mac's
+/// QuestionList.tsx lays them out.
+private struct AskedList: View {
+    let questions: [Question]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(questions, id: \.question) { q in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(inline((q.header.map { "**\($0)** · " } ?? "") + q.question)).font(.caption)
+                    ForEach(Array(q.options.enumerated()), id: \.offset) { i, o in
+                        let picked = q.picked.contains(o.label)
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text("\(i + 1).").monospacedDigit()
+                            Text(o.label).fontWeight(picked ? .semibold : .regular)
+                            if picked { Image(systemName: "checkmark").accessibilityLabel("Your pick") }
+                        }
+                        .font(.caption)
+                        .foregroundStyle(picked ? .primary : .secondary)
+                    }
+                    if !q.own.isEmpty {
+                        Text("Your answer: \(q.own.joined(separator: ", "))").font(.caption).foregroundStyle(.primary)
+                    }
+                    if !q.answered && questions.contains(where: \.answered) {
+                        Text("Not answered").font(.caption).foregroundStyle(.tertiary)
+                    }
+                }
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background.secondary, in: .rect(cornerRadius: 8))
     }
 }
 

@@ -1,7 +1,8 @@
 import Foundation
 
 /// The Mac writes live times into what a session says, `{ago:<ms>}` and `{for:<ms>}`, and code as
-/// backtick spans; this turns them into text for now.
+/// backtick spans; the core writes `{in:<ms>}` for a time to come. This turns them into text for
+/// now.
 enum Clock {
     static func text(_ s: String, now: Date) -> AttributedString {
         var out = ""
@@ -15,6 +16,8 @@ enum Clock {
                     out += ago(ms, now: now) + " ago"
                 } else if token.hasPrefix("for:") {
                     out += "for " + span(ms, now: now)
+                } else if token.hasPrefix("in:") {
+                    out += "in " + until(ms, now: now)
                 } else {
                     out += rest[open...close]
                 }

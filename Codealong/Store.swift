@@ -61,9 +61,13 @@ final class Store {
             } catch {
                 await MainActor.run { self.problem = words(error) }
             }
-            // A link code handed to the app when it's launched for a test links it at once.
+            // A link code handed to the app when it's launched for a test links it at once, and a
+            // session's key opens it once its Mac lists it.
             if let code = ProcessInfo.processInfo.environment["CODEALONG_LINK_CODE"], !code.isEmpty {
                 await self.link(code)
+            }
+            if let key = ProcessInfo.processInfo.environment["CODEALONG_OPEN"], !key.isEmpty {
+                await MainActor.run { self.openWhenListed = key }
             }
         }
     }
@@ -154,11 +158,36 @@ final class Store {
         return try await Task.detached { try core.startChoices(device: device) }.value
     }
 
-    func startSession(device: String, worktree: String, account: String, place: String, prompt: String, model: String?, newWorktree: Bool) async throws -> StartedSession {
+    /// Where new work starts on `device` in `project` unless you pick a worktree (the core's rule).
+    func startWorktree(_ device: String, project: String) -> Worktree? {
+        _ = tick
+        return core?.startWorktree(device: device, project: project)
+    }
+
+    func startSession(device: String, worktree: String, account: String, place: String, prompt: String, model: String?, effort: String?, newWorktree: Bool) async throws -> StartedSession {
         let core = try running()
         return try await Task.detached {
-            try core.startSession(device: device, worktree: worktree, account: account, place: place, prompt: prompt, model: model, newWorktree: newWorktree)
+            try core.startSession(device: device, worktree: worktree, account: account, place: place, prompt: prompt, model: model, effort: effort, newWorktree: newWorktree)
         }.value
+    }
+
+    /// Forks a session into a copy that goes on without a window on its Mac, on `prompt` when
+    /// there's one.
+    func fork(_ key: String, prompt: String) async throws -> StartedSession {
+        let core = try running()
+        return try await Task.detached { try core.fork(key: key, prompt: prompt) }.value
+    }
+
+    /// Names a session on its Mac, where its harness keeps its name.
+    func rename(_ key: String, to name: String) async throws {
+        let core = try running()
+        try await Task.detached { try core.rename(key: key, name: name) }.value
+    }
+
+    /// What a session's reply box says before you write (the core's words).
+    func replyPlaceholder(_ key: String, way: Way?, resumePlace: String?, behind: Bool) -> String {
+        _ = tick
+        return core?.replyPlaceholder(key: key, way: way, resumePlace: resumePlace, behind: behind) ?? "Reply"
     }
 
     /// What the quick search lists (the core's rules). Reads `tick`, so a view that shows it
@@ -185,7 +214,7 @@ final class Store {
         let core = try running()
         return try await Task.detached {
             let conv = try core.conversation(key: key)
-            return try conv.send(text: text)
+            return try conv.send(text: text, now: false)
         }.value
     }
 
