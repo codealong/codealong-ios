@@ -178,6 +178,12 @@ final class Store {
         return try await Task.detached { try core.fork(key: key, prompt: prompt) }.value
     }
 
+    /// Done with a session (Mark as done), with `stop` ending work under way too.
+    func done(_ key: String, stop: Bool) async throws -> DoneOutcome {
+        let core = try running()
+        return try await Task.detached { try core.done(key: key, stop: stop) }.value
+    }
+
     /// Names a session on its Mac, where its harness keeps its name.
     func rename(_ key: String, to name: String) async throws {
         let core = try running()

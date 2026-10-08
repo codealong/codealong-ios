@@ -51,9 +51,9 @@ then `scripts/build-core.sh` (cargo fetches it with your git login).
 - It reads with `session-page`, `session-newer`, `session-pending`, `session-way`,
   `start-options`, `route` and `search`, and organizes (`mark-seen`, `session-archive`,
   `session-rename`) with any Mac. It can only act (`session-send`, `session-answer`,
-  `session-cancel`, `session-resume`, `session-model`, `session-fork`, `start`) where the Mac
-  has remote control on (Settings › Devices there), and each of those is written to that Mac's
-  `devices.log`. Who may ask for what is the main repo's `api::REQUESTS`; a Mac of an older
+  `session-cancel`, `session-resume`, `session-model`, `session-fork`, `session-done`, `start`)
+  where the Mac has remote control on (Settings › Devices there), and each of those is written
+  to that Mac's `devices.log`. Who may ask for what is the main repo's `api::REQUESTS`; a Mac of an older
   build refuses a request it doesn't know, and the phone says why.
 - A Mac takes what the phone sends as yours, as it takes what you type in its windows (a phone
   runs no agents): a message to a session that skips permission prompts claims that, so Claude

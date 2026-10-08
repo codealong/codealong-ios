@@ -1,31 +1,45 @@
 import SwiftUI
+import UIKit
 
-/// What agents write, in Markdown, as blocks: headings, lists, code blocks and paragraphs, each
-/// line's own emphasis and code spans kept. SwiftUI's Text reads Markdown inline only, so a plan's
-/// `## Steps` would show its hashes.
+/// What agents write, in Markdown, as the Mac's conversation draws it: headings, lists, quotes,
+/// code blocks, tables, rules and paragraphs. The core reads the blocks and settles the links (its
+/// `markdown`, the Mac's Markdown.tsx rules); each block's text is inline Markdown, which
+/// SwiftUI's Text draws with its emphasis, code spans and links.
 struct MarkdownText: View {
     let text: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ForEach(Array(Self.blocks(text).enumerated()), id: \.offset) { _, block in
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(MarkdownCache.blocks(text).enumerated()), id: \.offset) { _, block in
                 switch block {
                 case .heading(let level, let s):
                     Text(Self.inline(s))
                         .font(level == 1 ? .title3.weight(.semibold) : level == 2 ? .headline : .subheadline.weight(.semibold))
                         .padding(.top, 4)
-                case .item(let marker, let s):
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(marker).foregroundStyle(.secondary).monospacedDigit()
-                        Text(Self.inline(s))
-                    }
-                case .code(let s):
-                    ScrollView(.horizontal) {
-                        Text(s).font(.caption.monospaced()).padding(8)
-                    }
-                    .background(.background.secondary, in: .rect(cornerRadius: 8))
                 case .paragraph(let s):
                     Text(Self.inline(s))
+                case .list(let ordered, let start, let items):
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Array(items.enumerated()), id: \.offset) { i, s in
+                            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                Text(ordered ? "\(Int(start) + i)." : "•").foregroundStyle(.secondary).monospacedDigit()
+                                Text(Self.inline(s))
+                            }
+                        }
+                    }
+                case .quote(let s):
+                    Text(Self.inline(s))
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 12)
+                        .overlay(alignment: .leading) {
+                            Capsule().fill(.quaternary).frame(width: 3)
+                        }
+                case .code(let s):
+                    CodeView(text: s)
+                case .table(let align, let head, let rows):
+                    TableView(align: align, head: head, rows: rows)
+                case .rule:
+                    Divider().padding(.vertical, 4)
                 }
             }
         }
@@ -33,64 +47,135 @@ struct MarkdownText: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    enum Block: Equatable {
-        case heading(Int, String)
-        case item(String, String)
-        case code(String)
-        case paragraph(String)
-    }
-
-    /// The text's blocks, in order. Lines of a paragraph are joined; a blank line ends one.
-    static func blocks(_ text: String) -> [Block] {
-        var out: [Block] = []
-        var paragraph: [String] = []
-        var code: [String]?
-        func flush() {
-            if !paragraph.isEmpty {
-                out.append(.paragraph(paragraph.joined(separator: "\n")))
-                paragraph = []
-            }
-        }
-        for raw in text.components(separatedBy: "\n") {
-            let line = raw.trimmingCharacters(in: .whitespaces)
-            if line.hasPrefix("```") {
-                if let lines = code {
-                    out.append(.code(lines.joined(separator: "\n")))
-                    code = nil
-                } else {
-                    flush()
-                    code = []
-                }
-                continue
-            }
-            if code != nil {
-                code?.append(raw)
-                continue
-            }
-            if line.isEmpty {
-                flush()
-            } else if let level = line.firstIndex(where: { $0 != "#" }).map({ line.distance(from: line.startIndex, to: $0) }), level > 0, level <= 6, line.dropFirst(level).first == " " {
-                flush()
-                out.append(.heading(level, String(line.dropFirst(level + 1))))
-            } else if line.hasPrefix("- ") || line.hasPrefix("* ") {
-                flush()
-                out.append(.item("•", String(line.dropFirst(2))))
-            } else if let dot = line.firstIndex(of: "."), line[..<dot].allSatisfy(\.isNumber), !line[..<dot].isEmpty, line[line.index(after: dot)...].hasPrefix(" ") {
-                flush()
-                out.append(.item(String(line[...dot]), String(line[line.index(dot, offsetBy: 2)...])))
-            } else {
-                paragraph.append(line)
-            }
-        }
-        if let lines = code {
-            out.append(.code(lines.joined(separator: "\n")))
-        }
-        flush()
-        return out
-    }
-
     static func inline(_ s: String) -> AttributedString {
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         return (try? AttributedString(markdown: s, options: options)) ?? AttributedString(s)
+    }
+}
+
+/// The blocks of each text drawn lately, so a conversation that redraws doesn't read its messages
+/// again. A reply being written goes in afresh with every piece, so it's cleared now and then.
+@MainActor
+private enum MarkdownCache {
+    private static var read: [String: [MdBlock]] = [:]
+
+    static func blocks(_ text: String) -> [MdBlock] {
+        if let blocks = read[text] { return blocks }
+        let blocks = markdown(text: text)
+        if read.count > 400 { read.removeAll() }
+        read[text] = blocks
+        return blocks
+    }
+}
+
+/// A fenced code block: as written, scrolling sideways, with a button that copies it.
+struct CodeView: View {
+    let text: String
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            Text(text)
+                .font(.caption.monospaced())
+                .padding(8)
+                .padding(.trailing, 28)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background.secondary, in: .rect(cornerRadius: 8))
+        .overlay(alignment: .topTrailing) { CopyButton(text: text) }
+    }
+}
+
+/// A table. One of a few columns fits the screen, its cells wrapping; a wider one keeps its cells
+/// to a width a phone can read and scrolls sideways, as the Mac's scrolls when its words can't fit.
+private struct TableView: View {
+    let align: [MdAlign]
+    let head: [String]
+    let rows: [[String]]
+    /// Columns that fit a phone's width with their cells wrapping.
+    private let fits = 4
+    /// In a table that scrolls, a cell wraps past this, so one long cell doesn't make a column a
+    /// screen wide.
+    private let widest: CGFloat = 200
+
+    var body: some View {
+        Group {
+            if head.count <= fits {
+                grid.padding(10)
+            } else {
+                ScrollView(.horizontal) { grid.padding(10) }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background.secondary, in: .rect(cornerRadius: 8))
+    }
+
+    private var grid: some View {
+            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 6) {
+                GridRow {
+                    ForEach(head.indices, id: \.self) { j in
+                        cell(head[j], column: j)
+                            .fontWeight(.semibold)
+                            .gridColumnAlignment(alignment(j))
+                    }
+                }
+                Divider()
+                ForEach(rows.indices, id: \.self) { k in
+                    GridRow {
+                        ForEach(rows[k].indices, id: \.self) { j in
+                            cell(rows[k][j], column: j)
+                        }
+                    }
+                    if k < rows.count - 1 { Divider().opacity(0.5) }
+                }
+            }
+            .font(.subheadline)
+    }
+
+    private func cell(_ s: String, column j: Int) -> some View {
+        Text(MarkdownText.inline(s))
+            .multilineTextAlignment(textAlignment(j))
+            .frame(maxWidth: head.count <= fits ? nil : widest, alignment: Alignment(horizontal: alignment(j), vertical: .center))
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func alignment(_ j: Int) -> HorizontalAlignment {
+        switch align.indices.contains(j) ? align[j] : .plain {
+        case .center: .center
+        case .right: .trailing
+        case .left, .plain: .leading
+        }
+    }
+
+    private func textAlignment(_ j: Int) -> TextAlignment {
+        switch alignment(j) {
+        case .center: .center
+        case .trailing: .trailing
+        default: .leading
+        }
+    }
+}
+
+/// Copies text, and says so for a moment.
+struct CopyButton: View {
+    let text: String
+    @State private var copied = false
+
+    var body: some View {
+        Button {
+            UIPasteboard.general.string = text
+            copied = true
+            Task {
+                try? await Task.sleep(for: .seconds(1.5))
+                copied = false
+            }
+        } label: {
+            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 28, height: 28)
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(copied ? "Copied" : "Copy")
     }
 }

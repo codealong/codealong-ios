@@ -77,6 +77,9 @@ struct SessionView: View {
     @State private var resumeModel: String?
     @State private var resumeEffort: String?
     @State private var switching = false
+    /// When Mark as done was last held here by work under way: done again soon after ends that too.
+    @State private var heldAt: Date?
+    @State private var finishing = false
     @State private var renaming = false
     @State private var newName = ""
     @FocusState private var typing: Bool
@@ -92,13 +95,20 @@ struct SessionView: View {
     /// What waits on you after this one; the first is next.
     private var after: [SessionRow] { store.queue(after: key, project: project) }
 
-    /// The conversation as it reads: what was said, and each run of tool calls between as one.
+    /// The conversation as it reads: what was said, and each run of tool calls between as one. A
+    /// call that made a page is one to open: the calls around it fold, and it stays in view.
     private var entries: [Entry] {
         var out: [Entry] = []
         var run: [Item] = []
         for item in items {
-            if item.kind == .tool {
+            if item.kind == .tool && item.link == nil {
                 run.append(item)
+                continue
+            }
+            if item.kind == .tool {
+                if !run.isEmpty { out.append(.tools(run)) }
+                run = []
+                out.append(.tools([item]))
                 continue
             }
             if !run.isEmpty { out.append(.tools(run)) }
@@ -249,6 +259,8 @@ struct SessionView: View {
                         Button(origin.fork ? "Forked from “\(title)”" : "Started by “\(title)”", systemImage: "arrow.turn.left.up") { go(origin.key) }
                             .disabled(!store.sessions.contains { $0.key == origin.key })
                     }
+                    Button(finishing ? "Wrapping up…" : "Mark as done", systemImage: "checkmark.circle") { Task { await markDone() } }
+                        .disabled(!online || finishing)
                     Button("Archive", systemImage: "archivebox") {
                         store.archive(key)
                         dismiss()
@@ -833,6 +845,38 @@ struct SessionView: View {
         }
     }
 
+    /// Done with it, as the Mac's Mark as done: it closes where its Mac can close it, and is marked
+    /// seen and archived; then what waits on you next, or back to the list. Work under way holds
+    /// it, and done again soon after ends that too.
+    private func markDone() async {
+        let stop = heldAt.map { Date.now.timeIntervalSince($0) < 15 } ?? false
+        if !stop && row?.status == .working {
+            heldAt = .now
+            said = "“\(title)” is still working. Mark it done again to end that too."
+            return
+        }
+        finishing = true
+        defer { finishing = false }
+        do {
+            let outcome = try await store.done(key, stop: stop)
+            guard outcome.done else {
+                heldAt = .now
+                said = "\(outcome.message) Mark it done again to end that too."
+                return
+            }
+            heldAt = nil
+            store.dealtWith(key)
+            if let next = after.first {
+                moveOn(to: next, outcome: outcome.message)
+            } else {
+                if outcome.noted { store.notice = outcome.message }
+                dismiss()
+            }
+        } catch {
+            said = words(error)
+        }
+    }
+
     private func rename() async {
         let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, name != row?.title else { return }
@@ -1261,11 +1305,19 @@ private struct ItemView: View {
 
     var body: some View {
         switch item.kind {
+        case .you where item.input != nil:
+            // A command you ran in the session's shell, as typed there, led by its `!`, and what
+            // it printed.
+            VStack(alignment: .leading, spacing: 6) {
+                Block(text: "! \(item.input ?? "")")
+                if let output = item.output, !output.isEmpty { Block(text: output, failed: item.failed) }
+            }
+            .padding(.leading, 40)
         case .you:
             VStack(alignment: .trailing, spacing: 6) {
                 HStack {
                     Spacer(minLength: 40)
-                    Text(inline(item.text))
+                    PromptText(text: item.text)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
                         .background(Color.accentColor.opacity(item.withdrawn ? 0.06 : 0.15), in: .rect(cornerRadius: 16))
@@ -1288,11 +1340,42 @@ private struct ItemView: View {
         case .tool:
             ToolLine(item: item)
         case .note:
-            Text(inline(item.text))
+            Text(verbatim: item.text)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity)
         }
+    }
+}
+
+/// A prompt of yours as you wrote it, as the Mac shows one: not read as Markdown, its web links
+/// opening, and the images and files Codealong kept for it named (the phone isn't sent them).
+private struct PromptText: View {
+    let text: String
+
+    var body: some View {
+        prompt(promptParts(text: text))
+    }
+
+    private func prompt(_ parts: [PromptPart]) -> Text {
+        var out = Text(verbatim: "")
+        for part in parts {
+            let piece: Text
+            switch part.kind {
+            case .text:
+                piece = Text(verbatim: part.text)
+            case .link:
+                var link = AttributedString(part.text)
+                link.link = part.url.flatMap(URL.init(string:))
+                piece = Text(link)
+            case .image:
+                piece = Text("\(Image(systemName: "photo")) \(part.text)").foregroundStyle(.secondary)
+            case .file:
+                piece = Text("\(Image(systemName: "doc")) \(part.text)").foregroundStyle(.secondary)
+            }
+            out = Text("\(out)\(piece)")
+        }
+        return out
     }
 }
 
@@ -1338,7 +1421,7 @@ private struct ToolRun: View {
             let name = call.text.components(separatedBy: " · ").first ?? call.text
             if !names.contains(name) { names.append(name) }
         }
-        var parts = ["\(earlier.count) tool calls", names.prefix(3).joined(separator: ", ")]
+        var parts = ["\(earlier.count) tool calls", names.prefix(4).joined(separator: ", ")]
         let failed = earlier.filter(\.failed).count
         if failed > 0 { parts.append("\(failed) failed") }
         return parts.joined(separator: " · ")
@@ -1433,10 +1516,12 @@ private struct AskedList: View {
     }
 }
 
-/// Inline Markdown, code spans and emphasis, keeping the text's own line breaks.
+/// Inline Markdown, code spans and emphasis, keeping the text's own line breaks, with its links
+/// settled as the Mac settles them (the core's `inline_markdown`): web links open, bare ones too.
 private func inline(_ s: String) -> AttributedString {
     let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-    return (try? AttributedString(markdown: s, options: options)) ?? AttributedString(s)
+    let settled = inlineMarkdown(text: s)
+    return (try? AttributedString(markdown: settled, options: options)) ?? AttributedString(s)
 }
 
 /// The reply a session Codealong runs is writing, as it comes, and the tool it's running.
@@ -1460,19 +1545,38 @@ private struct LiveReply: View {
     }
 }
 
+/// A tool's input or output as it was written, every character of it, its web links opening (the
+/// core's `linked_output`), scrolling both ways past a few lines, with a button that copies it.
 private struct Block: View {
     let text: String
     var failed = false
+    /// How tall the text is: the box is as tall, up to a point, and scrolls past it.
+    @State private var height: CGFloat = 0
 
     var body: some View {
-        ScrollView(.horizontal) {
-            Text(text)
+        ScrollView([.horizontal, .vertical]) {
+            Text(linked)
                 .font(.caption2.monospaced())
                 .foregroundStyle(failed ? .red : .primary)
                 .textSelection(.enabled)
                 .padding(8)
+                .padding(.trailing, 28)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
         }
-        .frame(maxHeight: 220)
+        .frame(height: min(max(height, 32), 220))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .scrollBounceBehavior(.basedOnSize)
         .background(.background.secondary, in: .rect(cornerRadius: 8))
+        .overlay(alignment: .topTrailing) { CopyButton(text: text) }
+    }
+
+    private var linked: AttributedString {
+        var out = AttributedString()
+        for span in linkedOutput(text: text) {
+            var piece = AttributedString(span.text)
+            if let url = span.url.flatMap(URL.init(string:)) { piece.link = url }
+            out += piece
+        }
+        return out
     }
 }

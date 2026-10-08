@@ -8,12 +8,15 @@ peer to peer, with no server of Codealong's in between.
 Status: early. It links with your Macs, lists their sessions in the sections and order of the
 Mac's Sessions view (snoozed ones apart), narrowed to a project if you like, and shows each one's
 conversation, reading back as you scroll up with what you asked pinned over its reply, and a
-hosted session's reply as it's written: a prompt the session took back, the questions a call
-asked with what you picked, and a link to the page a call published. Where a Mac has remote
+hosted session's reply as it's written, drawn as the Mac draws it: replies as Markdown with tables,
+quotes, lists and code to copy, web links (a PR's as `name#123`) that open, your prompts as you
+wrote them, commands you ran with what they printed, a prompt the session took back, the
+questions a call asked with what you picked, and a link to the page a call published. Where a Mac has remote
 control on, it replies (into the running turn at once where the session can take it), answers
 approvals and questions (or denies a call, saying what to do instead), stops a turn, switches a
 running session's model, goes on with one that isn't running where and on what you pick, forks
-one, and starts sessions, in a worktree, a new one, or a chat in no project, on the account,
+one, marks one done (closing it where its Mac can, as Mark as done does there), and starts
+sessions, in a worktree, a new one, or a chat in no project, on the account,
 model, effort and place the chips say. It renames sessions with remote control off too. The
 reply box says how a message gets there, as the Mac says. The plan is in the main repo's
 `design/plans/ios.md`.

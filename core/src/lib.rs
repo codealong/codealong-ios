@@ -16,7 +16,9 @@ use codealong_peer::{net, proto};
 
 uniffi::setup_scaffolding!();
 
+mod md;
 mod quick;
+pub use md::*;
 pub use quick::*;
 
 /// Changes reach Swift at most this often: a busy Mac sends a feed a second, and each can come
@@ -510,6 +512,8 @@ pub struct Item {
     pub kind: ItemKind,
     /// Prose for you, the agent and notes (Markdown); a one-line label for a tool call.
     pub text: String,
+    /// A tool call's whole input; on a prompt of yours, a command you ran in the session's shell
+    /// (Claude Code's `!`), whose `output` is what it printed.
     pub input: Option<String>,
     pub output: Option<String>,
     pub failed: bool,
@@ -702,7 +706,9 @@ impl Thread {
                     "result" => return None,
                     _ => ItemKind::Note,
                 };
-                let result = (kind == ItemKind::Tool).then(|| i.id.as_deref().and_then(|id| results.get(id))).flatten();
+                // A call's output is its result's; so is what a command you ran in the session's
+                // shell (`!`) printed, which comes as a result of your prompt.
+                let result = matches!(kind, ItemKind::Tool | ItemKind::You).then(|| i.id.as_deref().and_then(|id| results.get(id))).flatten();
                 // Your answers to its questions are on the call's result.
                 let answers = result.map(|r| &r.answers).filter(|a| !a.is_empty()).or(Some(&i.answers).filter(|a| !a.is_empty()));
                 Some(Item {
@@ -1031,6 +1037,28 @@ mod tests {
     }
 
     #[test]
+    fn done_with_a_session_a_mac_wont_close_says_why_its_still_open() {
+        let old = done_anyway("Fix it", true, "Mini", "Codealong on this device doesn't know how to session-done yet; update it here.");
+        assert_eq!((old.done, old.noted), (true, true));
+        assert_eq!(old.message, "Done with \u{201c}Fix it\u{201d}: it\u{2019}s archived, but still open on Mini. Codealong there is from before it could be asked to close it: update it on Mini.");
+        let off = done_anyway("Fix it", true, "Mini", "Remote control is off on Mini; turn it on there in Settings \u{203a} Devices.");
+        assert!(off.message.ends_with("still open on Mini. Remote control is off on Mini; turn it on there in Settings \u{203a} Devices."), "{}", off.message);
+        // One that isn't running has nothing more to close.
+        assert_eq!(done_anyway("Fix it", false, "Mini", "anything"), DoneOutcome { done: true, message: "Done with \u{201c}Fix it\u{201d}: it\u{2019}s archived.".into(), noted: false });
+    }
+
+    #[test]
+    fn a_command_you_ran_shows_what_it_printed() {
+        let mut ran = item("you", 10, Some("b1"), None);
+        ran.input = Some("ls".into());
+        let mut t = Thread::default();
+        t.take(api::Page { items: vec![ran, item("result", 20, Some("b1"), Some("a.txt"))], before: None, after: 30 }, false);
+        let shown = t.shown();
+        assert_eq!(shown.len(), 1);
+        assert_eq!((shown[0].input.as_deref(), shown[0].output.as_deref()), (Some("ls"), Some("a.txt")));
+    }
+
+    #[test]
     fn models_are_named_as_people_say_them() {
         let listed = vec![StartModel { id: "opus".into(), label: "Opus 5.5 (1M context)".into() }];
         assert_eq!(model_name("opus".into(), listed), "Opus 5.5 1M");
@@ -1318,6 +1346,29 @@ impl Core {
         Ok(StartedSession { key: started.key.map(|k| remote_key(device, &k)), message: started.message })
     }
 
+    /// Done with a session (Mark as done): it ends as far as its Mac can end it (its terminal tab
+    /// closes, its background job stops) and is marked seen and archived there. Work under way
+    /// holds it (`done` false) unless `stop` ends that too. A Mac that won't do it (remote control
+    /// off, or a Codealong from before it) still has it marked seen and archived, as the Mac's own
+    /// windows do (actions.rs `done_anyway`), and the message says why it's still open there.
+    pub fn done(&self, key: String, stop: bool) -> Result<DoneOutcome, CoreError> {
+        let (device, own) = split_remote(&key).ok_or_else(|| CoreError::Failed("That isn't a session on one of your Macs.".into()))?;
+        let why = match self.client.done(device, own, stop) {
+            Ok(d) => return Ok(DoneOutcome { done: d.done, message: d.message, noted: d.noted }),
+            Err(why) => why,
+        };
+        self.client.mark_seen(device, &[own.to_string()]).map_err(|_| CoreError::Failed(why.clone()))?;
+        self.client.archive(device, own, true).map_err(|_| CoreError::Failed(why.clone()))?;
+        let (title, live, mac) = self.client.with_feeds(|feeds| {
+            feeds
+                .iter()
+                .find(|(d, _)| d.short == device || d.key == device)
+                .and_then(|(d, r)| r.lanes.iter().flat_map(|l| l.sessions.iter()).find(|s| s.key == own).map(|s| (s.title.clone(), s.live, d.name.clone())))
+                .unwrap_or_else(|| (String::new(), true, "its Mac".into()))
+        });
+        Ok(done_anyway(&title, live, &mac, &why))
+    }
+
     /// Names a session on the Mac it's on, where its harness keeps its name. Macs before
     /// 2026-09-30 refuse it.
     pub fn rename(&self, key: String, name: String) -> Result<(), CoreError> {
@@ -1373,6 +1424,29 @@ pub fn model_name(model: String, models: Vec<StartModel>) -> String {
         _ => base.to_string(),
     };
     if long { format!("{name} 1M") } else { name }
+}
+
+/// What being done with a session came to.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct DoneOutcome {
+    /// It was marked seen and archived. False when work under way held it, which `message` says:
+    /// asked again with `stop`, that ends too.
+    pub done: bool,
+    /// One sentence: what ended, or what's under way.
+    pub message: String,
+    /// Something didn't go as asked (its terminal left open, say), worth saying though it left
+    /// the list.
+    pub noted: bool,
+}
+
+/// Done with a session on a Mac that won't end it (`why`): it's been marked seen and archived
+/// there, and the rest is left as it is. For one that isn't running, that's all Done would do.
+fn done_anyway(title: &str, live: bool, mac: &str, why: &str) -> DoneOutcome {
+    if !live {
+        return DoneOutcome { done: true, message: format!("Done with \u{201c}{title}\u{201d}: it\u{2019}s archived."), noted: false };
+    }
+    let why = if why.contains("doesn't know how to") { format!("Codealong there is from before it could be asked to close it: update it on {mac}.") } else { why.to_string() };
+    DoneOutcome { done: true, message: format!("Done with \u{201c}{title}\u{201d}: it\u{2019}s archived, but still open on {mac}. {why}"), noted: true }
 }
 
 /// What a Mac can start, as the phone offers it.
