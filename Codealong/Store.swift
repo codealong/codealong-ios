@@ -28,6 +28,18 @@ final class Store {
     private var handled: [String: Int64] = [:]
     /// Sessions you went on from without replying, in the order you left them.
     private var passed: [String] = []
+    /// What you've written to each session and not sent, by key: kept as you go from one to
+    /// another, and where a message that didn't go comes back.
+    var drafts: [String: String] = [:]
+    /// Messages on their way to each session, by key, oldest first: shown in its conversation at
+    /// once, as the Mac's windows show theirs (ahead.ts), until its record has them.
+    private(set) var outgoing: [String: [Outgoing]] = [:]
+    /// Why a session's last message didn't go, for its screen to say once.
+    var sendProblems: [String: String] = [:]
+    /// The session shown now, if one is: a message that fails elsewhere is said in an alert.
+    var showing: String?
+    /// Sessions whose messages are going now: one at a time each, so they arrive in order.
+    @ObservationIgnored private var pumping: Set<String> = []
 
     @ObservationIgnored private var core: Core?
 
@@ -215,19 +227,101 @@ final class Store {
         return try await Task.detached { try core.route(device: device, project: project, text: text) }.value
     }
 
-    /// Sends a session a prompt where it runs; returns what its Mac said about it.
-    func send(_ key: String, text: String) async throws -> String {
-        let core = try running()
-        return try await Task.detached {
-            let conv = try core.conversation(key: key)
-            return try conv.send(text: text, now: false)
-        }.value
+    /// Sends a session a message, or goes on with one that isn't running on it (`how`), without
+    /// waiting: it shows in the conversation at once, going after any still on their way to that
+    /// session. One that doesn't go is back in the session's box with why, with any after it.
+    func post(_ key: String, title: String, text: String, how: Outgoing.How) {
+        outgoing[key, default: []].append(Outgoing(id: UUID().uuidString, text: text, at: .now, how: how, state: .queued))
+        sendProblems[key] = nil
+        pump(key, title: title)
+    }
+
+    private func pump(_ key: String, title: String) {
+        guard let core, !pumping.contains(key), let i = outgoing[key]?.firstIndex(where: { $0.state == .queued }), let next = outgoing[key]?[i] else { return }
+        pumping.insert(key)
+        outgoing[key]?[i].state = .sending
+        Task {
+            do {
+                let message = try await Task.detached {
+                    let conv = try core.conversation(key: key)
+                    switch next.how {
+                    case .send(let now): return try conv.send(text: next.text, now: now)
+                    case .resume(let place, let model, let effort): return try conv.resume(place: place, model: model, effort: effort, prompt: next.text)
+                    }
+                }.value
+                if let j = outgoing[key]?.firstIndex(where: { $0.id == next.id }) {
+                    outgoing[key]?[j].state = .sent(message, at: .now)
+                }
+            } catch {
+                failed(key, title: title, from: next.id, why: words(error))
+            }
+            pumping.remove(key)
+            pump(key, title: title)
+        }
+    }
+
+    /// A message didn't go: it and those after it, which wait on it, go back in the box in order,
+    /// before what's written there now.
+    private func failed(_ key: String, title: String, from id: String, why: String) {
+        guard let list = outgoing[key], let i = list.firstIndex(where: { $0.id == id }) else { return }
+        let back = list[i...].filter { if case .sent = $0.state { false } else { true } }
+        outgoing[key] = list.filter { o in !back.contains { $0.id == o.id } }
+        let draft = drafts[key] ?? ""
+        drafts[key] = (back.map(\.text) + (draft.isEmpty ? [] : [draft])).joined(separator: "\n\n")
+        sendProblems[key] = why
+        if showing != key {
+            notice = "Your message to “\(title)” didn't go: \(why) It's back in its box."
+        }
+    }
+
+    /// The session's conversation shows these now (`sends_in_record`): they go.
+    func shown(_ key: String, items: [Item]) {
+        guard let list = outgoing[key], !list.isEmpty else { return }
+        let going = list.filter { $0.state != .queued }.map { SentAt(id: $0.id, at: Int64($0.at.timeIntervalSince1970 * 1000)) }
+        let found = Set(sendsInRecord(sends: going, items: items))
+        // A message goes after a while whatever the record says: its bubble has said what it knows.
+        let kept = list.filter { !found.contains($0.id) && Date.now.timeIntervalSince($0.at) < Outgoing.longest }
+        if kept != list { outgoing[key] = kept }
+    }
+
+    /// Puts a message that went away: the session didn't show it, and you've seen that.
+    func dismissOutgoing(_ key: String, id: String) {
+        outgoing[key]?.removeAll { $0.id == id }
     }
 
     private func running() throws -> Core {
         guard let core else { throw CoreError.Failed(message: problem ?? "Codealong's core didn't start.") }
         return core
     }
+}
+
+/// A message on its way to a session from here.
+struct Outgoing: Identifiable, Equatable {
+    let id: String
+    let text: String
+    let at: Date
+    let how: How
+    var state: State
+
+    enum How: Equatable {
+        /// A message, into the running turn at once with `now`.
+        case send(now: Bool)
+        /// Going on with a session that isn't running, where and on what you picked.
+        case resume(place: String, model: String?, effort: String?)
+    }
+
+    enum State: Equatable {
+        /// Waiting for one before it to go.
+        case queued
+        case sending
+        /// Its Mac took it, and said this.
+        case sent(String, at: Date)
+    }
+
+    /// One the session shows no sign of this long after it went says it may not have reached it.
+    static let confirm: TimeInterval = 20
+    /// One goes after this, whatever the record says.
+    static let longest: TimeInterval = 10 * 60
 }
 
 /// Hands the core's change notices to the store; the core calls it on a thread of its own.

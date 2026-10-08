@@ -31,7 +31,11 @@ place the chips under it say.
 It works through what waits on you as the Mac's session panel does: once you've replied or
 answered, the most urgent session still waiting on you is a tap away above the reply box (Next),
 and holding Send sends and goes straight on (⌘⏎ on a keyboard). The chevron at the top skips to
-it; one skipped comes round again after the rest.
+it; one skipped comes round again after the rest. Swiping across a conversation goes along the
+same queue, as the Mac's ⌘] and ⌘[ do: to the left the next, to the right the one before. A
+message shows in the conversation the moment you send it, as sending, then sent, until the
+session's record has it, so you can write the next or go straight on; one that doesn't go is back
+in its box. Dragging or tapping the conversation puts the keyboard away.
 
 Projects are the Macs' own: each session comes in its Mac's project, and the phone lines them up
 across Macs as a Mac lines up another's worktrees, by repo. A worktree goes into the project any

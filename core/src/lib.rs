@@ -728,6 +728,37 @@ impl Thread {
     }
 }
 
+/// A message sent from here, by when it went (this phone's clock).
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct SentAt {
+    pub id: String,
+    pub at: i64,
+}
+
+/// A prompt a little before the send still counts as it: the Mac's clock may be behind this one's.
+const SENT_SLACK_MS: i64 = 3_000;
+
+/// Which messages sent from here the conversation shows now, as the Mac's ahead.ts `inRecord`
+/// tells: oldest first, each takes the first prompt of yours (or message from another session) at
+/// or after it went that an earlier one didn't take. The text isn't compared: a harness can
+/// record a message otherwise than it was sent (a message from Codealong comes as one from
+/// another session).
+#[uniffi::export]
+pub fn sends_in_record(sends: Vec<SentAt>, items: Vec<Item>) -> Vec<String> {
+    let said: Vec<&Item> = items.iter().filter(|i| i.kind == ItemKind::You || (i.kind == ItemKind::Note && i.text.starts_with("From another session"))).collect();
+    let mut used = vec![false; said.len()];
+    let mut sends = sends;
+    sends.sort_by_key(|s| s.at);
+    let mut found = Vec::new();
+    for s in sends {
+        if let Some(j) = (0..said.len()).find(|&j| !used[j] && said[j].at >= s.at - SENT_SLACK_MS) {
+            used[j] = true;
+            found.push(s.id);
+        }
+    }
+    found
+}
+
 /// An item's id, the same whichever page it was read in.
 fn item_id(i: &api::Item) -> String {
     format!("{}:{}", i.cursor, i.n)
@@ -1045,6 +1076,20 @@ mod tests {
         assert!(off.message.ends_with("still open on Mini. Remote control is off on Mini; turn it on there in Settings \u{203a} Devices."), "{}", off.message);
         // One that isn't running has nothing more to close.
         assert_eq!(done_anyway("Fix it", false, "Mini", "anything"), DoneOutcome { done: true, message: "Done with \u{201c}Fix it\u{201d}: it\u{2019}s archived.".into(), noted: false });
+    }
+
+    #[test]
+    fn a_message_sent_shows_once_the_record_has_a_prompt_after_it() {
+        let said = |kind: ItemKind, at: i64, text: &str| Item { id: at.to_string(), at, kind, text: text.into(), input: None, output: None, failed: false, withdrawn: false, questions: vec![], link: None };
+        let items = vec![said(ItemKind::You, 1_000, "old"), said(ItemKind::Agent, 9_000, "reply"), said(ItemKind::You, 10_000, "first"), said(ItemKind::Note, 12_000, "From another session: second")];
+        let sent = |id: &str, at: i64| SentAt { id: id.into(), at };
+        // Each takes the first prompt at or after it went; the old one before them takes none.
+        assert_eq!(sends_in_record(vec![sent("b", 11_000), sent("a", 10_500)], items.clone()), ["a", "b"]);
+        // A third has nothing left to take.
+        assert_eq!(sends_in_record(vec![sent("a", 10_000), sent("b", 10_000), sent("c", 10_000)], items.clone()), ["a", "b"]);
+        // The Mac's clock a little behind this one's still counts.
+        assert_eq!(sends_in_record(vec![sent("a", 12_500)], items.clone()), ["a"]);
+        assert!(sends_in_record(vec![sent("a", 20_000)], items).is_empty());
     }
 
     #[test]

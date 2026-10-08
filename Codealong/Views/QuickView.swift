@@ -311,18 +311,13 @@ struct QuickView: View {
         case .open:
             if let key = s.session?.key { path.append(key) }
         case .send:
+            // It goes as a reply in the session's screen goes: shown there at once, back in its
+            // box if it doesn't go.
             guard let row = s.session else { return }
-            acting = true
-            defer { acting = false }
-            do {
-                let result = try await store.send(row.key, text: query)
-                text = ""
-                store.dealtWith(row.key)
-                store.outcome = result
-                path.append(row.key)
-            } catch {
-                problem = words(error)
-            }
+            store.post(row.key, title: row.title, text: query, how: .send(now: false))
+            text = ""
+            store.dealtWith(row.key)
+            path.append(row.key)
         case .start:
             guard let w = s.worktree else { return }
             await start(in: w, newWorktree: s.newWorktree)

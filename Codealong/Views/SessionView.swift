@@ -17,6 +17,13 @@ import SwiftUI
 /// sends it into the turn. `/fork [prompt]` forks it into a copy that goes on in the background on
 /// its Mac, and you stay where you are, as on the Mac.
 ///
+/// A message goes as the Mac's windows send one: the box clears at once and the message shows at
+/// the end of the conversation as sending, then sent, until the session's record has it, so you
+/// can go on writing the next; messages to one session go in the order you sent them. One that
+/// doesn't go is back in the box, with why. Swiping across the conversation goes along what waits
+/// on you, as the Mac's ⌘] and ⌘[ do: to the left the next, to the right the one before. Dragging
+/// the conversation down, or tapping it, puts the keyboard away.
+///
 /// As on the Mac, it opens at the newest and reads older pages as you scroll up, holding your
 /// place. The prompt behind what's in view, once it's gone off the top, stays pinned there, two
 /// lines of it, so what you asked stays in mind while you read what came of it; a tap brings it
@@ -59,7 +66,8 @@ struct SessionView: View {
     @State private var answered: String?
     @State private var problem: String?
     @State private var loading = true
-    @State private var draft = ""
+    /// How far a swipe across the conversation has gone, while it goes.
+    @State private var swipe: CGFloat = 0
     @State private var sending = false
     @State private var said: String?
     /// The reply it's writing, while it takes a turn Codealong runs on its Mac.
@@ -92,6 +100,17 @@ struct SessionView: View {
     private let nearTop: CGFloat = 900
 
     private var row: SessionRow? { store.sessions.first { $0.key == key } }
+    /// What you've written here and not sent: the store keeps it, so it's still here when you come
+    /// back, and a message that didn't go comes back to it.
+    private var draft: String {
+        get { store.drafts[key] ?? "" }
+        nonmutating set { store.drafts[key] = newValue.isEmpty ? nil : newValue }
+    }
+    /// The one before this in what waits on you, as the Mac's ⌘[ goes: the last of what's left
+    /// after it, round the queue.
+    private var before: SessionRow? { after.last }
+    /// A swipe goes along the queue once it's gone this far, or flicked.
+    private let swipeFar: CGFloat = 90
     /// What waits on you after this one; the first is next.
     private var after: [SessionRow] { store.queue(after: key, project: project) }
 
@@ -166,6 +185,9 @@ struct SessionView: View {
                     if let live {
                         LiveReply(live: live)
                     }
+                    ForEach(store.outgoing[key] ?? []) { o in
+                        OutgoingView(outgoing: o) { store.dismissOutgoing(key, id: o.id) }
+                    }
                     if loading && items.isEmpty {
                         ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
                     }
@@ -179,6 +201,16 @@ struct SessionView: View {
             }
             .scrollPosition($position)
             .defaultScrollAnchor(.bottom)
+            // Dragging the conversation puts the keyboard away, and so does a tap on it, which still
+            // reaches what was tapped. (Interactively, as Messages does it, it went only once the
+            // drag reached the keyboard, which reading back rarely does.)
+            .scrollDismissesKeyboard(.immediately)
+            .accessibilityIdentifier("conversation")
+            .simultaneousGesture(TapGesture().onEnded { typing = false })
+            .offset(x: swipeOffset)
+            .gesture(QueueSwipe(moved: { swipe = $0 }, ended: swiped))
+            .overlay(alignment: swipe < 0 ? .trailing : .leading) { swipeHint }
+            .sensoryFeedback(.selection, trigger: abs(swipe) >= swipeFar && swipeTarget != nil)
             .onScrollGeometryChange(for: Bool.self) { geo in
                 geo.contentOffset.y + geo.containerSize.height >= geo.contentSize.height - 60
             } action: { _, now in
@@ -307,10 +339,13 @@ struct SessionView: View {
             }
         }
         .onDisappear {
+            if store.showing == key { store.showing = nil }
             if watching, let conv = conversation {
                 Task.detached { conv.unwatch() }
             }
         }
+        // A message that didn't go is back in the box: say why.
+        .onChange(of: store.sendProblems[key]) { _, _ in sayProblem() }
     }
 
     @ViewBuilder
@@ -377,7 +412,7 @@ struct SessionView: View {
                             .allowsHitTesting(false)
                             .accessibilityHidden(true)
                     }
-                    TextField(text: $draft, prompt: Text(""), axis: .vertical) { Text(placeholder) }
+                    TextField(text: Binding(get: { draft }, set: { draft = $0 }), prompt: Text(""), axis: .vertical) { Text(placeholder) }
                         .lineLimit(1...6)
                         .focused($typing)
                         .disabled(!canAct || sending)
@@ -586,6 +621,8 @@ struct SessionView: View {
     }
 
     private func open() async {
+        store.showing = key
+        sayProblem()
         guard conversation == nil, let conv = store.conversation(key) else { return }
         conversation = conv
         // Moved on to from another: say how that one went.
@@ -693,6 +730,8 @@ struct SessionView: View {
         }
         items = all
         hasOlder = conv.hasOlder()
+        // Messages sent from here that the conversation shows now are in it: their bubbles go.
+        store.shown(key, items: all)
         if above { Task { await lookBack() } }
     }
 
@@ -755,6 +794,13 @@ struct SessionView: View {
         withAnimation(.snappy) { proxy.scrollTo(id, anchor: .top) }
     }
 
+    /// Why a message to it didn't go, once: it's back in the box.
+    private func sayProblem() {
+        guard let why = store.sendProblems[key] else { return }
+        said = "Your message didn't go: \(why) It's back in the box."
+        store.sendProblems[key] = nil
+    }
+
     /// Its Mac connected while it's shown: what couldn't be read is read, and a session Codealong
     /// runs is followed again, since a new connection follows nothing.
     private func reconnected() async {
@@ -789,29 +835,95 @@ struct SessionView: View {
             await fork(String(trimmed.dropFirst("/fork".count)).trimmingCharacters(in: .whitespaces))
             return
         }
+        // A message, or one that goes on with a session that isn't running, goes without waiting:
+        // it shows at once, and the store says if it doesn't go.
+        if !denying {
+            let how: Outgoing.How
+            if resuming, let place = resumeAt {
+                let (model, effort) = resumeTakesModel ? (resumeModel, resumeEffort) : (nil, nil)
+                how = .resume(place: place.id, model: model, effort: effort)
+            } else {
+                how = .send(now: now)
+            }
+            draft = ""
+            said = nil
+            store.post(key, title: title, text: text, how: how)
+            store.dealtWith(key)
+            if thenNext, let next = after.first {
+                moveOn(to: next, outcome: "Sending to “\(title)”…")
+                return
+            }
+            if after.isEmpty { said = "Nothing else waits on you." }
+            withAnimation(.snappy) { acted = true }
+            withAnimation(.snappy) { position.scrollTo(edge: .bottom) }
+            return
+        }
+        // A deny with your words answers the call the card shows, so it waits for the Mac.
+        guard let p = pending else { return }
         sending = true
         defer { sending = false }
         do {
-            let result: String
-            let outcome: String
-            if denying, let p = pending {
-                result = try await Task.detached { try conv.denySaying(id: p.id, message: text) }.value
-                answered = p.id
-                pending = nil
-                outcome = "Denied “\(title)”, saying what to do instead."
-            } else if resuming, let place = resumeAt {
-                let (model, effort) = resumeTakesModel ? (resumeModel, resumeEffort) : (nil, nil)
-                result = try await Task.detached { try conv.resume(place: place.id, model: model, effort: effort, prompt: text) }.value
-                outcome = "“\(title)” goes on in \(place.label)."
-            } else {
-                result = try await Task.detached { try conv.send(text: text, now: now) }.value
-                outcome = "Sent to “\(title)”."
-            }
+            let result = try await Task.detached { try conv.denySaying(id: p.id, message: text) }.value
+            answered = p.id
+            pending = nil
             draft = ""
             typing = false
-            done(result, outcome: outcome, thenNext: thenNext)
+            done(result, outcome: "Denied “\(title)”, saying what to do instead.", thenNext: thenNext)
         } catch {
             said = words(error)
+        }
+    }
+
+    /// The conversation moves with a swipe across it: a little, toward the one it goes to; less,
+    /// where there's none that way.
+    private var swipeOffset: CGFloat {
+        swipe * (swipeTarget == nil ? 0.12 : 0.35)
+    }
+
+    /// Where the swipe going on would take you: the next to the left, the one before to the right.
+    private var swipeTarget: SessionRow? {
+        swipe < 0 ? after.first : swipe > 0 ? before : nil
+    }
+
+    /// Says where letting go would go, at the edge the conversation leaves.
+    @ViewBuilder
+    private var swipeHint: some View {
+        if let target = swipeTarget {
+            let ready = abs(swipe) >= swipeFar
+            HStack(spacing: 6) {
+                if swipe > 0 { Image(systemName: "chevron.backward") }
+                VStack(alignment: swipe < 0 ? .trailing : .leading, spacing: 1) {
+                    Text(swipe < 0 ? "Next" : "Back").font(.caption.weight(.semibold))
+                    Text(target.title).font(.caption2).lineLimit(1)
+                }
+                if swipe < 0 { Image(systemName: "chevron.forward") }
+            }
+            .foregroundStyle(ready ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
+            .frame(maxWidth: 140)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            // Solid enough to read over the conversation it lies on.
+            .background(.thickMaterial, in: .capsule)
+            .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
+            .padding(.horizontal, 8)
+            .opacity(min(1, abs(swipe) / swipeFar))
+            .allowsHitTesting(false)
+        }
+    }
+
+    /// A swipe let go: far or fast enough toward a session, it goes there; otherwise the
+    /// conversation settles back.
+    private func swiped(_ distance: CGFloat, _ speed: CGFloat) {
+        let far = abs(distance) >= swipeFar || (abs(distance) > 30 && abs(speed) > 600 && (speed < 0) == (distance < 0))
+        let target = distance < 0 ? after.first : distance > 0 ? before : nil
+        withAnimation(.snappy) { swipe = 0 }
+        guard far, let target else { return }
+        if distance < 0 {
+            moveOn(to: target)
+        } else {
+            // Back is a step by hand: this one isn't passed over for it.
+            store.outcome = acted ? said : nil
+            go(target.key)
         }
     }
 
@@ -1345,6 +1457,59 @@ private struct ItemView: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity)
         }
+    }
+}
+
+/// A message on its way from here, at the end of the conversation until the session's record has
+/// it: sending, then sent with what its Mac said, as the Mac's thread shows one (SessionThread.tsx
+/// `Unsaid`). One the session shows no sign of a while after it went says it may not have reached
+/// it, and can be put away.
+private struct OutgoingView: View {
+    let outgoing: Outgoing
+    let dismiss: () -> Void
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 5)) { context in
+            let unconfirmed = isUnconfirmed(at: context.date)
+            VStack(alignment: .trailing, spacing: 4) {
+                HStack {
+                    Spacer(minLength: 40)
+                    PromptText(text: outgoing.text)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color.accentColor.opacity(sent ? 0.15 : 0.08), in: .rect(cornerRadius: 16))
+                        .foregroundStyle(sent ? .primary : .secondary)
+                }
+                Text(unconfirmed ? "Not in the session yet" : state)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                if unconfirmed {
+                    Text("It went, but the session hasn’t shown it. It may not have reached it.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.trailing)
+                    Button("Stop showing this", systemImage: "xmark", action: dismiss)
+                        .font(.caption)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+    }
+
+    private var sent: Bool {
+        if case .sent = outgoing.state { true } else { false }
+    }
+
+    private var state: String {
+        switch outgoing.state {
+        case .queued, .sending: "Sending…"
+        case .sent(let message, _): message.isEmpty ? "Sent" : message
+        }
+    }
+
+    private func isUnconfirmed(at now: Date) -> Bool {
+        guard case .sent(_, let at) = outgoing.state else { return false }
+        return now.timeIntervalSince(at) > Outgoing.confirm
     }
 }
 
