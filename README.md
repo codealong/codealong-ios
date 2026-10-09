@@ -33,7 +33,9 @@ answered, the most urgent session still waiting on you is a tap away above the r
 and holding Send sends and goes straight on (⌘⏎ on a keyboard). The chevron at the top skips to
 it; one skipped comes round again after the rest. Swiping across a conversation goes along the
 same queue: to the left the next, as the Mac's ⌘] does, and to the right back to the session you
-came from. Mark as unread, in a session's menu or by holding its row, makes a turn you've seen
+came from. The screen follows your finger with that session beside it, drawn from what the phone
+keeps (the next is read ahead, with what it waits on you for), and finishes the slide when you let
+go; Next and the chevron slide the same way. Mark as unread, in a session's menu or by holding its row, makes a turn you've seen
 Your turn again, on every device, until it's seen or prompted. A
 message shows in the conversation the moment you send it, as sending, then sent, until the
 session's record has it, so you can write the next or go straight on; one that doesn't go is back
@@ -77,6 +79,7 @@ scripts/build.sh                    # the core for the simulator if it's missing
 CORE=1 scripts/build.sh             # rebuild the core too
 scripts/run.sh                      # install and launch on the booted simulator
 LINK_CODE=cal1… scripts/run.sh      # launch with a Mac's link code, as if entered
+LOOK_ONLY=1 QUEUE=<key>,<key> OPEN=<key> scripts/run.sh  # go through real sessions, marking none seen
 ```
 
 On the Mac, `codealong devices code` makes a link code (the app running, Devices and iroh on).

@@ -49,7 +49,8 @@ struct QuickView: View {
             .navigationDestination(for: String.self) { key in
                 // A view of its own per session: going from one to another by a link keeps nothing.
                 // Next puts the next session in this one's place, so Back is still this list.
-                SessionView(key: key, go: { next in path = [next] }).id(key)
+                // One a swipe slid in starts as the swipe drew it.
+                SessionView(key: key, opening: store.slidIn.flatMap { $0.key == key ? $0.opening : nil }, go: { next in path = [next] }).id(key)
             }
             .sheet(isPresented: $showingMacs) {
                 DevicesView()

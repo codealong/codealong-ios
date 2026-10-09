@@ -22,7 +22,9 @@ import SwiftUI
 /// can go on writing the next; messages to one session go in the order you sent them. One that
 /// doesn't go is back in the box, with why. Swiping across the conversation goes along what waits
 /// on you: to the left the next, as the Mac's ⌘] does, and to the right back to the session you
-/// came from. Dragging the conversation, or tapping it, puts the keyboard away.
+/// came from. The screen follows the finger, with the session it goes to beside it, drawn from
+/// what the phone keeps (the next is read ahead); let go, it slides the rest of the way, and Next
+/// slides the same way. Dragging the conversation, or tapping it, puts the keyboard away.
 ///
 /// As on the Mac, it opens at the newest and reads older pages as you scroll up, holding your
 /// place. The prompt behind what's in view, once it's gone off the top, stays pinned there, two
@@ -66,8 +68,12 @@ struct SessionView: View {
     @State private var answered: String?
     @State private var problem: String?
     @State private var loading = true
-    /// How far a swipe across the conversation has gone, while it goes.
-    @State private var swipe: CGFloat = 0
+    /// A swipe across the screen, while it goes.
+    @State private var swipe = Swipe()
+    /// What the phone keeps of the sessions a swipe goes to, by key, read once this one's open.
+    @State private var beside: [String: Kept] = [:]
+    @State private var opened = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var sending = false
     @State private var said: String?
     /// The reply it's writing, while it takes a turn Codealong runs on its Mac.
@@ -78,8 +84,6 @@ struct SessionView: View {
     @State private var atBottom = true
     /// How a message gets to it, as its Mac last said.
     @State private var way: Way?
-    /// What its Mac can start, for its account's models and the places it can go on in.
-    @State private var choices: StartChoices?
     /// Where it goes on, and on what, while it isn't running: nil for what its Mac offers first.
     @State private var resumePlace: String?
     @State private var resumeModel: String?
@@ -101,6 +105,20 @@ struct SessionView: View {
     /// get there: a page comes from the Mac, which can take a moment.
     private let nearTop: CGFloat = 900
 
+    /// Opened by a swipe, it starts as the swipe drew it.
+    init(key: String, opening: Opening? = nil, go: @escaping (String) -> Void = { _ in }) {
+        self.key = key
+        self.go = go
+        if let opening {
+            _items = State(initialValue: opening.kept.items)
+            _hasOlder = State(initialValue: opening.kept.hasOlder)
+            _loading = State(initialValue: opening.kept.items.isEmpty)
+            _said = State(initialValue: opening.said)
+            _pending = State(initialValue: opening.kept.pending)
+            _way = State(initialValue: opening.kept.way)
+        }
+    }
+
     private var row: SessionRow? { store.sessions.first { $0.key == key } }
     /// What you've written here and not sent: the store keeps it, so it's still here when you come
     /// back, and a message that didn't go comes back to it.
@@ -110,160 +128,28 @@ struct SessionView: View {
     }
     /// The session you went on from to this one: swiping back goes there.
     private var before: SessionRow? { store.previous(of: key) }
-    /// A swipe goes along the queue once it's gone this far, or flicked.
-    private let swipeFar: CGFloat = 90
     /// What waits on you after this one; the first is next.
     private var after: [SessionRow] { store.queue(after: key, project: project) }
 
-    /// The conversation as it reads: what was said, and each run of tool calls between as one. A
-    /// call that made a page is one to open: the calls around it fold, and it stays in view.
-    private var entries: [Entry] {
-        var out: [Entry] = []
-        var run: [Item] = []
-        for item in items {
-            if item.kind == .tool && item.link == nil {
-                run.append(item)
-                continue
-            }
-            if item.kind == .tool {
-                if !run.isEmpty { out.append(.tools(run)) }
-                run = []
-                out.append(.tools([item]))
-                continue
-            }
-            if !run.isEmpty { out.append(.tools(run)) }
-            run = []
-            out.append(.said(item))
-        }
-        if !run.isEmpty { out.append(.tools(run)) }
-        return out
-    }
-
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                // Not lazy: a lazy stack scrolled to its end by the bottom anchor or `scrollTo` goes
-                // by row heights it guessed, and on a phone it could stop there with no rows built
-                // for what's on screen, a blank page until you dragged it. What's shown is the pages
-                // of 60 items read so far, a few unless you scroll a long way back.
-                VStack(alignment: .leading, spacing: 14) {
-                    if hasOlder {
-                        ProgressView()
-                            .controlSize(.small)
-                            .frame(maxWidth: .infinity)
-                            .accessibilityLabel("Loading earlier")
-                    } else if !loading && !items.isEmpty {
-                        Text("The start of the session")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                            .frame(maxWidth: .infinity)
-                        if let origin = row?.origin {
-                            // Where it came from: a fork of another session, or started by one.
-                            let words = "\(origin.fork ? "Forked from" : "Started by") \(origin.title.map { "“\($0)”" } ?? "another session")"
-                            if store.sessions.contains(where: { $0.key == origin.key }) {
-                                Button(words) { go(origin.key) }
-                                    .font(.caption)
-                                    .frame(maxWidth: .infinity)
-                            } else {
-                                Text(words).font(.caption).foregroundStyle(.tertiary).frame(maxWidth: .infinity)
-                            }
-                        }
-                    }
-                    ForEach(entries) { entry in
-                        switch entry {
-                        case .said(let item) where item.kind == .you:
-                            ItemView(item: item, putBack: canAct ? { draft = $0 } : nil)
-                                .onGeometryChange(for: PromptPlace.self) { [viewTop] geo in
-                                    PromptPlace(geo.frame(in: .global), top: viewTop)
-                                } action: { place in
-                                    promptPlaces[item.id] = place
-                                }
-                                .id(item.id)
-                        case .said(let item): ItemView(item: item)
-                        case .tools(let calls): ToolRun(calls: calls)
-                        }
-                    }
-                    if let live {
-                        LiveReply(live: live)
-                    }
-                    ForEach(store.outgoing[key] ?? []) { o in
-                        OutgoingView(outgoing: o) { store.dismissOutgoing(key, id: o.id) }
-                    }
-                    if loading && items.isEmpty {
-                        ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
-                    }
-                    if let problem {
-                        Text(problem).font(.footnote).foregroundStyle(.red)
-                    }
-                    Color.clear.frame(height: 1).id("end")
-                }
-                .padding(.horizontal)
-                .padding(.vertical, 12)
-            }
-            .scrollPosition($position)
-            .defaultScrollAnchor(.bottom)
-            // Dragging the conversation puts the keyboard away, and so does a tap on it, which still
-            // reaches what was tapped. (Interactively, as Messages does it, it went only once the
-            // drag reached the keyboard, which reading back rarely does.)
-            .scrollDismissesKeyboard(.immediately)
-            .accessibilityIdentifier("conversation")
-            .simultaneousGesture(TapGesture().onEnded { typing = false })
-            .offset(x: swipeOffset)
-            .gesture(QueueSwipe(moved: { swipe = $0 }, ended: swiped))
-            .overlay(alignment: swipe < 0 ? .trailing : .leading) { swipeHint }
-            .sensoryFeedback(.selection, trigger: abs(swipe) >= swipeFar && swipeTarget != nil)
-            .onScrollGeometryChange(for: Bool.self) { geo in
-                geo.contentOffset.y + geo.containerSize.height >= geo.contentSize.height - 60
-            } action: { _, now in
-                atBottom = now
-            }
-            // The top of what's in view, below the bars, in the conversation's coordinates. Its
-            // height goes with it: a page too short to scroll is near the top without moving.
-            .onScrollGeometryChange(for: ScrollSpot.Place.self) { geo in
-                .init(offset: geo.contentOffset.y, inset: geo.contentInsets.top, height: geo.contentSize.height)
-            } action: { was, place in
-                scrolled(from: was, to: place)
-            }
-            // A page that went in above while it scrolled goes in once it's still.
-            .onScrollPhaseChange { _, phase in
-                scroll.still = phase == .idle
-                if scroll.still, let waiting = scroll.waiting { show(waiting) }
-            }
-            .onChange(of: items.count) { _, _ in
-                if atBottom { proxy.scrollTo("end", anchor: .bottom) }
-            }
-            .onChange(of: live?.text) { _, _ in
-                if atBottom { proxy.scrollTo("end", anchor: .bottom) }
-            }
-            .onChange(of: promptPlaces) { _, _ in repin() }
-            .onChange(of: earlier?.id) { _, _ in repin() }
-            // Takes no room: it floats over the top of the conversation while it has a prompt.
-            .overlay(alignment: .top) {
-                VStack(spacing: 0) {
-                    Color.clear
-                        .frame(height: 0)
-                        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { viewTop = $0 }
-                    if let prompt = pinnedPrompt {
-                        PinnedPrompt(text: prompt.text) {
-                            Task { await bringUp(prompt.id, proxy: proxy) }
-                        }
-                        .padding(.horizontal)
-                        .padding(.top, 4)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                    }
-                }
-                .animation(.snappy, value: pinned)
-            }
+        // The screen follows a swipe, and the session it goes to comes in beside it. Side by side
+        // in a stack, so the one beside it sits in the same safe area and lines up with it.
+        ZStack {
+            besideViews
+            page.modifier(FollowsSwipe(swipe: swipe, next: nextBeside != nil, back: backBeside != nil))
         }
-        .safeAreaInset(edge: .bottom) { bottom }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { swipe.width = $0 }
         .navigationTitle(row?.title ?? "Session")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
+                // Sliding to another, it names that one: its screen takes a moment to draw once
+                // the slide is over.
+                let titled = swipe.to.flatMap { to in store.sessions.first { $0.key == to.key } } ?? row
                 VStack(spacing: 0) {
-                    Text(row?.title ?? "Session").font(.headline).lineLimit(1)
-                    if let row {
-                        Text("\(Names.short(row.deviceName)) · \(row.project)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    Text(titled?.title ?? "Session").font(.headline).lineLimit(1)
+                    if let titled {
+                        Text("\(Names.short(titled.deviceName)) · \(titled.project)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                     }
                 }
             }
@@ -319,10 +205,9 @@ struct SessionView: View {
         }
         // The Mac's feed says the session moved: bring in what came since.
         .onChange(of: row?.lastActivity) { _, _ in Task { await refresh() } }
-        // What's next changed (one answered elsewhere, a new one waiting): read it ahead too.
-        .onChange(of: after.first?.key) { _, next in
-            if let next, conversation != nil { store.prefetch(next) }
-        }
+        // Once it's open, the sessions a swipe goes to, read ahead so they slide in as they are:
+        // again as what's next changes (one answered elsewhere, a new one waiting) or moves.
+        .task(id: besideReads) { await readBeside() }
         // Opened from the feeds saved before its Mac connected, or back after it went away: read
         // what it couldn't.
         .onChange(of: online) { _, now in
@@ -356,6 +241,123 @@ struct SessionView: View {
         }
         // A message that didn't go is back in the box: say why.
         .onChange(of: store.sendProblems[key]) { _, _ in sayProblem() }
+    }
+
+    /// The conversation, with the reply box over its foot.
+    private var page: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                // Not lazy: a lazy stack scrolled to its end by the bottom anchor or `scrollTo` goes
+                // by row heights it guessed, and on a phone it could stop there with no rows built
+                // for what's on screen, a blank page until you dragged it. What's shown is the pages
+                // of 60 items read so far, a few unless you scroll a long way back.
+                VStack(alignment: .leading, spacing: 14) {
+                    if hasOlder {
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(maxWidth: .infinity)
+                            .accessibilityLabel("Loading earlier")
+                    } else if !loading && !items.isEmpty {
+                        Text("The start of the session")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .frame(maxWidth: .infinity)
+                        if let origin = row?.origin {
+                            // Where it came from: a fork of another session, or started by one.
+                            let words = "\(origin.fork ? "Forked from" : "Started by") \(origin.title.map { "“\($0)”" } ?? "another session")"
+                            if store.sessions.contains(where: { $0.key == origin.key }) {
+                                Button(words) { go(origin.key) }
+                                    .font(.caption)
+                                    .frame(maxWidth: .infinity)
+                            } else {
+                                Text(words).font(.caption).foregroundStyle(.tertiary).frame(maxWidth: .infinity)
+                            }
+                        }
+                    }
+                    ForEach(Entry.of(items)) { entry in
+                        switch entry {
+                        case .said(let item) where item.kind == .you:
+                            ItemView(item: item, putBack: canAct ? { draft = $0 } : nil)
+                                .onGeometryChange(for: PromptPlace.self) { [viewTop] geo in
+                                    PromptPlace(geo.frame(in: .global), top: viewTop)
+                                } action: { place in
+                                    promptPlaces[item.id] = place
+                                }
+                                .id(item.id)
+                        case .said(let item): ItemView(item: item)
+                        case .tools(let calls): ToolRun(calls: calls)
+                        }
+                    }
+                    if let live {
+                        LiveReply(live: live)
+                    }
+                    ForEach(store.outgoing[key] ?? []) { o in
+                        OutgoingView(outgoing: o) { store.dismissOutgoing(key, id: o.id) }
+                    }
+                    if loading && items.isEmpty {
+                        ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
+                    }
+                    if let problem {
+                        Text(problem).font(.footnote).foregroundStyle(.red)
+                    }
+                    Color.clear.frame(height: 1).id("end")
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 12)
+            }
+            .scrollPosition($position)
+            .defaultScrollAnchor(.bottom)
+            // Dragging the conversation puts the keyboard away, and so does a tap on it, which still
+            // reaches what was tapped. (Interactively, as Messages does it, it went only once the
+            // drag reached the keyboard, which reading back rarely does.)
+            .scrollDismissesKeyboard(.immediately)
+            .accessibilityIdentifier("conversation")
+            .simultaneousGesture(TapGesture().onEnded { typing = false })
+            .gesture(QueueSwipe(back: before != nil, moved: swiping, ended: swiped))
+            .onScrollGeometryChange(for: Bool.self) { geo in
+                geo.contentOffset.y + geo.containerSize.height >= geo.contentSize.height - 60
+            } action: { _, now in
+                atBottom = now
+            }
+            // The top of what's in view, below the bars, in the conversation's coordinates. Its
+            // height goes with it: a page too short to scroll is near the top without moving.
+            .onScrollGeometryChange(for: ScrollSpot.Place.self) { geo in
+                .init(offset: geo.contentOffset.y, inset: geo.contentInsets.top, height: geo.contentSize.height)
+            } action: { was, place in
+                scrolled(from: was, to: place)
+            }
+            // A page that went in above while it scrolled goes in once it's still.
+            .onScrollPhaseChange { _, phase in
+                scroll.still = phase == .idle
+                if scroll.still, let waiting = scroll.waiting { show(waiting) }
+            }
+            .onChange(of: items.count) { _, _ in
+                if atBottom { proxy.scrollTo("end", anchor: .bottom) }
+            }
+            .onChange(of: live?.text) { _, _ in
+                if atBottom { proxy.scrollTo("end", anchor: .bottom) }
+            }
+            .onChange(of: promptPlaces) { _, _ in repin() }
+            .onChange(of: earlier?.id) { _, _ in repin() }
+            // Takes no room: it floats over the top of the conversation while it has a prompt.
+            .overlay(alignment: .top) {
+                VStack(spacing: 0) {
+                    Color.clear
+                        .frame(height: 0)
+                        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { viewTop = $0 }
+                    if let prompt = pinnedPrompt {
+                        PinnedPrompt(text: prompt.text) {
+                            Task { await bringUp(prompt.id, proxy: proxy) }
+                        }
+                        .padding(.horizontal)
+                        .padding(.top, 4)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                }
+                .animation(.snappy, value: pinned)
+            }
+        }
+        .safeAreaInset(edge: .bottom) { bottom }
     }
 
     @ViewBuilder
@@ -407,7 +409,9 @@ struct SessionView: View {
             // of text is as tall as the send button, so the button sits centered in the pill, and
             // as the text grows it stays at the bottom, as far from the edges as before.
             if canAct && (resuming || showsModel) {
-                replyTools
+                ReplyTools(rules: rules, resumePlace: $resumePlace, resumeModel: $resumeModel, resumeEffort: $resumeEffort, switching: switching) { model in
+                    Task { await switchModel(model) }
+                }
             }
             HStack(alignment: .bottom, spacing: 8) {
                 // The words before you write say how a message gets there, which takes more than a
@@ -529,109 +533,28 @@ struct SessionView: View {
     /// answered there.
     private var waitsElsewhere: Bool { pending?.cannot != nil }
 
-    /// Its account, as its Mac offers it for starts: its models and the places it can go on in.
-    private var account: StartAccount? { choices?.accounts.first { $0.name == row?.account } }
-
-    /// It isn't running, and its Mac lets you pick where it goes on.
-    private var resuming: Bool {
-        guard case .resume = way, row?.live != true else { return false }
-        return account?.resumes.isEmpty == false
+    /// How it takes a reply: where it goes on while it isn't running, its model while it is.
+    private var rules: ReplyRules {
+        ReplyRules(row: row, way: way, choices: row.flatMap { store.choices[$0.device] }, resumePlace: resumePlace)
     }
-
-    /// Where it goes on: the place picked, else the one its Mac's offers suit a phone best.
-    private var resumeAt: StartPlace? {
-        let places = account?.resumes ?? []
-        return places.first { $0.id == resumePlace } ?? places.first { $0.id == account?.resume } ?? places.first
-    }
-
-    /// That place takes a model and effort: the command line and Codealong do, the apps choose.
-    private var resumeTakesModel: Bool {
-        ["terminal", "background", "codealong"].contains(resumeAt?.id ?? "")
-    }
-
-    /// A running one can be switched to another of its account's models: one Codealong runs, or
-    /// one its Mac types into, where its harness's command does it.
-    private var switchesModel: Bool {
-        guard let row, row.live, let account, !account.models.isEmpty else { return false }
-        if row.hosted { return true }
-        if case .typed = way { return account.switchesModel }
-        return false
-    }
-
-    /// A running one says its model beside the box.
-    private var showsModel: Bool { row?.live == true && (switchesModel || row?.model != nil) }
+    private var account: StartAccount? { rules.account }
+    private var resuming: Bool { rules.resuming }
+    private var resumeAt: StartPlace? { rules.resumeAt }
+    private var resumeTakesModel: Bool { rules.resumeTakesModel }
+    private var switchesModel: Bool { rules.switchesModel }
+    private var showsModel: Bool { rules.showsModel }
 
     private var placeholder: String {
-        if !canAct { return whyNot ?? "Reply" }
-        if waitsElsewhere { return "It waits on you where it runs: send once that's answered" }
-        if denying, let row { return "Deny it and tell \(row.account) what to do instead" }
-        return store.replyPlaceholder(key, way: way, resumePlace: resuming ? resumeAt?.id : nil, behind: resuming && resumeAt?.behind == true)
-    }
-
-    /// Where it goes on and on what, while it isn't running; its model, while it is.
-    private var replyTools: some View {
-        HStack(spacing: 8) {
-            if resuming, let account {
-                Menu {
-                    Picker("Goes on in", selection: Binding(get: { resumeAt?.id }, set: { resumePlace = $0 })) {
-                        ForEach(account.resumes, id: \.id) { p in
-                            Text(p.behind ? "\(p.label) (behind its windows)" : p.label).tag(Optional(p.id))
-                        }
-                    }
-                } label: {
-                    ToolChip(symbol: "play.circle", text: "Goes on in \(resumeAt?.label ?? "a terminal")")
-                }
-                if resumeTakesModel && !account.models.isEmpty {
-                    Menu {
-                        Picker("Model", selection: $resumeModel) {
-                            Text(account.defaultModel.map { "Default (\(modelName(model: $0, models: account.models)))" } ?? "Default").tag(String?.none)
-                            ForEach(account.models, id: \.id) { m in Text(m.label).tag(Optional(m.id)) }
-                        }
-                        if !account.efforts.isEmpty {
-                            Picker("Effort", selection: $resumeEffort) {
-                                Text("Default effort").tag(String?.none)
-                                ForEach(account.efforts, id: \.id) { e in Text(e.label).tag(Optional(e.id)) }
-                            }
-                        }
-                    } label: {
-                        let model = (resumeModel ?? account.defaultModel).map { modelName(model: $0, models: account.models) } ?? "Default model"
-                        ToolChip(symbol: "cpu", text: [model, account.efforts.first { $0.id == resumeEffort }?.label].compactMap { $0 }.joined(separator: " · "))
-                    }
-                }
-            } else if showsModel {
-                let shown = row?.model.map { modelName(model: $0, models: account?.models ?? []) } ?? "Model"
-                if switchesModel, let account {
-                    Menu {
-                        // Which of the names it's on isn't known for sure (a reply names the model
-                        // without its context size), so none is checked; the chip says it.
-                        ForEach(account.models, id: \.id) { m in
-                            Button(m.label) { Task { await switchModel(m.id) } }
-                        }
-                    } label: {
-                        ToolChip(symbol: "cpu", text: switching ? "Switching…" : shown)
-                    }
-                    // Not while its turn runs or it waits on you: the command would go in as a
-                    // prompt, or answer it.
-                    .disabled(switching || row?.status == .working || row?.status == .needs)
-                    .accessibilityHint("Switches this session's model, for it alone, once its turn ends")
-                } else {
-                    ToolChip(symbol: "cpu", text: shown, chevron: false)
-                }
-            }
-            Spacer(minLength: 0)
+        replyWords(why: whyNot, pending: pending, account: row?.account) {
+            store.replyPlaceholder(key, way: way, resumePlace: resuming ? resumeAt?.id : nil, behind: resuming && resumeAt?.behind == true)
         }
-        .tint(.primary)
     }
 
-    private var whyNot: String? {
-        guard let row, let device = store.devices.first(where: { $0.key == row.device }) else { return "That session isn't on a linked Mac any more" }
-        if !device.online { return "\(device.name) isn't connected" }
-        if !device.remoteControl { return "Remote control is off on \(device.name)" }
-        return nil
-    }
+    private var whyNot: String? { store.cannotReach(row) }
 
     private func open() async {
         store.showing = key
+        if store.slidIn?.key == key { store.slidIn = nil }
         sayProblem()
         guard conversation == nil, let conv = store.conversation(key) else { return }
         conversation = conv
@@ -664,8 +587,8 @@ struct SessionView: View {
         if row?.status == .unread { store.markSeen(key) }
         // A turn longer than the first page: the prompt behind it, to pin from the start.
         await lookBack()
-        // The next that waits on you, read now so it shows at once when you go on to it.
-        if let next = after.first { store.prefetch(next.key) }
+        // The next that waits on you is read now, so it shows at once when you go on to it.
+        opened = true
         // A session Codealong runs sends its reply as it's written, while it's shown here.
         if row?.hosted == true {
             watching = await Task.detached { conv.watch() }.value
@@ -844,7 +767,7 @@ struct SessionView: View {
     private func readWay() async {
         guard let conv = conversation ?? store.conversation(key), online, let device = row?.device else { return }
         way = await Task.detached { conv.way() }.value
-        if choices == nil { choices = try? await store.startChoices(device) }
+        _ = try? await store.startChoices(device)
     }
 
     /// Sends the box; with `thenNext`, goes on to what waits on you once it's gone; with `now`,
@@ -899,58 +822,101 @@ struct SessionView: View {
         }
     }
 
-    /// The conversation moves with a swipe across it: a little, toward the one it goes to; less,
-    /// where there's none that way.
-    private var swipeOffset: CGFloat {
-        swipe * (swipeTarget == nil ? 0.12 : 0.35)
+    /// The sessions a swipe goes to: the next to the left, the one you came from to the right; once
+    /// it's sliding, the one it slides to on its side. The other stays as it was: one going away as
+    /// the slide began moved the screen's own slide onto the one coming in.
+    private var nextBeside: String? { swipe.to.flatMap { $0.back ? nil : $0.key } ?? after.first?.key }
+    private var backBeside: String? { swipe.to.flatMap { $0.back ? $0.key : nil } ?? before?.key }
+
+    /// What `readBeside` reads for: the sessions beside this one, and when the next last moved.
+    private var besideReads: String {
+        guard opened else { return "" }
+        return "\(after.first.map { "\($0.key)@\($0.lastActivity)" } ?? "")|\(before?.key ?? "")"
     }
 
-    /// Where the swipe going on would take you: the next to the left, the one before to the right.
-    private var swipeTarget: SessionRow? {
-        swipe < 0 ? after.first : swipe > 0 ? before : nil
-    }
-
-    /// Says where letting go would go, at the edge the conversation leaves.
+    /// The sessions beside this one, a screen to either side, where a swipe brings them in from.
     @ViewBuilder
-    private var swipeHint: some View {
-        if let target = swipeTarget {
-            let ready = abs(swipe) >= swipeFar
-            HStack(spacing: 6) {
-                if swipe > 0 { Image(systemName: "chevron.backward") }
-                VStack(alignment: swipe < 0 ? .trailing : .leading, spacing: 1) {
-                    Text(swipe < 0 ? "Next" : "Back").font(.caption.weight(.semibold))
-                    Text(target.title).font(.caption2).lineLimit(1)
-                }
-                if swipe < 0 { Image(systemName: "chevron.forward") }
+    private var besideViews: some View {
+        let next = nextBeside, back = backBeside
+        ZStack {
+            if let next {
+                SessionGlance(key: next, kept: beside[next] ?? Kept(), said: swipe.to?.key == next ? store.outcome : nil)
+                    .modifier(FollowsSwipe(swipe: swipe, next: true, back: back != nil, at: 1))
             }
-            .foregroundStyle(ready ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
-            .frame(maxWidth: 140)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            // Solid enough to read over the conversation it lies on.
-            .background(.thickMaterial, in: .capsule)
-            .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
-            .padding(.horizontal, 8)
-            .opacity(min(1, abs(swipe) / swipeFar))
-            .allowsHitTesting(false)
+            if let back {
+                SessionGlance(key: back, kept: beside[back] ?? Kept(), said: swipe.to?.key == back ? store.outcome : nil)
+                    .modifier(FollowsSwipe(swipe: swipe, next: next != nil, back: true, at: -1))
+            }
         }
     }
 
-    /// A swipe let go: far or fast enough toward a session, it goes there; otherwise the
-    /// conversation settles back.
+    /// Reads what the phone keeps of the sessions beside this one: the next from its Mac first,
+    /// when it hasn't been lately, so it slides in as it is.
+    private func readBeside() async {
+        guard opened else { return }
+        var read: [String: Kept] = [:]
+        if let back = before?.key { read[back] = await store.kept(back, read: false) }
+        if let next = after.first?.key { read[next] = await store.kept(next, read: true) }
+        // Not while it slides: the one sliding in stays as it was drawn.
+        guard swipe.to == nil, !Task.isCancelled else { return }
+        beside = read
+    }
+
+    /// The finger moved, this far from where the swipe began.
+    private func swiping(_ distance: CGFloat) {
+        guard swipe.to == nil else { return }
+        swipe.showing = true
+        swipe.distance = distance
+    }
+
+    /// A swipe let go: far or fast enough toward a session, it slides there; otherwise the screen
+    /// settles back. A flick back the way it came settles it, however far it went.
     private func swiped(_ distance: CGFloat, _ speed: CGFloat) {
-        let far = abs(distance) >= swipeFar || (abs(distance) > 30 && abs(speed) > 600 && (speed < 0) == (distance < 0))
+        guard swipe.to == nil else { return }
         let target = distance < 0 ? after.first : distance > 0 ? before : nil
-        withAnimation(.snappy) { swipe = 0 }
-        guard far, let target else { return }
-        if distance < 0 {
-            moveOn(to: target)
-        } else {
-            // Back is a step by hand: this one isn't passed over for it.
-            store.back(to: target.key)
-            store.outcome = acted ? said : nil
-            go(target.key)
+        let away = abs(speed) > 300 && (speed < 0) != (distance < 0)
+        let far = !away && (abs(distance) >= swipe.width * 0.3 || (abs(distance) > 30 && abs(speed) > 500))
+        guard far, let target else {
+            withAnimation(swipe.motion(to: 0, speed: speed)) { swipe.distance = 0 } completion: { [swipe] in
+                if swipe.distance == 0 && swipe.to == nil { swipe.showing = false }
+            }
+            return
         }
+        if distance < 0 {
+            moveOn(to: target, speed: speed)
+        } else {
+            // Back is a step by hand: this one isn't passed over for it. The trail is cut back once
+            // it's there, so the session beside it stays put while it slides.
+            store.outcome = acted ? said : nil
+            slide(to: target.key, back: true, speed: speed) { store.back(to: target.key) }
+        }
+    }
+
+    /// Slides this screen away and `target`'s in after it, from what the phone keeps of it, then
+    /// does `then` and shows `target` in its place, starting as it was drawn sliding in.
+    private func slide(to target: String, back: Bool, speed: CGFloat = 0, then: @escaping () -> Void = {}) {
+        store.slidIn = (target, Opening(kept: beside[target] ?? Kept(), said: store.outcome))
+        // Gone on to by a button with Reduce Motion on, it's shown in this one's place at once.
+        guard swipe.width > 0, !reduceMotion || swipe.distance != 0 else {
+            then()
+            go(target)
+            return
+        }
+        let end = back ? swipe.width : -swipe.width
+        // All in one change: drawn between a change to where it slides and the slide itself, the
+        // screen stayed where the finger left it while the session beside it slid over it.
+        withAnimation(swipe.motion(to: end, speed: speed)) {
+            swipe.to = Slide(key: target, back: back)
+            swipe.showing = true
+            swipe.distance = end
+        } completion: {
+            then()
+            // Already where it slid to: it takes the slide's place without moving again.
+            var still = Transaction()
+            still.disablesAnimations = true
+            withTransaction(still) { go(target) }
+        }
+        typing = false
     }
 
     /// Answers what it waits on; with `questions`, the picks for the questions it asks.
@@ -1063,11 +1029,12 @@ struct SessionView: View {
 
     /// Shows `next` in this one's place, saying there how this one went once you've acted here.
     /// Left without a reply, this one comes round again after the rest.
-    private func moveOn(to next: SessionRow, outcome: String? = nil) {
+    private func moveOn(to next: SessionRow, outcome: String? = nil, speed: CGFloat = 0) {
+        guard swipe.to == nil else { return }
         if !acted && outcome == nil { store.passedOver(key) }
         if next.key != key { store.trail.append(key) }
         store.outcome = outcome ?? (acted ? said : nil)
-        go(next.key)
+        slide(to: next.key, back: false, speed: speed)
     }
 
     private var title: String { row?.title ?? "Session" }
@@ -1157,15 +1124,18 @@ private struct ApprovalCard: View {
                 Image(systemName: "hand.raised.fill").foregroundStyle(.orange)
             }
             if let input = pending.input, !input.isEmpty {
-                // A plan is prose to read; anything else is a command or a change, shown as is.
-                ScrollView {
-                    if pending.plan {
-                        MarkdownText(text: input).font(.subheadline)
-                    } else {
-                        Text(input).font(.caption.monospaced()).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+                // A plan is prose to read; anything else is a command or a change, shown as is. As
+                // tall as it is, up to a point, and it scrolls past that.
+                UpTo(most: pending.plan ? 320 : 120) {
+                    ScrollView {
+                        if pending.plan {
+                            MarkdownText(text: input).font(.subheadline)
+                        } else {
+                            Text(input).font(.caption.monospaced()).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+                        }
                     }
+                    .scrollBounceBehavior(.basedOnSize)
                 }
-                .frame(maxHeight: pending.plan ? 320 : 120)
             }
             if let cannot = pending.cannot {
                 Text(cannot).font(.footnote).foregroundStyle(.secondary)
@@ -1231,8 +1201,6 @@ private struct QuestionsCard: View {
     let decline: () -> Void
     @State private var picks: [String: [String]] = [:]
     @State private var own: [String: String] = [:]
-    /// How tall the questions are: the card is as tall, up to a point, and scrolls past it.
-    @State private var height: CGFloat = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1247,16 +1215,17 @@ private struct QuestionsCard: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    ForEach(pending.questions, id: \.question) { q in
-                        question(q)
+            // As tall as the questions are, up to a point, and it scrolls past that.
+            UpTo(most: 360) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        ForEach(pending.questions, id: \.question) { q in
+                            question(q)
+                        }
                     }
                 }
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
+                .scrollBounceBehavior(.basedOnSize)
             }
-            .frame(height: min(height, 360))
-            .scrollBounceBehavior(.basedOnSize)
             if canAct {
                 HStack {
                     Button(answering == .deny ? "Declining…" : "Decline", role: .destructive, action: decline)
@@ -1440,6 +1409,30 @@ private struct PinnedPrompt: View {
 private enum Entry: Identifiable {
     case said(Item)
     case tools([Item])
+
+    /// The conversation as it reads: what was said, and each run of tool calls between as one. A
+    /// call that made a page is one to open: the calls around it fold, and it stays in view.
+    static func of(_ items: [Item]) -> [Entry] {
+        var out: [Entry] = []
+        var run: [Item] = []
+        for item in items {
+            if item.kind == .tool && item.link == nil {
+                run.append(item)
+                continue
+            }
+            if item.kind == .tool {
+                if !run.isEmpty { out.append(.tools(run)) }
+                run = []
+                out.append(.tools([item]))
+                continue
+            }
+            if !run.isEmpty { out.append(.tools(run)) }
+            run = []
+            out.append(.said(item))
+        }
+        if !run.isEmpty { out.append(.tools(run)) }
+        return out
+    }
 
     var id: String {
         switch self {
@@ -1783,5 +1776,362 @@ private struct Block: View {
             out += piece
         }
         return out
+    }
+}
+
+/// What the phone keeps of a session's conversation: what a swipe slides in beside the session
+/// shown.
+struct Kept: Sendable {
+    var items: [Item] = []
+    var hasOlder = false
+    /// What it waits on you for, read with it.
+    var pending: Pending?
+    /// How a message gets there, as its Mac said then.
+    var way: Way?
+}
+
+/// What a session's reply box says before you write: why it can't take a reply, what one does to
+/// the call it waits on, else how a message gets there (`otherwise`).
+private func replyWords(why: String?, pending: Pending?, account: String?, otherwise: () -> String) -> String {
+    if let why { return why }
+    if pending?.cannot != nil { return "It waits on you where it runs: send once that's answered" }
+    if pending != nil, let account { return "Deny it and tell \(account) what to do instead" }
+    return otherwise()
+}
+
+/// What a session's screen opens with when a swipe slid it in: what the swipe drew of it.
+struct Opening {
+    let kept: Kept
+    /// How the session gone on from went.
+    let said: String?
+}
+
+/// A swipe across a session's screen, kept apart from what's drawn: it changes every frame, and
+/// only where the screen and the sessions beside it sit should redraw, not the conversation.
+@MainActor @Observable private final class Swipe {
+    /// How far it's gone, negative to the left.
+    var distance: CGFloat = 0
+    /// The sessions beside this one are drawn: a swipe is under way, or settling back. Otherwise
+    /// they're left out, so iOS's own slide to and from the list doesn't show them.
+    var showing = false
+    /// How wide the screen is: sliding to another goes this far.
+    var width: CGFloat = 0
+    /// The session it slides to, once let go far enough or gone on to by a button.
+    var to: Slide?
+
+    /// Where the screen sits for the swipe: with the finger toward a session beside it; where
+    /// there's none, held back more the further it goes, as a scroll view is past its end.
+    func offset(next: Bool, back: Bool) -> CGFloat {
+        if to != nil || (distance < 0 ? next : back) { return distance }
+        guard width > 0 else { return 0 }
+        let held = (1 - 1 / (abs(distance) * 0.55 / width + 1)) * width
+        return distance < 0 ? -held : held
+    }
+
+    /// A curve to `end` that carries on at the speed the finger let go at and eases to a stop,
+    /// ending as it looks to end: the session's own screen takes the slide's place then, where a
+    /// spring said it was done a quarter of a second after it stopped moving.
+    func motion(to end: CGFloat, speed: CGFloat) -> Animation {
+        let left = end - distance
+        guard abs(left) >= 1 else { return .easeOut(duration: 0.1) }
+        // Quicker for a flick, never slower than a third of a second.
+        let duration = min(max(abs(left) / max(abs(speed), 1) * 2, 0.18), 0.3)
+        // How steeply it starts: the finger's speed toward the end, as a share of the move over
+        // its duration; let go still, or from a button, it starts briskly anyway.
+        let slope = max(max(speed / left, 0) * duration, 1.6)
+        return .timingCurve(0.25, min(0.25 * slope, 1), 0.3, 1, duration: duration)
+    }
+}
+
+/// Where a swipe let go goes: the next, or back to the session you came from.
+private struct Slide: Equatable {
+    let key: String
+    let back: Bool
+}
+
+/// Puts a screen where a swipe has it: the session's own at 0, the ones beside it a screen to the
+/// right (1) or the left (-1), drawn only while a swipe shows them.
+private struct FollowsSwipe: ViewModifier {
+    let swipe: Swipe
+    /// There's a session that way to go to.
+    let next: Bool
+    let back: Bool
+    var at: CGFloat = 0
+
+    func body(content: Content) -> some View {
+        content
+            .offset(x: swipe.offset(next: next, back: back) + at * swipe.width)
+            .opacity(at == 0 || swipe.showing ? 1 : 0)
+    }
+}
+
+/// A session beside the one shown, as a swipe brings it in: what the phone keeps of its
+/// conversation, at its newest, and its reply box as its own screen first draws it. Drawn as that
+/// screen draws them, so the screen takes its place without a change.
+private struct SessionGlance: View {
+    let key: String
+    let kept: Kept
+    /// How the session gone on from went, as this one's screen will say it.
+    let said: String?
+    @Environment(Store.self) private var store
+    @ScaledMetric(relativeTo: .body) private var sendSize: CGFloat = 32
+    private let replyInset: CGFloat = 6
+    /// More than a screen of the conversation's end: what's above it is off the top.
+    private let shown = 40
+
+    private var row: SessionRow? { store.sessions.first { $0.key == key } }
+    private var why: String? { store.cannotReach(row) }
+    private var rules: ReplyRules {
+        ReplyRules(row: row, way: kept.way, choices: row.flatMap { store.choices[$0.device] }, resumePlace: nil)
+    }
+
+    var body: some View {
+        let entries = Entry.of(kept.items)
+        // Its newest at the foot, what doesn't fit going off the top: laid over a screen's worth of
+        // nothing, so it's a screen high however long the conversation is (a frame that fills the
+        // screen grows to fit what's in it, and pushed the screen beside it down).
+        Color.clear.overlay(alignment: .bottom) {
+            VStack(alignment: .leading, spacing: 14) {
+                if !kept.items.isEmpty && !kept.hasOlder && entries.count <= shown {
+                    Text("The start of the session")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity)
+                    if let origin = row?.origin {
+                        let listed = store.sessions.contains { $0.key == origin.key }
+                        Text("\(origin.fork ? "Forked from" : "Started by") \(origin.title.map { "“\($0)”" } ?? "another session")")
+                            .font(.caption)
+                            .foregroundStyle(listed ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.tertiary))
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+                ForEach(entries.suffix(shown)) { entry in
+                    switch entry {
+                    case .said(let item): ItemView(item: item, putBack: why == nil && item.kind == .you ? { _ in } : nil)
+                    case .tools(let calls): ToolRun(calls: calls)
+                    }
+                }
+                ForEach(store.outgoing[key] ?? []) { o in
+                    OutgoingView(outgoing: o) {}
+                }
+                if kept.items.isEmpty {
+                    ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
+                }
+                // The session's screen ends its conversation with a mark to scroll to.
+                Color.clear.frame(height: 1)
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 12)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .clipped()
+        // Its top fades out, as the conversation does going up under the bar.
+        .mask {
+            VStack(spacing: 0) {
+                LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom).frame(height: 24)
+                Color.black
+            }
+        }
+        .safeAreaInset(edge: .bottom) { reply }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    /// The reply box and what's over it, as the session's screen first draws them, from what was
+    /// read with its conversation.
+    private var reply: some View {
+        let canAct = why == nil
+        let pending = kept.pending
+        let draft = store.drafts[key] ?? ""
+        let ready = canAct && pending?.cannot == nil && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return VStack(spacing: 8) {
+            if let pending {
+                if pending.questions.isEmpty || pending.cannot != nil {
+                    ApprovalCard(pending: pending, hosted: row?.hosted == true, canAct: canAct, why: why, answering: nil) { _ in }
+                } else {
+                    QuestionsCard(pending: pending, account: row?.account ?? "It", hosted: row?.hosted == true, canAct: canAct, why: why, answering: nil) { _ in } decline: {}
+                }
+            }
+            if let limit = row?.limit {
+                Label {
+                    Text(Clock.text(limit, now: .now))
+                } icon: {
+                    Image(systemName: "gauge.with.dots.needle.100percent").foregroundStyle(.orange)
+                }
+                .font(.footnote)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if canAct && row?.stoppable == true {
+                Button(role: .destructive) {} label: {
+                    Label("Stop this turn", systemImage: "stop.circle").font(.subheadline)
+                }
+                .buttonStyle(.bordered)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            if let said {
+                Text(said).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if canAct && (rules.resuming || rules.showsModel) {
+                ReplyTools(rules: rules, resumePlace: .constant(nil), resumeModel: .constant(nil), resumeEffort: .constant(nil), switching: false) { _ in }
+            }
+            HStack(alignment: .bottom, spacing: 8) {
+                Text(draft.isEmpty ? replyWords(why: why, pending: pending, account: row?.account) { store.replyPlaceholder(key, way: kept.way, resumePlace: rules.resuming ? rules.resumeAt?.id : nil, behind: rules.resuming && rules.resumeAt?.behind == true) } : draft)
+                    .foregroundStyle(draft.isEmpty ? .tertiary : .primary)
+                    .lineLimit(draft.isEmpty ? 2 : 6)
+                    .frame(maxWidth: .infinity, minHeight: sendSize, alignment: .leading)
+                // Buttons as the screen's are, dimmed as theirs are while there's nothing to send.
+                if canAct && row?.steerable == true && pending == nil {
+                    Button {} label: {
+                        Image(systemName: "bolt.fill")
+                            .font(.system(size: sendSize / 2.4, weight: .semibold))
+                            .foregroundStyle(Color.accentColor)
+                            .frame(width: sendSize, height: sendSize)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!ready)
+                }
+                Button {} label: {
+                    ZStack {
+                        Circle().fill(ready ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.quaternary))
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: sendSize / 2, weight: .bold))
+                            .foregroundStyle(ready ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary))
+                    }
+                    .frame(width: sendSize, height: sendSize)
+                }
+                .buttonStyle(.plain)
+                .disabled(!ready)
+            }
+            .padding(.leading, 16)
+            .padding(.trailing, replyInset)
+            .padding(.vertical, replyInset)
+            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: sendSize / 2 + replyInset))
+        }
+        .padding(.horizontal)
+        .padding(.bottom, 6)
+    }
+}
+
+/// How a session takes a reply, from what its Mac says: where one that isn't running goes on, and
+/// on what; a running one's model, and whether it can be switched.
+private struct ReplyRules {
+    let row: SessionRow?
+    let way: Way?
+    /// What its Mac can start, for its account's models and the places it can go on in.
+    let choices: StartChoices?
+    /// Where it goes on, picked: nil for what its Mac offers first.
+    let resumePlace: String?
+
+    /// Its account, as its Mac offers it for starts.
+    var account: StartAccount? { choices?.accounts.first { $0.name == row?.account } }
+
+    /// It isn't running, and its Mac lets you pick where it goes on.
+    var resuming: Bool {
+        guard case .resume = way, row?.live != true else { return false }
+        return account?.resumes.isEmpty == false
+    }
+
+    /// Where it goes on: the place picked, else the one its Mac's offers suit a phone best.
+    var resumeAt: StartPlace? {
+        let places = account?.resumes ?? []
+        return places.first { $0.id == resumePlace } ?? places.first { $0.id == account?.resume } ?? places.first
+    }
+
+    /// That place takes a model and effort: the command line and Codealong do, the apps choose.
+    var resumeTakesModel: Bool {
+        ["terminal", "background", "codealong"].contains(resumeAt?.id ?? "")
+    }
+
+    /// A running one can be switched to another of its account's models: one Codealong runs, or
+    /// one its Mac types into, where its harness's command does it.
+    var switchesModel: Bool {
+        guard let row, row.live, let account, !account.models.isEmpty else { return false }
+        if row.hosted { return true }
+        if case .typed = way { return account.switchesModel }
+        return false
+    }
+
+    /// A running one says its model beside the box.
+    var showsModel: Bool { row?.live == true && (switchesModel || row?.model != nil) }
+}
+
+/// Chips over the reply box: where a session that isn't running goes on, and on what; a running
+/// one's model, which switches where its Mac can.
+private struct ReplyTools: View {
+    let rules: ReplyRules
+    @Binding var resumePlace: String?
+    @Binding var resumeModel: String?
+    @Binding var resumeEffort: String?
+    let switching: Bool
+    let switchModel: (String) -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if rules.resuming, let account = rules.account {
+                Menu {
+                    Picker("Goes on in", selection: Binding(get: { rules.resumeAt?.id }, set: { resumePlace = $0 })) {
+                        ForEach(account.resumes, id: \.id) { p in
+                            Text(p.behind ? "\(p.label) (behind its windows)" : p.label).tag(Optional(p.id))
+                        }
+                    }
+                } label: {
+                    ToolChip(symbol: "play.circle", text: "Goes on in \(rules.resumeAt?.label ?? "a terminal")")
+                }
+                if rules.resumeTakesModel && !account.models.isEmpty {
+                    Menu {
+                        Picker("Model", selection: $resumeModel) {
+                            Text(account.defaultModel.map { "Default (\(modelName(model: $0, models: account.models)))" } ?? "Default").tag(String?.none)
+                            ForEach(account.models, id: \.id) { m in Text(m.label).tag(Optional(m.id)) }
+                        }
+                        if !account.efforts.isEmpty {
+                            Picker("Effort", selection: $resumeEffort) {
+                                Text("Default effort").tag(String?.none)
+                                ForEach(account.efforts, id: \.id) { e in Text(e.label).tag(Optional(e.id)) }
+                            }
+                        }
+                    } label: {
+                        let model = (resumeModel ?? account.defaultModel).map { modelName(model: $0, models: account.models) } ?? "Default model"
+                        ToolChip(symbol: "cpu", text: [model, account.efforts.first { $0.id == resumeEffort }?.label].compactMap { $0 }.joined(separator: " · "))
+                    }
+                }
+            } else if rules.showsModel {
+                let shown = rules.row?.model.map { modelName(model: $0, models: rules.account?.models ?? []) } ?? "Model"
+                if rules.switchesModel, let account = rules.account {
+                    Menu {
+                        // Which of the names it's on isn't known for sure (a reply names the model
+                        // without its context size), so none is checked; the chip says it.
+                        ForEach(account.models, id: \.id) { m in
+                            Button(m.label) { switchModel(m.id) }
+                        }
+                    } label: {
+                        ToolChip(symbol: "cpu", text: switching ? "Switching…" : shown)
+                    }
+                    // Not while its turn runs or it waits on you: the command would go in as a
+                    // prompt, or answer it.
+                    .disabled(switching || rules.row?.status == .working || rules.row?.status == .needs)
+                    .accessibilityHint("Switches this session's model, for it alone, once its turn ends")
+                } else {
+                    ToolChip(symbol: "cpu", text: shown, chevron: false)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .tint(.primary)
+    }
+}
+
+/// As tall as the scroll view in it needs, up to `most`, past which it scrolls. Worked out in the
+/// layout it's drawn in, so it's never drawn at another height first, as a height measured once
+/// drawn was for a frame when a swipe slid its session in.
+private struct UpTo: Layout {
+    let most: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let needs = subviews.first?.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil)) ?? .zero
+        return CGSize(width: proposal.width ?? needs.width, height: min(needs.height, most))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
     }
 }

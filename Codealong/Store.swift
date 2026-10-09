@@ -37,6 +37,12 @@ final class Store {
     /// Messages on their way to each session, by key, oldest first: shown in its conversation at
     /// once, as the Mac's windows show theirs (ahead.ts), until its record has them.
     private(set) var outgoing: [String: [Outgoing]] = [:]
+    /// The session a swipe just slid in, and what the swipe showed of it: its screen opens with
+    /// that, so nothing changes as it takes the swipe's place.
+    @ObservationIgnored var slidIn: (key: String, opening: Opening)?
+    /// What each Mac can start, by device, as it last said: a session's screen has its account's
+    /// models and places from its first frame.
+    private(set) var choices: [String: StartChoices] = [:]
     /// Why a session's last message didn't go, for its screen to say once.
     var sendProblems: [String: String] = [:]
     /// The session shown now, if one is: a message that fails elsewhere is said in an alert.
@@ -45,6 +51,12 @@ final class Store {
     @ObservationIgnored private var pumping: Set<String> = []
 
     @ObservationIgnored private var core: Core?
+    /// Launched for a check that goes through your real sessions (`LOOK_ONLY=1 scripts/run.sh`):
+    /// nothing opened here is marked seen on its Mac, so the check leaves them as they were.
+    private let lookOnly = ProcessInfo.processInfo.environment["CODEALONG_LOOK_ONLY"] == "1"
+    /// The sessions a check goes through, in order, in place of what waits on you
+    /// (`QUEUE=<key>,<key> scripts/run.sh`): any sessions, waiting or not.
+    private let testQueue = ProcessInfo.processInfo.environment["CODEALONG_QUEUE"].flatMap { $0.isEmpty ? nil : $0.split(separator: ",").map(String.init) }
 
     init() {
         let dir = URL.applicationSupportDirectory.appending(path: "Codealong", directoryHint: .isDirectory)
@@ -128,6 +140,9 @@ final class Store {
     /// Ones you went on from without replying come round again after the rest, and ones you've
     /// dealt with stay out until they wait on you anew. `project` narrows it as the inbox is.
     func queue(after key: String, project: String) -> [SessionRow] {
+        if let fixed = testQueue {
+            return fixed.filter { $0 != key }.compactMap { k in sessions.first { $0.key == k } }
+        }
         let waiting = sessions.filter { row in
             guard row.key != key, row.section == .needsYou || row.section == .yourTurn, project.isEmpty || row.project == project else { return false }
             guard let at = handled[row.key] else { return true }
@@ -160,8 +175,30 @@ final class Store {
         Task.detached(priority: .utility) { core.prefetch(key: key) }
     }
 
+    /// What the phone keeps of a session's conversation, for a swipe to slide in; with `read`, read
+    /// from its Mac first when it hasn't been lately. With it, what its screen shows over the reply
+    /// box: what it waits on you for, and how a message gets there.
+    func kept(_ key: String, read: Bool) async -> Kept? {
+        guard let core, let conv = conversation(key) else { return nil }
+        let waits = sessions.first { $0.key == key }?.status == .needs
+        return await Task.detached(priority: .utility) {
+            if read { core.prefetch(key: key) }
+            let pending = waits ? try? conv.pending() : nil
+            return Kept(items: conv.kept(), hasOlder: conv.hasOlder(), pending: pending, way: conv.way())
+        }.value
+    }
+
+    /// Why a reply or an answer can't go to a session from here, or nil when it can: only a
+    /// connected Mac with remote control on takes one.
+    func cannotReach(_ row: SessionRow?) -> String? {
+        guard let row, let device = devices.first(where: { $0.key == row.device }) else { return "That session isn't on a linked Mac any more" }
+        if !device.online { return "\(device.name) isn't connected" }
+        if !device.remoteControl { return "Remote control is off on \(device.name)" }
+        return nil
+    }
+
     func markSeen(_ key: String) {
-        guard let core else { return }
+        guard let core, !lookOnly else { return }
         Task.detached { core.markSeen(keys: [key]) }
     }
 
@@ -197,7 +234,9 @@ final class Store {
 
     func startChoices(_ device: String) async throws -> StartChoices {
         let core = try running()
-        return try await Task.detached { try core.startChoices(device: device) }.value
+        let read = try await Task.detached { try core.startChoices(device: device) }.value
+        choices[device] = read
+        return read
     }
 
     /// Where new work starts on `device` in `project` unless you pick a worktree (the core's rule).
