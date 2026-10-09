@@ -19,6 +19,7 @@ crate-type = ["staticlib"]
 # (CLAUDE.md, "The main repo is the source of the protocol").
 codealong-peer = { git = "https://github.com/codealong/codealong.git", rev = "5eaf22ddfc9ff9ddbbac7d59024b51a5097d11bb" }
 iroh = "1"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uniffi = "0.32"
 

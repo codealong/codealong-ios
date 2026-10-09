@@ -37,7 +37,10 @@ came from. Mark as unread, in a session's menu or by holding its row, makes a tu
 Your turn again, on every device, until it's seen or prompted. A
 message shows in the conversation the moment you send it, as sending, then sent, until the
 session's record has it, so you can write the next or go straight on; one that doesn't go is back
-in its box. Dragging or tapping the conversation puts the keyboard away.
+in its box. Dragging or tapping the conversation puts the keyboard away. Conversations read lately
+are kept, in memory and saved: one opened again shows at once and asks its Mac only for what came
+since, and the next that waits on you, and the first that wait in the list, are read ahead so they
+show at once too.
 
 Projects are the Macs' own: each session comes in its Mac's project, and the phone lines them up
 across Macs as a Mac lines up another's worktrees, by repo. A worktree goes into the project any

@@ -16,6 +16,7 @@ use codealong_peer::{net, proto};
 
 uniffi::setup_scaffolding!();
 
+mod kept;
 mod md;
 mod quick;
 pub use md::*;
@@ -194,6 +195,9 @@ pub struct Snapshot {
 #[derive(uniffi::Object)]
 pub struct Core {
     client: Client,
+    /// Where conversations read lately are saved (`kept`).
+    conversations: PathBuf,
+    kept: kept::Kept<Conversation>,
 }
 
 #[uniffi::export]
@@ -206,6 +210,7 @@ impl Core {
         let secret = iroh::SecretKey::from_bytes(&bytes);
         let wake = Arc::new((Mutex::new(false), Condvar::new()));
         let signal = wake.clone();
+        let conversations = PathBuf::from(&dir).join("conversations");
         let client = Client::new(
             PathBuf::from(dir),
             secret,
@@ -233,7 +238,7 @@ impl Core {
                 std::thread::sleep(COALESCE);
             })
             .map_err(|e| CoreError::Failed(e.to_string()))?;
-        Ok(Arc::new(Core { client }))
+        Ok(Arc::new(Core { client, conversations, kept: kept::Kept::default() }))
     }
 
     /// This phone's device key, as hex.
@@ -257,10 +262,38 @@ impl Core {
         Ok(self.client.link(net::code_in(&code))?)
     }
 
-    /// A session's conversation, to page through and follow (`Conversation`).
+    /// A session's conversation, to page through and follow (`Conversation`): the one read
+    /// lately, in memory or saved, when there is one (`kept`), so it shows at once and its Mac is
+    /// asked only for what came since.
     pub fn conversation(&self, key: String) -> Result<Arc<Conversation>, CoreError> {
         let (device, own) = split_remote(&key).ok_or_else(|| CoreError::Failed("That isn't a session on one of your Macs.".into()))?;
-        Ok(Arc::new(Conversation { client: self.client.clone(), device: device.to_string(), key: own.to_string(), st: Mutex::new(Thread::default()) }))
+        let continues = self.client.with_feeds(|feeds| {
+            feeds
+                .iter()
+                .filter(|(d, _)| d.short == device || d.key == device)
+                .flat_map(|(_, r)| r.lanes.iter().flat_map(|l| l.sessions.iter()))
+                .find(|s| s.key == own)
+                .and_then(|s| s.continues.clone())
+        });
+        Ok(self.kept.get(&key, continues.as_deref(), || {
+            let saved = kept::file_for(&self.conversations, &key);
+            let mut thread = Thread::default();
+            if let Some(s) = kept::load(&saved, &key, continues.as_deref()) {
+                thread = Thread { loaded: true, items: s.items, before: s.before, after: s.after, ..Thread::default() };
+            }
+            Arc::new(Conversation { client: self.client.clone(), device: device.to_string(), key: own.to_string(), st: Mutex::new(thread), saved, remote: key.clone(), continues: continues.clone() })
+        }))
+    }
+
+    /// Reads a session's conversation ahead of its being opened (the next that waits on you), so
+    /// it shows at once: what came since, when it was read before, else its newest page. Not
+    /// again when it was read moments ago. Says nothing when its Mac doesn't answer: opening it
+    /// reads it anyway.
+    pub fn prefetch(&self, key: String) {
+        let Ok(conv) = self.conversation(key) else { return };
+        if !conv.fresh() {
+            let _ = conv.refresh();
+        }
     }
 
     /// Marks sessions seen on the Macs they're on, so Your turn clears everywhere.
@@ -679,6 +712,10 @@ pub struct Conversation {
     device: String,
     key: String,
     st: Mutex<Thread>,
+    /// Where it's saved as it's read (`kept`), and the session's key here and record then.
+    saved: PathBuf,
+    remote: String,
+    continues: Option<String>,
 }
 
 #[derive(Default)]
@@ -690,6 +727,10 @@ struct Thread {
     /// Pages read back looking for the prompt behind the oldest shown, by the place each was asked
     /// for: scrolling up takes them from here instead of asking the Mac again.
     read_back: std::collections::HashMap<u64, api::Page>,
+    /// The prompt found behind the oldest read, for the place it was looked for from.
+    behind: Option<(Option<u64>, Option<Item>)>,
+    /// When its Mac was last read.
+    read_at: Option<std::time::Instant>,
 }
 
 impl Thread {
@@ -829,8 +870,19 @@ impl Conversation {
         };
         let page = if loaded { self.client.newer(&self.device, &self.key, after)? } else { self.client.page(&self.device, &self.key, None)? };
         let mut st = self.st.lock().unwrap_or_else(|e| e.into_inner());
+        let grew = !page.items.is_empty() || !loaded;
         st.take(page, false);
+        st.read_at = Some(std::time::Instant::now());
+        if grew {
+            self.save(&st);
+        }
         Ok(st.shown())
+    }
+
+    /// What's been read so far, without asking its Mac: what was kept from before shows at once.
+    pub fn kept(&self) -> Vec<Item> {
+        let st = self.st.lock().unwrap_or_else(|e| e.into_inner());
+        if st.loaded { st.shown() } else { Vec::new() }
     }
 
     /// The page before the oldest read so far.
@@ -844,6 +896,7 @@ impl Conversation {
         };
         let mut st = self.st.lock().unwrap_or_else(|e| e.into_inner());
         st.take(page, true);
+        self.save(&st);
         Ok(st.shown())
     }
 
@@ -852,7 +905,13 @@ impl Conversation {
     /// back a page at a time, keeping the pages for scrolling up, and gives up after `LOOK_BACK`.
     pub fn prompt_before(&self) -> Result<Option<Item>, CoreError> {
         let before = self.st.lock().unwrap_or_else(|e| e.into_inner()).before;
-        look_back(before, |at| {
+        // Looked for from here before: what was found then.
+        if let Some((from, found)) = &self.st.lock().unwrap_or_else(|e| e.into_inner()).behind {
+            if *from == before {
+                return Ok(found.clone());
+            }
+        }
+        let found = look_back(before, |at| {
             let kept = self.st.lock().unwrap_or_else(|e| e.into_inner()).read_back.get(&at).cloned();
             let page = match kept {
                 Some(page) => page,
@@ -860,7 +919,9 @@ impl Conversation {
             };
             self.st.lock().unwrap_or_else(|e| e.into_inner()).read_back.insert(at, page.clone());
             Ok(page)
-        })
+        })?;
+        self.st.lock().unwrap_or_else(|e| e.into_inner()).behind = Some((before, found.clone()));
+        Ok(found)
     }
 
     /// There's more before the oldest read so far.
@@ -955,6 +1016,18 @@ impl Conversation {
     /// happened.
     pub fn switch_model(&self, model: String) -> Result<String, CoreError> {
         Ok(self.client.switch_model(&self.device, &self.key, &model)?)
+    }
+}
+
+impl Conversation {
+    /// Saves what's been read (`kept`).
+    fn save(&self, st: &Thread) {
+        kept::save(&self.saved, &kept::Saved::of(&self.remote, self.continues.as_deref(), &st.items, st.before, st.after));
+    }
+
+    /// Its Mac was read moments ago: a prefetch needn't read it again.
+    fn fresh(&self) -> bool {
+        self.st.lock().unwrap_or_else(|e| e.into_inner()).read_at.is_some_and(|t| t.elapsed() < kept::FRESH)
     }
 }
 

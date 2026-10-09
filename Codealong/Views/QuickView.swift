@@ -57,6 +57,11 @@ struct QuickView: View {
             // A session started here, or a link to one, opens once its Mac lists it.
             .onChange(of: store.sessions) { _, _ in openListed() }
             .onChange(of: store.openWhenListed) { _, _ in openListed() }
+            // The first that wait on you are the likeliest to be opened: read them ahead, so they
+            // show at once. Again as they change, and once a Mac connects.
+            .task(id: "\(firstWaiting)\(store.devices.filter(\.online).count)") {
+                for key in firstWaiting { store.prefetch(key) }
+            }
             // Back at the list, swiping back starts again from the next session opened.
             .onChange(of: path) { _, now in
                 if now.isEmpty { store.trail.removeAll() }
@@ -313,6 +318,11 @@ struct QuickView: View {
             routeProblem = words(error)
         }
         routing = false
+    }
+
+    /// The first two sessions that wait on you, in the inbox's order and its project.
+    private var firstWaiting: [String] {
+        store.sessions.filter { ($0.section == .needsYou || $0.section == .yourTurn) && (project.isEmpty || $0.project == project) }.prefix(2).map(\.key)
     }
 
     /// The Mac that suggests: the one new sessions start on, else any that's connected.

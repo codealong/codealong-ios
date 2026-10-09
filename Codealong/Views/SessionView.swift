@@ -319,6 +319,10 @@ struct SessionView: View {
         }
         // The Mac's feed says the session moved: bring in what came since.
         .onChange(of: row?.lastActivity) { _, _ in Task { await refresh() } }
+        // What's next changed (one answered elsewhere, a new one waiting): read it ahead too.
+        .onChange(of: after.first?.key) { _, next in
+            if let next, conversation != nil { store.prefetch(next) }
+        }
         // Opened from the feeds saved before its Mac connected, or back after it went away: read
         // what it couldn't.
         .onChange(of: online) { _, now in
@@ -631,6 +635,13 @@ struct SessionView: View {
         sayProblem()
         guard conversation == nil, let conv = store.conversation(key) else { return }
         conversation = conv
+        // Read before (opened, or prefetched as the next that waits on you): it shows at once,
+        // and its Mac is asked only for what came since.
+        let kept = conv.kept()
+        if !kept.isEmpty {
+            show(kept)
+            loading = false
+        }
         // Moved on to from another: say how that one went.
         if let outcome = store.outcome {
             said = outcome
@@ -638,15 +649,23 @@ struct SessionView: View {
         }
         await refresh()
         // Opened from the feeds saved before its Mac answered (the app was just opened, or a link
-        // opened it): the Mac is usually there a moment later.
-        for _ in 0..<15 where problem != nil && !Task.isCancelled {
-            try? await Task.sleep(for: .seconds(2))
-            await refresh()
+        // opened it): what was kept shows meanwhile, and it's read again the moment the Mac is
+        // connected (every two seconds where it says it is but didn't answer), for half a minute.
+        var readOnline = false
+        for tick in 1...150 where problem != nil && !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(200))
+            guard problem != nil else { break }
+            if (online && !readOnline) || tick % 10 == 0 {
+                readOnline = readOnline || online
+                await refresh()
+            }
         }
         loading = false
         if row?.status == .unread { store.markSeen(key) }
         // A turn longer than the first page: the prompt behind it, to pin from the start.
         await lookBack()
+        // The next that waits on you, read now so it shows at once when you go on to it.
+        if let next = after.first { store.prefetch(next.key) }
         // A session Codealong runs sends its reply as it's written, while it's shown here.
         if row?.hosted == true {
             watching = await Task.detached { conv.watch() }.value

@@ -153,6 +153,13 @@ final class Store {
         try? core?.conversation(key: key)
     }
 
+    /// Reads a session's conversation ahead of its being opened, in the background: the next
+    /// that waits on you shows at once when you go on to it.
+    func prefetch(_ key: String) {
+        guard let core else { return }
+        Task.detached(priority: .utility) { core.prefetch(key: key) }
+    }
+
     func markSeen(_ key: String) {
         guard let core else { return }
         Task.detached { core.markSeen(keys: [key]) }
