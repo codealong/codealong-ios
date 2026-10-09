@@ -28,6 +28,9 @@ final class Store {
     private var handled: [String: Int64] = [:]
     /// Sessions you went on from without replying, in the order you left them.
     private var passed: [String] = []
+    /// The sessions you went on from to the one shown, the latest last: swiping back goes to them
+    /// in turn. Back at the list it starts again.
+    var trail: [String] = []
     /// What you've written to each session and not sent, by key: kept as you go from one to
     /// another, and where a message that didn't go comes back.
     var drafts: [String: String] = [:]
@@ -153,6 +156,26 @@ final class Store {
     func markSeen(_ key: String) {
         guard let core else { return }
         Task.detached { core.markSeen(keys: [key]) }
+    }
+
+    /// The session you went on from to `key`, the latest that's still listed: where swiping back
+    /// goes.
+    func previous(of key: String) -> SessionRow? {
+        for k in trail.reversed() where k != key {
+            if let row = sessions.first(where: { $0.key == k }) { return row }
+        }
+        return nil
+    }
+
+    /// Back to the session you went on from: it and what was gone on to from it come off the trail.
+    func back(to key: String) {
+        if let i = trail.lastIndex(of: key) { trail.removeSubrange(i...) }
+    }
+
+    /// Marks a session unread on its Mac: Your turn again, everywhere, until it's seen or prompted.
+    func markUnread(_ key: String) async throws {
+        let core = try running()
+        try await Task.detached { try core.markUnread(keys: [key]) }.value
     }
 
     func archive(_ key: String) {

@@ -32,7 +32,9 @@ It works through what waits on you as the Mac's session panel does: once you've 
 answered, the most urgent session still waiting on you is a tap away above the reply box (Next),
 and holding Send sends and goes straight on (⌘⏎ on a keyboard). The chevron at the top skips to
 it; one skipped comes round again after the rest. Swiping across a conversation goes along the
-same queue, as the Mac's ⌘] and ⌘[ do: to the left the next, to the right the one before. A
+same queue: to the left the next, as the Mac's ⌘] does, and to the right back to the session you
+came from. Mark as unread, in a session's menu or by holding its row, makes a turn you've seen
+Your turn again, on every device, until it's seen or prompted. A
 message shows in the conversation the moment you send it, as sending, then sent, until the
 session's record has it, so you can write the next or go straight on; one that doesn't go is back
 in its box. Dragging or tapping the conversation puts the keyboard away.

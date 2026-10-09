@@ -520,6 +520,8 @@ mod tests {
             in_app: false,
             asks: false,
             pr: None,
+            seenable: false,
+            unreadable: false,
             stoppable: false,
             steerable: false,
             model: None,

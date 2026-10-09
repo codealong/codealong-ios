@@ -57,6 +57,10 @@ struct QuickView: View {
             // A session started here, or a link to one, opens once its Mac lists it.
             .onChange(of: store.sessions) { _, _ in openListed() }
             .onChange(of: store.openWhenListed) { _, _ in openListed() }
+            // Back at the list, swiping back starts again from the next session opened.
+            .onChange(of: path) { _, now in
+                if now.isEmpty { store.trail.removeAll() }
+            }
             .task(id: query) { await searchSaid() }
             .onAppear {
                 // Text typed for a test at launch (`QUERY=<text> scripts/run.sh`).
@@ -184,6 +188,19 @@ struct QuickView: View {
                             QuickSessionRow(row: r, said: hit, words: matching, showDevice: store.devices.count > 1, showProject: project.isEmpty)
                                 .contentShape(.rect)
                                 .onTapGesture { path.append(r.key) }
+                                // As a session's right-click menu on the Mac: seen or unread.
+                                .contextMenu {
+                                    if r.seenable {
+                                        Button("Mark as seen", systemImage: "checkmark.circle") { store.markSeen(r.key) }
+                                    }
+                                    if r.unreadable {
+                                        Button("Mark as unread", systemImage: "circle.badge") {
+                                            Task {
+                                                do { try await store.markUnread(r.key) } catch { store.notice = words(error) }
+                                            }
+                                        }
+                                    }
+                                }
                                 .swipeActions(edge: .trailing) {
                                     Button("Archive", systemImage: "archivebox") { store.archive(r.key) }
                                         .tint(.gray)

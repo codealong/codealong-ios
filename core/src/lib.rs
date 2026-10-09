@@ -148,6 +148,12 @@ pub struct SessionRow {
     pub asks: bool,
     /// Its worktree's PR, as "#12 Title", for the quick search to find it by.
     pub pr: Option<String>,
+    /// A finished turn waiting on you to read it, or a reply that asks you something: marking it
+    /// seen settles it (the Mac's lanes.ts `seenable`).
+    pub seenable: bool,
+    /// Its turn is over and seen, and it isn't archived: it can be marked unread, Your turn again
+    /// until it's seen or prompted (lanes.ts `unreadable`).
+    pub unreadable: bool,
     /// Its turn is running and its Mac can stop it: what the harness's own Stop sends, or Escape
     /// in its terminal.
     pub stoppable: bool,
@@ -270,6 +276,24 @@ impl Core {
         }
     }
 
+    /// Marks sessions unread on the Macs they're on: each is Your turn again, everywhere, until
+    /// it's seen or prompted. Macs before 2026-10-08 refuse it; the first refusal is said.
+    pub fn mark_unread(&self, keys: Vec<String>) -> Result<(), CoreError> {
+        let mut by_device: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        for k in &keys {
+            if let Some((device, own)) = split_remote(k) {
+                by_device.entry(device.to_string()).or_default().push(own.to_string());
+            }
+        }
+        let mut failed = None;
+        for (device, keys) in by_device {
+            if let Err(why) = self.client.mark_unread(&device, &keys) {
+                failed.get_or_insert(why);
+            }
+        }
+        failed.map_or(Ok(()), |why| Err(CoreError::Failed(why)))
+    }
+
     /// Archives a session, or brings it back, on the Mac it's on.
     pub fn archive(&self, key: String, archived: bool) -> Result<(), CoreError> {
         let (device, own) = split_remote(&key).ok_or_else(|| CoreError::Failed("That isn't a session on one of your Macs.".into()))?;
@@ -371,6 +395,8 @@ pub(crate) fn all_rows(feeds: &Feeds) -> Vec<SessionRow> {
                 in_app: s.surface == codealong_peer::model::Surface::App,
                 asks: s.asks,
                 pr: lane.pr.as_ref().map(|p| format!("#{} {}", p.number, p.title)),
+                seenable: status == Status::Unread || s.asks,
+                unreadable: !s.asks && matches!(status, Status::Idle | Status::Stopped),
                 // Macs before 2026-09-29 don't say, and stop only the sessions Codealong runs.
                 stoppable: s.stoppable || (s.hosted && status == Status::Working),
                 steerable: s.steerable,
@@ -1603,6 +1629,8 @@ mod order_tests {
             in_app: false,
             asks: false,
             pr: None,
+            seenable: false,
+            unreadable: false,
             stoppable: false,
             steerable: false,
             model: None,

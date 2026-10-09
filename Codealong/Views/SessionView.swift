@@ -21,8 +21,8 @@ import SwiftUI
 /// the end of the conversation as sending, then sent, until the session's record has it, so you
 /// can go on writing the next; messages to one session go in the order you sent them. One that
 /// doesn't go is back in the box, with why. Swiping across the conversation goes along what waits
-/// on you, as the Mac's ⌘] and ⌘[ do: to the left the next, to the right the one before. Dragging
-/// the conversation down, or tapping it, puts the keyboard away.
+/// on you: to the left the next, as the Mac's ⌘] does, and to the right back to the session you
+/// came from. Dragging the conversation, or tapping it, puts the keyboard away.
 ///
 /// As on the Mac, it opens at the newest and reads older pages as you scroll up, holding your
 /// place. The prompt behind what's in view, once it's gone off the top, stays pinned there, two
@@ -88,6 +88,8 @@ struct SessionView: View {
     /// When Mark as done was last held here by work under way: done again soon after ends that too.
     @State private var heldAt: Date?
     @State private var finishing = false
+    /// You marked it unread here: it's left Your turn, and the screen goes back to the list.
+    @State private var markedUnread = false
     @State private var renaming = false
     @State private var newName = ""
     @FocusState private var typing: Bool
@@ -106,9 +108,8 @@ struct SessionView: View {
         get { store.drafts[key] ?? "" }
         nonmutating set { store.drafts[key] = newValue.isEmpty ? nil : newValue }
     }
-    /// The one before this in what waits on you, as the Mac's ⌘[ goes: the last of what's left
-    /// after it, round the queue.
-    private var before: SessionRow? { after.last }
+    /// The session you went on from to this one: swiping back goes there.
+    private var before: SessionRow? { store.previous(of: key) }
     /// A swipe goes along the queue once it's gone this far, or flicked.
     private let swipeFar: CGFloat = 90
     /// What waits on you after this one; the first is next.
@@ -293,6 +294,10 @@ struct SessionView: View {
                     }
                     Button(finishing ? "Wrapping up…" : "Mark as done", systemImage: "checkmark.circle") { Task { await markDone() } }
                         .disabled(!online || finishing)
+                    if row?.unreadable == true {
+                        Button("Mark as unread", systemImage: "circle.badge") { Task { await markUnread() } }
+                            .disabled(!online)
+                    }
                     Button("Archive", systemImage: "archivebox") {
                         store.archive(key)
                         dismiss()
@@ -319,9 +324,10 @@ struct SessionView: View {
         .onChange(of: online) { _, now in
             if now { Task { await reconnected() } }
         }
-        // A turn that ends while it's shown here has been seen.
+        // A turn that ends while it's shown here has been seen; one you marked unread here is
+        // left so.
         .onChange(of: row?.status) { _, status in
-            if status == .unread { store.markSeen(key) }
+            if status == .unread && !markedUnread { store.markSeen(key) }
         }
         // A reply being written comes as a change the core reports.
         .onChange(of: store.tick) { _, _ in
@@ -922,6 +928,7 @@ struct SessionView: View {
             moveOn(to: target)
         } else {
             // Back is a step by hand: this one isn't passed over for it.
+            store.back(to: target.key)
             store.outcome = acted ? said : nil
             go(target.key)
         }
@@ -989,6 +996,19 @@ struct SessionView: View {
         }
     }
 
+    /// Your turn again, as the Mac's Mark as unread: until it's seen or prompted. Shown here it
+    /// would be seen at once, so the screen goes back to the list.
+    private func markUnread() async {
+        markedUnread = true
+        do {
+            try await store.markUnread(key)
+            dismiss()
+        } catch {
+            markedUnread = false
+            said = words(error)
+        }
+    }
+
     private func rename() async {
         let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, name != row?.title else { return }
@@ -1026,6 +1046,7 @@ struct SessionView: View {
     /// Left without a reply, this one comes round again after the rest.
     private func moveOn(to next: SessionRow, outcome: String? = nil) {
         if !acted && outcome == nil { store.passedOver(key) }
+        if next.key != key { store.trail.append(key) }
         store.outcome = outcome ?? (acted ? said : nil)
         go(next.key)
     }
