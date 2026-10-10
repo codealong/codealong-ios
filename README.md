@@ -51,8 +51,8 @@ inside Codealong on your Mac streams its reply as it's written.
 
 **Work through what's waiting.** Once you've replied, the next session waiting on you is a tap
 away (*Next*), and holding *Send* sends and goes straight on. Swipe left for the next waiting
-session and right to go back to the one you came from. The next one is read ahead, so it shows
-at once.
+session and right to go back to the one you came from; one you swipe on from counts as seen.
+The next one is read ahead, so it shows at once.
 
 **Act on a session**, on any Mac that has remote control turned on:
 

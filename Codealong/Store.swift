@@ -141,7 +141,9 @@ final class Store {
     /// dealt with stay out until they wait on you anew. `project` narrows it as the inbox is.
     func queue(after key: String, project: String) -> [SessionRow] {
         if let fixed = testQueue {
-            return fixed.filter { $0 != key }.compactMap { k in sessions.first { $0.key == k } }
+            // Those after it in the list, as a real queue has gone past the ones before.
+            let rest = fixed.firstIndex(of: key).map { fixed[($0 + 1)...] } ?? fixed[...]
+            return rest.compactMap { k in sessions.first { $0.key == k } }
         }
         let waiting = sessions.filter { row in
             guard row.key != key, row.section == .needsYou || row.section == .yourTurn, project.isEmpty || row.project == project else { return false }
@@ -158,7 +160,8 @@ final class Store {
         passed.removeAll { $0 == key }
     }
 
-    /// You went on from `key` without replying: it comes round again after the rest.
+    /// You went on from `key` without replying: while it still needs you, it comes round again
+    /// after the rest (one whose turn had ended was marked seen, and leaves).
     func passedOver(_ key: String) {
         passed.removeAll { $0 == key }
         passed.append(key)

@@ -5,8 +5,9 @@ import SwiftUI
 ///
 /// It also works through what waits on you, as the Mac's session panel does with ⌘⏎: once you've
 /// replied or answered, the most urgent session still waiting on you is a tap away above the box,
-/// and holding Send sends and goes on at once. The chevron at the top skips to it; one skipped
-/// comes round again after the rest.
+/// and holding Send sends and goes on at once. The chevron at the top skips to it. One you go on
+/// from has been seen, so a turn that ended leaves Your turn; one skipped while it needs you comes
+/// round again after the rest.
 ///
 /// The box says how a message gets there, as its Mac says (typed into its terminal, its
 /// background job, a message from Codealong). While it waits on a call that can be answered here,
@@ -895,6 +896,9 @@ struct SessionView: View {
     /// Slides this screen away and `target`'s in after it, from what the phone keeps of it, then
     /// does `then` and shows `target` in its place, starting as it was drawn sliding in.
     private func slide(to target: String, back: Bool, speed: CGFloat = 0, then: @escaping () -> Void = {}) {
+        // Gone on from, it's been seen. Opening it marks it too, but only once its Mac has
+        // answered, which a quick swipe goes on before.
+        if row?.status == .unread && !markedUnread { store.markSeen(key) }
         store.slidIn = (target, Opening(kept: beside[target] ?? Kept(), said: store.outcome))
         // Gone on to by a button with Reduce Motion on, it's shown in this one's place at once.
         guard swipe.width > 0, !reduceMotion || swipe.distance != 0 else {
@@ -1028,7 +1032,7 @@ struct SessionView: View {
     }
 
     /// Shows `next` in this one's place, saying there how this one went once you've acted here.
-    /// Left without a reply, this one comes round again after the rest.
+    /// Left without a reply while it needs you, this one comes round again after the rest.
     private func moveOn(to next: SessionRow, outcome: String? = nil, speed: CGFloat = 0) {
         guard swipe.to == nil else { return }
         if !acted && outcome == nil { store.passedOver(key) }
