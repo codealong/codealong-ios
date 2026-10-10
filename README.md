@@ -1,78 +1,183 @@
-# Codealong for iPhone
+<p align="center">
+  <img src="design/app-icon.svg" alt="" width="112" height="112" />
+</p>
 
-A native app for the sessions on all your Macs: every agent Codealong tracks on each of them in
-one list, most urgent first, and, where a Mac has remote control on, a way to act on them. It's
-another of your devices to the Macs, so it links and talks to them as they talk to each other,
-peer to peer, with no server of Codealong's in between.
+<h1 align="center">Codealong for iPhone</h1>
 
-Status: early. It links with your Macs, lists their sessions in the sections and order of the
-Mac's Sessions view (snoozed ones apart), narrowed to a project if you like, and shows each one's
-conversation, reading back as you scroll up with what you asked pinned over its reply, and a
-hosted session's reply as it's written, drawn as the Mac draws it: replies as Markdown with tables,
-quotes, lists and code to copy, web links (a PR's as `name#123`) that open, your prompts as you
-wrote them, commands you ran with what they printed, a prompt the session took back, the
-questions a call asked with what you picked, and a link to the page a call published. Where a Mac has remote
-control on, it replies (into the running turn at once where the session can take it), answers
-approvals and questions (or denies a call, saying what to do instead), stops a turn, switches a
-running session's model, goes on with one that isn't running where and on what you pick, forks
-one, marks one done (closing it where its Mac can, as Mark as done does there), and starts
-sessions, in a worktree, a new one, or a chat in no project, on the account,
-model, effort and place the chips say. It renames sessions with remote control off too. The
-reply box says how a message gets there, as the Mac says. The plan is in the main repo's
-`design/plans/ios.md`.
+<p align="center"><strong>Your coding agents, in your pocket.</strong></p>
 
-Its one screen is the Mac's quick panel: an input at the top, and under it the sessions that need
-you, then the ones whose turn ended (the ones working when nothing waits), then the rest started in
-the last day. Typing finds sessions, by what was said in them too (each Mac's text search), and
-PRs; the Mac chosen at the bottom suggests where the text goes (its Jev, through the `route`
-request); and the row at the bottom starts a session with it on the Mac, worktree, account and
-place the chips under it say.
+<p align="center">
+  Every agent session on all your Macs, most urgent first, on your iPhone.<br />
+  Read what they're doing, answer what they ask, and start new work, from anywhere.
+</p>
 
-It works through what waits on you as the Mac's session panel does: once you've replied or
-answered, the most urgent session still waiting on you is a tap away above the reply box (Next),
-and holding Send sends and goes straight on (⌘⏎ on a keyboard). The chevron at the top skips to
-it; one skipped comes round again after the rest. Swiping across a conversation goes along the
-same queue: to the left the next, as the Mac's ⌘] does, and to the right back to the session you
-came from. The screen follows your finger with that session beside it, drawn from what the phone
-keeps (the next is read ahead, with what it waits on you for), and finishes the slide when you let
-go; Next and the chevron slide the same way. Mark as unread, in a session's menu or by holding its row, makes a turn you've seen
-Your turn again, on every device, until it's seen or prompted. A
-message shows in the conversation the moment you send it, as sending, then sent, until the
-session's record has it, so you can write the next or go straight on; one that doesn't go is back
-in its box. Dragging or tapping the conversation puts the keyboard away. Conversations read lately
-are kept, in memory and saved: one opened again shows at once and asks its Mac only for what came
-since, and the next that waits on you, and the first that wait in the list, are read ahead so they
-show at once too.
+<p align="center">
+  <a href="#what-you-can-do">What you can do</a>
+  &nbsp;·&nbsp; <a href="#get-it-on-your-iphone">Get it on your iPhone</a>
+  &nbsp;·&nbsp; <a href="#privacy-and-security">Privacy</a>
+  &nbsp;·&nbsp; <a href="#faq">FAQ</a>
+  &nbsp;·&nbsp; <a href="https://github.com/codealong/codealong">The Mac app</a>
+</p>
 
-Projects are the Macs' own: each session comes in its Mac's project, and the phone lines them up
-across Macs as a Mac lines up another's worktrees, by repo. A worktree goes into the project any
-of your Macs has its repo in, else into a project of the same name, so one project on two Macs is
-one project here, even where one of them has that repo in no project.
+> **Early days.** The app works day to day, but it isn't on the App Store or TestFlight yet: for
+> now you build it with Xcode and install it on your own iPhone. Notifications aren't in yet.
 
-## How it fits with the Mac app
+## What it is
 
-The Mac app ([codealong/codealong](https://github.com/codealong/codealong)) keeps a connection to
-each of your other devices and trades feeds of worktrees and sessions with the ones you've
-linked (Settings › Devices). This app is a device that only watches: it links with a Mac's link
-code, keeps the feed each Mac sends, and asks Macs for what it shows; it has no board of its own
-and answers nothing.
+[Codealong](https://github.com/codealong/codealong) is a Mac app that keeps track of every coding
+agent you run (Claude Code, Codex, OpenCode, Antigravity and Cursor, on every account) and shows
+what each one is doing and which ones need you. Codealong for iPhone takes that with you.
 
-Everything the two sides say to each other comes from one Rust crate, `codealong-peer`, in the
-main repo at `src-tauri/peer/`: the protocol and each side's proof of its device key, link codes,
-the feed and the worktrees and sessions it carries, reaching a Mac anywhere through iroh, and the
-watching client. The Mac's engine builds on it, and so does `core/` here, so the two can't drift.
+Link your phone with your Macs once, and it shows every session on all of them in one list: the
+agents that need you first, then the ones that just finished, then the rest. Open one to read its
+conversation and reply to it, allow what it wants to run, answer its questions, or start a new
+session on any Mac, without walking back to your desk.
+
+The phone is another of your devices to your Macs, so it talks to them the way they talk to each
+other: directly, encrypted end to end, with no Codealong server in between.
+
+## What you can do
+
+**See what needs you.** The home screen is the Mac's quick panel: a search box, and under it the
+sessions that need you, then the ones whose turn just ended (the working ones when nothing is
+waiting), then the rest from the last day. Narrow it to one project if you like. A project that
+lives on two Macs is one project here.
+
+**Read any conversation.** Each session's conversation shows as it does on the Mac: replies as
+formatted text with tables, lists and code you can copy, your prompts, the commands that ran and
+what they printed, and the questions an agent asked with what you picked. Scroll up to read
+further back, with the prompt you're reading the answer to pinned at the top. A session running
+inside Codealong on your Mac streams its reply as it's written.
+
+**Work through what's waiting.** Once you've replied, the next session waiting on you is a tap
+away (*Next*), and holding *Send* sends and goes straight on. Swipe left for the next waiting
+session and right to go back to the one you came from. The next one is read ahead, so it shows
+at once.
+
+**Act on a session**, on any Mac that has remote control turned on:
+
+- reply to it, or slip a message into the turn it's taking right now;
+- allow or deny what it wants to run (or deny it and say what to do instead), and answer its
+  questions;
+- stop its turn;
+- switch a running session's model;
+- resume one that isn't running, where and on what model you pick;
+- fork it, or mark it done (closing it where its Mac can).
+
+Renaming, archiving, marking seen and *Mark as unread* work with any Mac, remote control or not.
+
+**Start new work.** Type a prompt and start it on the Mac, worktree, account, model, effort and
+place the chips under it say: an existing worktree, a new one, or a chat in no project. As you
+type, it finds sessions by what was said in them, and the Mac you pick suggests where the prompt
+belongs when it has Jev's suggestions on.
+
+**Write ahead.** A message shows in the conversation the moment you send it, marked sending, then
+sent, so you can write the next one or move on. One that doesn't go comes back to its box.
+
+## How it works with your Macs
+
+You need the [Codealong Mac app](https://github.com/codealong/codealong) on each Mac you want to
+see, with **Settings › Devices** turned on. That's all it takes to see sessions and read their
+conversations.
+
+To reply, approve, start or stop from your phone, turn on **remote control** in Settings › Devices
+on the Mac you want to act on. It's off by default, it's per Mac, and every request a Mac takes
+from another device is written to its `~/Library/Logs/Codealong/devices.log`.
+
+The phone doesn't keep a board of its own. Each Mac works out its sessions' status and what
+they're waiting on, and sends the phone a feed of them; the phone asks the Mac for what it shows
+and keeps what it last saw, so it opens straight onto your sessions while it reconnects.
+
+## Get it on your iPhone
+
+Until it's on TestFlight, you build it on a Mac and install it on an iPhone paired with that Mac.
+
+**You'll need:**
+
+- A Mac with [Xcode](https://developer.apple.com/xcode/) 26 and its iOS SDK
+- [XcodeGen](https://github.com/yonaskolb/XcodeGen): `brew install xcodegen`
+- Rust (`rustup`) with the iOS targets: `rustup target add aarch64-apple-ios aarch64-apple-ios-sim`
+- An iPhone on iOS 26, and an Apple ID added in Xcode › Settings › Accounts (a free Personal
+  Team works)
+
+**Install it:**
+
+1. Connect your iPhone to the Mac with a cable once, and tap *Trust* on the phone.
+2. On the phone, turn on Developer Mode (Settings › Privacy & Security › Developer Mode) and
+   restart when it asks.
+3. Clone and install, with the phone unlocked:
+
+   ```bash
+   git clone https://github.com/codealong/codealong-ios.git
+   cd codealong-ios
+   scripts/install-device.sh
+   ```
+
+   It builds the app for iPhone, signs it with your team from Xcode's settings
+   (`CODEALONG_TEAM_ID` picks another), installs it and opens it.
+4. The first time, iOS asks you to trust the developer: Settings › General › VPN & Device
+   Management, then your Apple ID.
+
+With a free Personal Team, Apple lets the app run for 7 days before it needs installing again:
+run `scripts/install-device.sh` again. A paid developer account signs it for a year.
+
+**Link it with your Macs.** On each Mac, open Codealong's Settings › Devices and scan its QR code
+with the iPhone's camera; the app opens and asks to link. Or, on the Mac, run `codealong devices code`
+and enter the code in the app, under *Macs*. You do this once per Mac.
+
+## Privacy and security
+
+- **No server.** The phone talks straight to your Macs over [iroh](https://iroh.computer),
+  encrypted end to end, wherever you are. Nothing goes through a Codealong server, because there
+  isn't one.
+- **Linking is deliberate.** A link code is one-time, and each side proves who it is with a device
+  key; the phone's stays in its Keychain, on that phone only.
+- **The phone only watches.** It never sends a feed of its own and refuses anything a Mac asks of
+  it. It reads conversations by asking the Mac they're on; transcripts stay on that Mac.
+- **Your Macs decide.** Acting on a session needs remote control turned on at that Mac, and each
+  request is logged there.
+- **Connected only while it's open.** The app connects when you open it and disconnects when you
+  leave it.
+
+## FAQ
+
+**Do I need Tailscale or to be on the same Wi-Fi?**
+No. The phone reaches your Macs anywhere through iroh. Your Macs need to be awake and running
+Codealong to answer.
+
+**Does it work with any coding agent?**
+It shows every session your Macs' Codealong sees: Claude Code, Codex, OpenCode, Antigravity and
+Cursor. What you can do to one is what its Mac can do: replies and approvals work where Codealong
+on the Mac can send and answer for that agent (see the Mac app's
+[support table](https://github.com/codealong/codealong#what-works-with-each-agent)).
+
+**Will it notify me when an agent needs me?**
+Not yet. Notifications are planned, with widgets and an iPad layout.
+
+**What if my Mac runs an older version of Codealong?**
+The phone works with Macs on older and newer builds. A Mac that doesn't know a request yet says
+so, and the phone tells you why it didn't go.
+
+**Can I use it on an iPad?**
+It installs and runs on an iPad too, laid out as on the iPhone; a layout of its own for the iPad
+is planned.
+
+## Developing
+
+The app is SwiftUI over a small Rust core. Everything the phone and the Macs say to each other
+comes from one crate, `codealong-peer`, in the Mac app's repo (`src-tauri/peer/`): the protocol and
+each side's proof of its device key, link codes, the feed and the worktrees and sessions it
+carries, and reaching a Mac through iroh. The Mac's engine builds on it, and so does `core/` here,
+so the two can't drift apart.
 
 ```
 Codealong/          SwiftUI: the quick search, a session, the Macs sheet, the store
 core/               Rust: a thin layer over codealong-peer's client, exported with UniFFI
-scripts/            build-core.sh (core → XCFramework + Swift bindings), build.sh, run.sh
+scripts/            build-core.sh (core → XCFramework + Swift bindings), build.sh, run.sh, install-device.sh
 project.yml         XcodeGen's spec; Codealong.xcodeproj is generated from it
 ```
 
-## Building
-
-Needs Xcode 26 with the iOS SDK, XcodeGen (`brew install xcodegen`), and Rust with the iOS
-targets (`rustup target add aarch64-apple-ios aarch64-apple-ios-sim`).
+To run it in the simulator:
 
 ```bash
 scripts/build.sh                    # the core for the simulator if it's missing, then the app
@@ -80,22 +185,9 @@ CORE=1 scripts/build.sh             # rebuild the core too
 scripts/run.sh                      # install and launch on the booted simulator
 LINK_CODE=cal1… scripts/run.sh      # launch with a Mac's link code, as if entered
 LOOK_ONLY=1 QUEUE=<key>,<key> OPEN=<key> scripts/run.sh  # go through real sessions, marking none seen
+(cd core && cargo test)             # the core's tests
 ```
 
-On the Mac, `codealong devices code` makes a link code (the app running, Devices and iroh on).
-
-## On your iPhone
-
-```bash
-scripts/install-device.sh           # build for iPhone, sign, install and launch on a paired phone
-```
-
-It installs on an iPhone paired with this Mac (connect it once with a cable and trust the Mac),
-signed by your Apple developer team from Xcode › Settings › Accounts (`CODEALONG_TEAM_ID` picks
-another). With a free Personal Team the app runs for 7 days before it needs installing again. The
-phone has to be unlocked while it installs, needs Developer Mode on (Settings › Privacy &
-Security), and the first time asks you to trust the developer (Settings › General › VPN & Device
-Management).
-
-Then link it with each Mac: scan the QR code in the Mac's Settings › Devices with the phone's
-camera, or enter a code from `codealong devices code` under Macs.
+On the Mac, `codealong devices code` makes a link code (the app running, with Devices and iroh
+on). [CLAUDE.md](CLAUDE.md) has the working notes every change follows, and the plan is in the
+Mac app's repo, `design/plans/ios.md`.
