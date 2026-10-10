@@ -206,6 +206,8 @@ struct SessionView: View {
         }
         // The Mac's feed says the session moved: bring in what came since.
         .onChange(of: row?.lastActivity) { _, _ in Task { await refresh() } }
+        // A message its Mac took: read for it at once.
+        .task(id: awaitingRecord) { await followSent() }
         // Once it's open, the sessions a swipe goes to, read ahead so they slide in as they are:
         // again as what's next changes (one answered elsewhere, a new one waiting) or moves.
         .task(id: besideReads) { await readBeside() }
@@ -594,6 +596,24 @@ struct SessionView: View {
         if row?.hosted == true {
             watching = await Task.detached { conv.watch() }.value
             live = conv.live()
+        }
+    }
+
+    /// Messages from here its Mac took that the conversation doesn't show yet.
+    private var awaitingRecord: Int {
+        (store.outgoing[key] ?? []).count { if case .sent = $0.state { true } else { false } }
+    }
+
+    /// Reads what came since a few times over the seconds after its Mac takes a message, rather
+    /// than waiting for the Mac's feed to say the session moved: the message shows taken as soon
+    /// as the session's record has it. One a busy session holds until its turn ends shows when
+    /// the feed says so.
+    private func followSent() async {
+        for wait in [200, 300, 500, 500, 750, 1000, 1500, 2000, 3000] {
+            guard awaitingRecord > 0 else { return }
+            try? await Task.sleep(for: .milliseconds(wait))
+            guard !Task.isCancelled else { return }
+            await refresh()
         }
     }
 

@@ -51,6 +51,14 @@ final class Store {
     @ObservationIgnored private var pumping: Set<String> = []
 
     @ObservationIgnored private var core: Core?
+    /// The last start or stop of the core asked for: each runs once the one before it is done.
+    @ObservationIgnored private var lifecycle: Task<Void, Never>?
+    /// The stop waiting for the app to stay in the background (`leave`).
+    @ObservationIgnored private var leaving: Task<Void, Never>?
+    /// The time iOS gave the app to stay connected in the background, until it's handed back.
+    @ObservationIgnored private var backgroundTime = UIBackgroundTaskIdentifier.invalid
+    /// How long it stays connected in the background: within the half minute or so iOS gives.
+    private static let stayConnected: Duration = .seconds(20)
     /// Launched for a check that goes through your real sessions (`LOOK_ONLY=1 scripts/run.sh`):
     /// nothing opened here is marked seen on its Mac, so the check leaves them as they were.
     private let lookOnly = ProcessInfo.processInfo.environment["CODEALONG_LOOK_ONLY"] == "1"
@@ -82,26 +90,84 @@ final class Store {
 
     func start() {
         guard let core else { return }
-        Task.detached {
+        // Back before the stop it was waiting to make: it's still connected.
+        leaving?.cancel()
+        leaving = nil
+        endBackgroundTime()
+        let started = inTurn { () -> String? in
             do {
                 try core.start()
+                return nil
             } catch {
-                await MainActor.run { self.problem = words(error) }
+                return words(error)
             }
+        }
+        Task {
+            if let why = await started.value { problem = why }
             // A link code handed to the app when it's launched for a test links it at once, and a
             // session's key opens it once its Mac lists it.
             if let code = ProcessInfo.processInfo.environment["CODEALONG_LINK_CODE"], !code.isEmpty {
-                await self.link(code)
+                await link(code)
             }
             if let key = ProcessInfo.processInfo.environment["CODEALONG_OPEN"], !key.isEmpty {
-                await MainActor.run { self.openWhenListed = key }
+                openWhenListed = key
             }
         }
     }
 
-    func stop() {
+    /// The app went to the background: it stays connected for a while, so back from another app
+    /// it shows what's new at once, then stops. iOS gives it that time, and when it wants the
+    /// time back sooner, it stops then.
+    func leave() {
+        guard core != nil, leaving == nil else { return }
+        if backgroundTime == .invalid {
+            backgroundTime = UIApplication.shared.beginBackgroundTask(withName: "Stay connected") { [weak self] in
+                self?.stop(timeIsUp: true)
+            }
+        }
+        leaving = Task { [weak self] in
+            try? await Task.sleep(for: Store.stayConnected)
+            guard !Task.isCancelled else { return }
+            self?.stop(timeIsUp: false)
+        }
+    }
+
+    /// Disconnects and saves the last feeds. With `timeIsUp`, iOS wants its time back at once, so
+    /// it's handed back without waiting for the stop, which ends when the app next runs.
+    private func stop(timeIsUp: Bool) {
         guard let core else { return }
-        Task.detached { core.stop() }
+        leaving?.cancel()
+        leaving = nil
+        let stopped = inTurn { core.stop() }
+        let time = backgroundTime
+        backgroundTime = .invalid
+        guard time != .invalid else { return }
+        if timeIsUp {
+            UIApplication.shared.endBackgroundTask(time)
+        } else {
+            Task {
+                await stopped.value
+                UIApplication.shared.endBackgroundTask(time)
+            }
+        }
+    }
+
+    private func endBackgroundTime() {
+        guard backgroundTime != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTime)
+        backgroundTime = .invalid
+    }
+
+    /// Runs a start or a stop of the core off the main actor once the one before it is done: a
+    /// stop still closing when the app comes back would close what the start opened.
+    private func inTurn<T: Sendable>(_ work: @escaping @Sendable () -> T) -> Task<T, Never> {
+        let before = lifecycle
+        let task = Task.detached {
+            await before?.value
+            return work()
+        }
+        lifecycle = Task { _ = await task.value }
+        return task
     }
 
     func link(_ code: String) async {
