@@ -58,8 +58,9 @@ then `scripts/build-core.sh` (cargo fetches it with your git login).
 - A Mac takes what the phone sends as yours, as it takes what you type in its windows (a phone
   runs no agents): a message to a session that skips permission prompts claims that, so Claude
   Code doesn't hold it for you to allow (the main repo's actions.rs `From::Phone`).
-- It's connected only while the app is open (`Core::start`/`stop` follow the scene phase), and
-  shows the last feeds it saved until the Macs answer.
+- It's connected while the app is open and for 20 seconds after it goes to the background
+  (`Store.leave`, on time iOS gives for it), and shows the last feeds it saved until the Macs
+  answer.
 
 ## Checking changes
 
