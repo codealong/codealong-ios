@@ -79,7 +79,7 @@ struct WorktreePicker: View {
     /// What a reusable worktree holds, as its mark on the Mac says it.
     private func reuseWord(_ reuse: WorktreeReuse?) -> String? {
         switch reuse {
-        case .free: "Free"
+        case .free: "Ready for new work"
         case .open: "Work under way"
         case .review: "In review"
         case .landed: "Landed"

@@ -165,30 +165,7 @@ struct SessionView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    if canStop {
-                        Button("Stop", systemImage: "stop.circle") { Task { await stop() } }
-                    }
-                    Button("Rename…", systemImage: "pencil") {
-                        newName = row?.name ?? row?.title ?? ""
-                        renaming = true
-                    }
-                    .disabled(!online)
-                    Button("Fork", systemImage: "arrow.triangle.branch") { Task { await fork("") } }
-                        .disabled(!canAct)
-                    if let origin = row?.origin, let title = origin.title {
-                        Button(origin.fork ? "Forked from “\(title)”" : "Started by “\(title)”", systemImage: "arrow.turn.left.up") { go(origin.key) }
-                            .disabled(!store.sessions.contains { $0.key == origin.key })
-                    }
-                    Button(finishing ? "Wrapping up…" : "Mark as done", systemImage: "checkmark.circle") { Task { await markDone() } }
-                        .disabled(!online || finishing)
-                    if row?.unreadable == true {
-                        Button("Mark as unread", systemImage: "circle.badge") { Task { await markUnread() } }
-                            .disabled(!online)
-                    }
-                    Button("Archive", systemImage: "archivebox") {
-                        store.archive(key)
-                        dismiss()
-                    }
+                    sessionMenu
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
@@ -363,6 +340,50 @@ struct SessionView: View {
         .safeAreaInset(edge: .bottom) { bottom }
     }
 
+    /// The session's menu: stop, rename, fork, where it came from, done, snooze, quiet, unread,
+    /// archive.
+    @ViewBuilder
+    private var sessionMenu: some View {
+        if canStop {
+            Button("Stop", systemImage: "stop.circle") { Task { await stop() } }
+        }
+        Button("Rename…", systemImage: "pencil") {
+            newName = row?.name ?? row?.title ?? ""
+            renaming = true
+        }
+        .disabled(!online)
+        Button("Fork", systemImage: "arrow.triangle.branch") { Task { await fork("") } }
+            .disabled(!canAct)
+        if let origin = row?.origin, let title = origin.title {
+            Button(origin.fork ? "Forked from “\(title)”" : "Started by “\(title)”", systemImage: "arrow.turn.left.up") { go(origin.key) }
+                .disabled(!store.sessions.contains { $0.key == origin.key })
+        }
+        Button(finishing ? "Wrapping up…" : "Mark as done", systemImage: "checkmark.circle") { Task { await markDone() } }
+            .disabled(!online || finishing)
+        Menu("Snooze", systemImage: "moon.zzz") {
+            ForEach(Snooze.choices()) { c in
+                Button(c.label) { Task { await snooze(until: c.until) } }
+            }
+            if row?.snoozedUntil != nil {
+                Button("Wake now", systemImage: "sun.max") { Task { await snooze(until: nil) } }
+            }
+        }
+        .disabled(!online)
+        // Checked while it is, as on the Mac: its turns don't wait on you.
+        Toggle(isOn: Binding(get: { row?.quiet == true }, set: { on in Task { await setQuiet(on) } })) {
+            Label("Quiet", systemImage: "speaker.slash")
+        }
+        .disabled(!online)
+        if row?.unreadable == true {
+            Button("Mark as unread", systemImage: "circle.badge") { Task { await markUnread() } }
+                .disabled(!online)
+        }
+        Button("Archive", systemImage: "archivebox") {
+            store.archive(key)
+            dismiss()
+        }
+    }
+
     @ViewBuilder
     private var bottom: some View {
         VStack(spacing: 8) {
@@ -390,6 +411,9 @@ struct SessionView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
+            if let lost = row?.connectionLost {
+                LostConnection(words: lost)
+            }
             if canStop {
                 Button(role: .destructive) {
                     Task { await stop() }
@@ -411,6 +435,18 @@ struct SessionView: View {
             // The reply box floats over the conversation in glass, as a control, not a bar. A line
             // of text is as tall as the send button, so the button sits centered in the pill, and
             // as the text grows it stays at the bottom, as far from the edges as before.
+            if let suggestions = row?.suggestions {
+                SuggestedRepliesView(suggestions: suggestions, blocked: canAct && !waitsElsewhere ? nil : whyNot ?? "It waits on you where it runs: answer that there first") { reply in
+                    Task { await send(text: reply) }
+                } edit: { reply in
+                    draft = reply
+                    typing = true
+                } dismiss: {
+                    Task {
+                        do { try await store.dismissSuggestions(key) } catch { said = words(error) }
+                    }
+                }
+            }
             if canAct && (resuming || showsModel) {
                 ReplyTools(rules: rules, resumePlace: $resumePlace, resumeModel: $resumeModel, resumeEffort: $resumeEffort, switching: switching) { model in
                     Task { await switchModel(model) }
@@ -795,11 +831,13 @@ struct SessionView: View {
     /// into the turn it's taking at once. While it waits on a call that can be answered here, it
     /// denies the call and tells it what you wrote instead; while it isn't running, it goes on
     /// where you picked. `/fork [prompt]` forks it instead. One that fails stays, saying why.
-    private func send(thenNext: Bool = false, now: Bool = false) async {
+    private func send(text reply: String? = nil, thenNext: Bool = false, now: Bool = false) async {
         guard let conv = conversation else { return }
-        let text = draft
+        // A suggested reply goes as it is, and what's being written stays in the box.
+        let text = reply ?? draft
+        let clear = { if reply == nil { draft = "" } }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed == "/fork" || trimmed.hasPrefix("/fork ") {
+        if reply == nil && (trimmed == "/fork" || trimmed.hasPrefix("/fork ")) {
             draft = ""
             await fork(String(trimmed.dropFirst("/fork".count)).trimmingCharacters(in: .whitespaces))
             return
@@ -814,7 +852,7 @@ struct SessionView: View {
             } else {
                 how = .send(now: now)
             }
-            draft = ""
+            clear()
             said = nil
             store.post(key, title: title, text: text, how: how)
             store.dealtWith(key)
@@ -835,7 +873,7 @@ struct SessionView: View {
             let result = try await Task.detached { try conv.denySaying(id: p.id, message: text) }.value
             answered = p.id
             pending = nil
-            draft = ""
+            clear()
             typing = false
             done(result, outcome: "\(p.questions.isEmpty ? "Denied" : "Declined") “\(title)”, saying what to do instead.", thenNext: thenNext)
         } catch {
@@ -915,10 +953,10 @@ struct SessionView: View {
 
     /// Slides this screen away and `target`'s in after it, from what the phone keeps of it, then
     /// does `then` and shows `target` in its place, starting as it was drawn sliding in.
-    private func slide(to target: String, back: Bool, speed: CGFloat = 0, then: @escaping () -> Void = {}) {
+    private func slide(to target: String, back: Bool, speed: CGFloat = 0, seen: Bool = true, then: @escaping () -> Void = {}) {
         // Gone on from, it's been seen. Opening it marks it too, but only once its Mac has
         // answered, which a quick swipe goes on before.
-        if row?.status == .unread && !markedUnread { store.markSeen(key) }
+        if seen && row?.status == .unread && !markedUnread { store.markSeen(key) }
         store.slidIn = (target, Opening(kept: beside[target] ?? Kept(), said: store.outcome))
         // Gone on to by a button with Reduce Motion on, it's shown in this one's place at once.
         guard swipe.width > 0, !reduceMotion || swipe.distance != 0 else {
@@ -1005,6 +1043,41 @@ struct SessionView: View {
         }
     }
 
+    /// Snoozes it until `until`, as the Mac's Snooze does: off Needs you and Your turn everywhere
+    /// until then, so the screen goes on to what's next, or back to the list. Without a time, it
+    /// wakes and stays.
+    private func snooze(until: Date?) async {
+        do {
+            try await store.snooze(key, until: until)
+        } catch {
+            said = words(error)
+            return
+        }
+        guard let until else {
+            said = "Awake: it waits on you again as it would."
+            return
+        }
+        let outcome = "Snoozed “\(title)” until \(Snooze.words(until))."
+        store.dealtWith(key)
+        if let next = after.first {
+            // Left as it was: it comes back as Your turn when the snooze ends.
+            moveOn(to: next, outcome: outcome, seen: false)
+        } else {
+            store.notice = outcome
+            dismiss()
+        }
+    }
+
+    /// Quiets it, or makes it heard again, as the Mac's Quiet does.
+    private func setQuiet(_ on: Bool) async {
+        do {
+            try await store.quiet(key, on)
+            said = on ? "Quiet: its turns won’t wait on you, only what needs you will." : "Heard again: its turns wait on you as before."
+        } catch {
+            said = words(error)
+        }
+    }
+
     /// Your turn again, as the Mac's Mark as unread: until it's seen or prompted. Shown here it
     /// would be seen at once, so the screen goes back to the list.
     private func markUnread() async {
@@ -1053,12 +1126,12 @@ struct SessionView: View {
 
     /// Shows `next` in this one's place, saying there how this one went once you've acted here.
     /// Left without a reply while it needs you, this one comes round again after the rest.
-    private func moveOn(to next: SessionRow, outcome: String? = nil, speed: CGFloat = 0) {
+    private func moveOn(to next: SessionRow, outcome: String? = nil, speed: CGFloat = 0, seen: Bool = true) {
         guard swipe.to == nil else { return }
         if !acted && outcome == nil { store.passedOver(key) }
         if next.key != key { store.trail.append(key) }
         store.outcome = outcome ?? (acted ? said : nil)
-        slide(to: next.key, back: false, speed: speed)
+        slide(to: next.key, back: false, speed: speed, seen: seen)
     }
 
     private var title: String { row?.title ?? "Session" }
@@ -1423,6 +1496,85 @@ private struct WaitingCard: ViewModifier {
                     .overlay(shape.fill(.orange.opacity(0.1)))
                     .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
             }
+    }
+}
+
+/// Why its last turn ended, when its harness couldn't reach its API, as the Mac's header says it.
+private struct LostConnection: View {
+    let words: String
+
+    var body: some View {
+        Label {
+            Text(words)
+        } icon: {
+            Image(systemName: "wifi.exclamationmark").foregroundStyle(.orange)
+        }
+        .font(.footnote)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Replies another session suggested for this one (a supervisor going over what waits on you),
+/// above the box as on the Mac: a tap sends one as it is, as your own message (denying the call it
+/// waits on, or declining its questions, and saying this instead, as the box would); held, one goes
+/// in the box to change first. Dismiss takes them away on its Mac. They go by themselves once
+/// something is sent to it or a turn of its starts.
+private struct SuggestedRepliesView: View {
+    let suggestions: SuggestedReplies
+    /// Why they can't be sent now, when they can't; they can still go in the box.
+    let blocked: String?
+    let send: (String) -> Void
+    let edit: (String) -> Void
+    let dismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "sparkles").font(.caption)
+                Text(suggestions.by.map { "Suggested by \($0)" } ?? "Suggested replies")
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Button("Dismiss", action: dismiss)
+                    .font(.caption)
+                    .accessibilityHint("Takes these suggestions away")
+            }
+            .foregroundStyle(.secondary)
+            if let note = suggestions.note {
+                Text(note).font(.caption).foregroundStyle(.secondary)
+            }
+            ForEach(Array(suggestions.replies.enumerated()), id: \.offset) { _, reply in
+                Button {
+                    if blocked == nil { send(reply) } else { edit(reply) }
+                } label: {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(reply)
+                            .font(.subheadline)
+                            .lineLimit(3)
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Image(systemName: blocked == nil ? "arrow.up.circle.fill" : "square.and.pencil")
+                            .foregroundStyle(blocked == nil ? Color.accentColor : .secondary)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .background(.background.secondary, in: .rect(cornerRadius: 14))
+                .contextMenu {
+                    if blocked == nil {
+                        Button("Send", systemImage: "arrow.up") { send(reply) }
+                    }
+                    Button("Change before sending", systemImage: "square.and.pencil") { edit(reply) }
+                    Button("Dismiss all", systemImage: "xmark") { dismiss() }
+                }
+                .accessibilityHint(blocked ?? "Sends this as your reply")
+            }
+            if let blocked {
+                Text(blocked).font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
     }
 }
 
@@ -2081,6 +2233,9 @@ private struct SessionGlance: View {
                 .font(.footnote)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            if let lost = row?.connectionLost {
+                LostConnection(words: lost)
+            }
             if canAct && row?.stoppable == true {
                 Button(role: .destructive) {} label: {
                     Label("Stop this turn", systemImage: "stop.circle").font(.subheadline)
@@ -2090,6 +2245,9 @@ private struct SessionGlance: View {
             }
             if let said {
                 Text(said).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if let suggestions = row?.suggestions {
+                SuggestedRepliesView(suggestions: suggestions, blocked: canAct && pending?.cannot == nil ? nil : why ?? "It waits on you where it runs: answer that there first") { _ in } edit: { _ in } dismiss: {}
             }
             if canAct && (rules.resuming || rules.showsModel) {
                 ReplyTools(rules: rules, resumePlace: .constant(nil), resumeModel: .constant(nil), resumeEffort: .constant(nil), switching: false) { _ in }

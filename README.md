@@ -44,7 +44,7 @@ waiting), then the rest from the last day. Narrow it to one project if you like.
 lives on two Macs is one project here.
 
 **Read any conversation.** Each session's conversation shows as it does on the Mac: replies as
-formatted text with tables, lists and code you can copy, your prompts, the commands that ran and
+formatted text with tables, nested lists and code you can copy, your prompts, the commands that ran and
 what they printed, and the questions an agent asked with what you picked. Scroll up to read
 further back, with the prompt you're reading the answer to pinned at the top. A session running
 inside Codealong on your Mac streams its reply as it's written.
@@ -52,7 +52,10 @@ inside Codealong on your Mac streams its reply as it's written.
 **Work through what's waiting.** Once you've replied, the next session waiting on you is a tap
 away (*Next*), and holding *Send* sends and goes straight on. Swipe left for the next waiting
 session and right to go back to the one you came from; one you swipe on from counts as seen.
-The next one is read ahead, so it shows at once.
+The next one is read ahead, so it shows at once. Replies an agent suggested for a session (a
+supervisor going over what waits on you, with `codealong session suggest`) show above its box:
+tap one to send it, or hold it to change it first. Helper sessions (ones an agent started to help
+it, and automatic PR reviews) stay out of your lists unless they need you, as on the Mac.
 
 **Act on a session**, on any Mac that has remote control turned on:
 
@@ -64,7 +67,9 @@ The next one is read ahead, so it shows at once.
 - resume one that isn't running, where and on what model you pick;
 - fork it, or mark it done (closing it where its Mac can).
 
-Renaming, archiving, marking seen and *Mark as unread* work with any Mac, remote control or not.
+Renaming, archiving, marking seen, *Mark as unread*, *Snooze* (off what waits on you until the time
+you pick, on every device) and *Quiet* (its turns stop waiting on you; it comes to you only when it
+needs you) work with any Mac, remote control or not.
 
 **Start new work.** Type a prompt and start it on the Mac, worktree, account, model, effort and
 place the chips under it say: an existing worktree, a new one, or a chat in no project. As you

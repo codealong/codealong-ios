@@ -169,6 +169,31 @@ pub struct SessionRow {
     /// Its last turn ended on its account's usage limit and nothing has been said since: what that
     /// comes to, in a sentence or two, with `{in:<ms>}` for when it lifts.
     pub limit: Option<String>,
+    /// Its last turn ended because its harness couldn't reach its API (the Mac slept, the network
+    /// dropped), and nothing has been said since: what that comes to, as the Mac says it.
+    pub connection_lost: Option<String>,
+    /// Quiet, from its Mac: a turn it ends doesn't wait on you, and it comes to you only when it
+    /// needs you (its Mac has already left its turns out of Your turn).
+    pub quiet: bool,
+    /// A helper that doesn't need you: started by another session's agent to help it, or an
+    /// automatic review of a PR. It stays out of the inbox's lists and what waits on you, as it
+    /// stays off the Mac's bar (`Session::helping`), and is found by searching.
+    pub helping: bool,
+    /// Replies another session suggested for it, to send with a tap, until something is sent to
+    /// it or a turn of its starts.
+    pub suggestions: Option<SuggestedReplies>,
+}
+
+/// Replies suggested for a session by another session that read it (a supervisor going over what
+/// waits on you), as its Mac keeps them.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct SuggestedReplies {
+    /// Best first.
+    pub replies: Vec<String>,
+    /// Why, or what to weigh, when the suggester said.
+    pub note: Option<String>,
+    /// The suggesting session's title, to name it by.
+    pub by: Option<String>,
 }
 
 /// The session one came from: forked from it, or started by its agent.
@@ -312,19 +337,27 @@ impl Core {
     /// Marks sessions unread on the Macs they're on: each is Your turn again, everywhere, until
     /// it's seen or prompted. Macs before 2026-10-08 refuse it; the first refusal is said.
     pub fn mark_unread(&self, keys: Vec<String>) -> Result<(), CoreError> {
-        let mut by_device: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
-        for k in &keys {
-            if let Some((device, own)) = split_remote(k) {
-                by_device.entry(device.to_string()).or_default().push(own.to_string());
-            }
-        }
-        let mut failed = None;
-        for (device, keys) in by_device {
-            if let Err(why) = self.client.mark_unread(&device, &keys) {
-                failed.get_or_insert(why);
-            }
-        }
-        failed.map_or(Ok(()), |why| Err(CoreError::Failed(why)))
+        each_mac(&keys, |device, keys| self.client.mark_unread(device, keys))
+    }
+
+    /// Snoozes sessions until `until` (ms), or wakes them with none, on the Macs they're on: off
+    /// Needs you and Your turn everywhere until then. Macs before 2026-10-09 refuse it.
+    pub fn snooze(&self, keys: Vec<String>, until: Option<i64>) -> Result<(), CoreError> {
+        each_mac(&keys, |device, keys| self.client.snooze(device, keys, until))
+    }
+
+    /// Quiets sessions, or makes them heard again, on the Macs they're on: a quiet one's turns
+    /// don't wait on you, and it comes to you only when it needs you. Macs before 2026-10-09
+    /// refuse it.
+    pub fn quiet(&self, keys: Vec<String>, quiet: bool) -> Result<(), CoreError> {
+        each_mac(&keys, |device, keys| self.client.quiet(device, keys, quiet))
+    }
+
+    /// Takes away the replies suggested for a session, on its Mac, as the Mac's Dismiss does.
+    pub fn dismiss_suggestions(&self, key: String) -> Result<(), CoreError> {
+        let (device, own) = split_remote(&key).ok_or_else(|| CoreError::Failed("That isn't a session on one of your Macs.".into()))?;
+        let params = serde_json::json!({ "key": own, "replies": [] });
+        self.client.ask(device, codealong_peer::api::SESSION_SUGGEST, params, std::time::Duration::from_secs(20)).map(|_| ()).map_err(CoreError::Failed)
     }
 
     /// Archives a session, or brings it back, on the Mac it's on.
@@ -352,7 +385,7 @@ impl Core {
                     last_seen: d.last_seen,
                     linked_back: d.linked_back,
                     loading: d.loading,
-                    sessions: all.iter().filter(|s| s.device == d.key && in_inbox(s, now)).count() as u32,
+                    sessions: all.iter().filter(|s| s.device == d.key && in_inbox(s, now) && !s.helping).count() as u32,
                 });
             }
             let mut sessions: Vec<SessionRow> = all.into_iter().filter(|s| in_inbox(s, now)).collect();
@@ -361,6 +394,24 @@ impl Core {
             Snapshot { devices, sessions, projects }
         })
     }
+}
+
+/// Does `act` once for each Mac the sessions `keys` are on, with their keys there; says the first
+/// thing that went wrong, if anything did.
+fn each_mac(keys: &[String], act: impl Fn(&str, &[String]) -> std::result::Result<(), String>) -> Result<(), CoreError> {
+    let mut by_device: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    for k in keys {
+        if let Some((device, own)) = split_remote(k) {
+            by_device.entry(device.to_string()).or_default().push(own.to_string());
+        }
+    }
+    let mut failed = None;
+    for (device, keys) in by_device {
+        if let Err(why) = act(&device, &keys) {
+            failed.get_or_insert(why);
+        }
+    }
+    failed.map_or(Ok(()), |why| Err(CoreError::Failed(why)))
 }
 
 pub(crate) fn now_ms() -> i64 {
@@ -437,10 +488,21 @@ pub(crate) fn all_rows(feeds: &Feeds) -> Vec<SessionRow> {
                 name: s.name.clone(),
                 origin: s.origin.as_ref().map(|o| SessionOrigin { key: remote_key(&d.short, &o.key), title: titles.get(o.key.as_str()).map(|t| t.to_string()), fork: o.how == OriginHow::Fork }),
                 limit: s.limit.as_ref().filter(|_| status != Status::Working).map(|l| limit_words(&s.account, l, now)),
+                connection_lost: s.connection_lost.as_ref().filter(|_| status != Status::Working).map(connection_lost_words),
+                quiet: s.quiet,
+                helping: s.helping(),
+                suggestions: s.suggestions.as_ref().filter(|g| !g.replies.is_empty()).map(|g| SuggestedReplies { replies: g.replies.clone(), note: g.note.clone(), by: g.by_title.clone() }),
             });
         }
     }
     sessions
+}
+
+/// Why a session's last turn ended when its harness couldn't reach its API, and what happens next,
+/// as the Mac's session header says it (lanes.ts `connectionLostWords`).
+fn connection_lost_words(lost: &codealong_peer::model::ConnectionLost) -> String {
+    let then = if lost.continues { "Codealong tells it to carry on once the API can be reached again." } else { "Send it something to carry on." };
+    format!("Its last turn ended because it couldn\u{2019}t reach its API: the Mac slept, or the network dropped. {then}")
 }
 
 /// What a usage limit that stopped a session comes to, as the Mac's session header says it
@@ -1073,6 +1135,9 @@ pub enum Way {
     Opencode,
     /// Nothing takes a prompt from outside: the app comes forward with it on the clipboard.
     Antigravity,
+    /// Nothing takes a prompt from outside the Cursor app: it comes forward on the chat's folder
+    /// with it on the clipboard.
+    Cursor,
 }
 
 impl From<api::Way> for Way {
@@ -1086,6 +1151,7 @@ impl From<api::Way> for Way {
             api::Way::CodexApp => Way::CodexApp,
             api::Way::Opencode => Way::Opencode,
             api::Way::Antigravity => Way::Antigravity,
+            api::Way::Cursor => Way::Cursor,
         }
     }
 }
@@ -1476,7 +1542,7 @@ impl Core {
     pub fn start_session(&self, device: String, worktree: String, account: String, place: String, prompt: String, model: Option<String>, effort: Option<String>, new_worktree: bool) -> Result<StartedSession, CoreError> {
         let place = api::Place::from_word(&place).ok_or_else(|| CoreError::Failed(format!("{place} isn't a place a session can start.")))?;
         let takes = place_takes_model(place);
-        let spec = api::StartSpec { lane_id: worktree, account, place, prompt, model: model.filter(|_| takes), effort: effort.filter(|_| takes), worktree: new_worktree, todos: Vec::new(), from: None };
+        let spec = api::StartSpec { lane_id: worktree, account, place, prompt, model: model.filter(|_| takes), effort: effort.filter(|_| takes), worktree: new_worktree, todos: Vec::new(), from: None, helper: false };
         let started = self.client.start_session(&device, &spec)?;
         let short = device.get(..10).unwrap_or(&device);
         Ok(StartedSession { key: started.key.map(|k| remote_key(short, &k)), message: started.message })
@@ -1662,7 +1728,9 @@ fn placeholder(s: &Session, way: Option<&Way>, resuming: Option<(api::Place, boo
         }
         Some(Way::ClaudeApp) => format!("{to}: {off} {}", resume_words(api::Place::ClaudeApp, "", false)),
         Some(Way::Antigravity) => format!("{to}: Antigravity on its Mac comes forward with this on the clipboard"),
+        Some(Way::Cursor) => format!("{to}: Cursor on its Mac opens with this on the clipboard"),
         None if s.harness == Harness::Antigravity && s.surface == Surface::App => format!("{to}: Antigravity on its Mac comes forward with this on the clipboard"),
+        None if s.harness == Harness::Cursor && s.surface == Surface::App => format!("{to}: Cursor on its Mac opens with this on the clipboard"),
         None if !s.live && s.harness == Harness::Claude && s.surface == Surface::App => format!("{to}: {off} {}", resume_words(api::Place::ClaudeApp, "", false)),
         None if !s.live && s.surface == Surface::Cli && matches!(s.harness, Harness::Claude | Harness::Codex | Harness::Antigravity) => format!("{to}: {off} this resumes it in a terminal"),
         None => format!("{to}{working}"),
@@ -1710,6 +1778,10 @@ mod order_tests {
             name: None,
             origin: None,
             limit: None,
+            connection_lost: None,
+            quiet: false,
+            helping: false,
+            suggestions: None,
         }
     }
 

@@ -212,6 +212,9 @@ pub(crate) fn quick_list(rows: &[SessionRow], prs: &[PrRow], project: &str, quer
     let mut sections = Vec::new();
 
     if words.is_empty() {
+        // A helper that doesn't need you is out of the lists, as it's off the Mac's bar: its
+        // agent reads what it writes. Searching finds it.
+        let rows: Vec<&SessionRow> = rows.iter().copied().filter(|r| !r.helping).collect();
         let mut attention: Vec<&SessionRow> = rows.iter().copied().filter(|r| matches!(r.section, InboxSection::NeedsYou | InboxSection::YourTurn | InboxSection::Working)).collect();
         attention.sort_by(|a, b| inbox_order(a, b));
         let working = attention.iter().filter(|r| r.section == InboxSection::Working).count() as u32;
@@ -528,6 +531,10 @@ mod tests {
             name: None,
             origin: None,
             limit: None,
+            connection_lost: None,
+            quiet: false,
+            helping: false,
+            suggestions: None,
         }
     }
 

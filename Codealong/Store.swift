@@ -285,6 +285,27 @@ final class Store {
         if let i = trail.lastIndex(of: key) { trail.removeSubrange(i...) }
     }
 
+    /// Snoozes a session until `until`, or wakes it with none, on its Mac: off Needs you and Your
+    /// turn everywhere until then.
+    func snooze(_ key: String, until: Date?) async throws {
+        let core = try running()
+        let ms = until.map { Int64($0.timeIntervalSince1970 * 1000) }
+        try await Task.detached { try core.snooze(keys: [key], until: ms) }.value
+    }
+
+    /// Quiets a session, or makes it heard again, on its Mac: a quiet one's turns don't wait on
+    /// you, and it comes to you only when it needs you.
+    func quiet(_ key: String, _ on: Bool) async throws {
+        let core = try running()
+        try await Task.detached { try core.quiet(keys: [key], quiet: on) }.value
+    }
+
+    /// Takes away the replies suggested for a session, on its Mac.
+    func dismissSuggestions(_ key: String) async throws {
+        let core = try running()
+        try await Task.detached { try core.dismissSuggestions(key: key) }.value
+    }
+
     /// Marks a session unread on its Mac: Your turn again, everywhere, until it's seen or prompted.
     func markUnread(_ key: String) async throws {
         let core = try running()

@@ -37,20 +37,32 @@ pub struct TextSpan {
     pub url: Option<String>,
 }
 
+/// A block, and how deep in lists it is: 0 at the top, 1 for what's indented under an item of a
+/// top-level list, and so on. The windows indent it that far, so lists nest as the Mac's do.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct MdPart {
+    pub depth: u8,
+    pub block: MdBlock,
+}
+
 /// Markdown's blocks, each one's text as inline Markdown with its links settled (`inline`).
 #[uniffi::export]
-pub fn markdown(text: String) -> Vec<MdBlock> {
-    blocks(&text)
+pub fn markdown(text: String) -> Vec<MdPart> {
+    parts(&text)
         .into_iter()
-        .map(|b| match b {
-            MdBlock::Heading { level, text } => MdBlock::Heading { level, text: inline(&text) },
-            MdBlock::Paragraph { text } => MdBlock::Paragraph { text: inline(&text) },
-            MdBlock::List { ordered, start, items } => MdBlock::List { ordered, start, items: items.iter().map(|i| inline(i)).collect() },
-            MdBlock::Quote { text } => MdBlock::Quote { text: inline(&text) },
-            MdBlock::Table { align, head, rows } => MdBlock::Table { align, head: head.iter().map(|c| inline(c)).collect(), rows: rows.iter().map(|r| r.iter().map(|c| inline(c)).collect()).collect() },
-            other => other,
-        })
+        .map(|(depth, b)| MdPart { depth, block: settled(b) })
         .collect()
+}
+
+fn settled(b: MdBlock) -> MdBlock {
+    match b {
+        MdBlock::Heading { level, text } => MdBlock::Heading { level, text: inline(&text) },
+        MdBlock::Paragraph { text } => MdBlock::Paragraph { text: inline(&text) },
+        MdBlock::List { ordered, start, items } => MdBlock::List { ordered, start, items: items.iter().map(|i| inline(i)).collect() },
+        MdBlock::Quote { text } => MdBlock::Quote { text: inline(&text) },
+        MdBlock::Table { align, head, rows } => MdBlock::Table { align, head: head.iter().map(|c| inline(c)).collect(), rows: rows.iter().map(|r| r.iter().map(|c| inline(c)).collect()).collect() },
+        other => other,
+    }
 }
 
 /// One line of inline Markdown with its links settled, for text that isn't read as blocks (your
@@ -210,6 +222,21 @@ fn item(line: &str) -> Option<(Option<u32>, &str)> {
     if text.is_empty() { None } else { Some((number, text)) }
 }
 
+/// How far a line is indented, a tab counting as four spaces.
+fn indent_of(line: &str) -> usize {
+    line.chars().take_while(|c| *c == ' ' || *c == '\t').map(|c| if c == '\t' { 4 } else { 1 }).sum()
+}
+
+/// How many spaces a line starts with, to cut them off it.
+fn leading_spaces(line: &str) -> usize {
+    line.len() - line.trim_start_matches(' ').len()
+}
+
+/// A line that starts a block of its own, rather than going on with the text before it.
+fn starts_block(line: &str) -> bool {
+    item(line).is_some() || is_fence(line) || heading(line.trim_start()).is_some() || is_quote(line) || is_rule(line)
+}
+
 fn is_fence(line: &str) -> bool {
     line.trim_start().starts_with("```")
 }
@@ -293,12 +320,26 @@ fn align_of(delimiter: &str) -> MdAlign {
     }
 }
 
-/// The text's blocks, as the Mac's `blocks` reads them. A paragraph's lines are joined with
-/// spaces, as Markdown joins them; a blank line, or the start of another kind of block, ends it.
+/// The text's blocks, as the Mac's `blocks` reads them, without how deep in lists each is.
+#[cfg(test)]
 pub(crate) fn blocks(src: &str) -> Vec<MdBlock> {
+    parts(src).into_iter().map(|(_, b)| b).collect()
+}
+
+/// The text's blocks, as the Mac's `blocks` reads them, each with how deep in lists it is. A
+/// paragraph's lines are joined with spaces, as Markdown joins them; a blank line, or the start of
+/// another kind of block, ends it.
+pub(crate) fn parts(src: &str) -> Vec<(u8, MdBlock)> {
     let src = src.replace("\r\n", "\n").replace('\r', "\n");
-    let lines: Vec<&str> = src.split('\n').collect();
     let mut out = Vec::new();
+    read_blocks(&src, 0, &mut out);
+    out
+}
+
+/// Reads `src`'s blocks into `out` at `depth`: what's indented under a list's item is read the
+/// same way, a level deeper.
+fn read_blocks(src: &str, depth: u8, out: &mut Vec<(u8, MdBlock)>) {
+    let lines: Vec<&str> = src.split('\n').collect();
     let mut i = 0;
     while i < lines.len() {
         let line = lines[i];
@@ -319,16 +360,16 @@ pub(crate) fn blocks(src: &str) -> Vec<MdBlock> {
             }
             // A block still being written (a reply as it streams) has no closing fence yet.
             i += 1;
-            out.push(MdBlock::Code { text: body.join("\n") });
+            out.push((depth, MdBlock::Code { text: body.join("\n") }));
             continue;
         }
         if let Some((level, text)) = heading(line) {
-            out.push(MdBlock::Heading { level, text: text.to_string() });
+            out.push((depth, MdBlock::Heading { level, text: text.to_string() }));
             i += 1;
             continue;
         }
         if is_rule(line) {
-            out.push(MdBlock::Rule);
+            out.push((depth, MdBlock::Rule));
             i += 1;
             continue;
         }
@@ -343,27 +384,80 @@ pub(crate) fn blocks(src: &str) -> Vec<MdBlock> {
                 rows.push((0..head.len()).map(|j| r.get(j).cloned().unwrap_or_default()).collect());
                 i += 1;
             }
-            out.push(MdBlock::Table { align, head, rows });
+            out.push((depth, MdBlock::Table { align, head, rows }));
             continue;
         }
         if let Some((number, _)) = item(line) {
+            // A list's items are the items at its first one's indent and of its kind: a list of
+            // another kind starts a new one, and items a blank line apart stay one list. What's
+            // indented under an item (further than its marker, blank lines between included) is
+            // read as Markdown of its own, a level deeper: a nested list, a paragraph, a code
+            // block, which is the item's whole however its lines are indented. The list goes on
+            // after it, numbered on, as the Mac's Markdown.tsx reads it.
+            let ordered = number.is_some();
+            let at = indent_of(line);
+            let mut start = number.unwrap_or(1);
             let mut items: Vec<String> = Vec::new();
+            let sibling = |l: &str| item(l).is_some_and(|(n, _)| n.is_some() == ordered) && indent_of(l).abs_diff(at) <= 1;
             while i < lines.len() {
                 let l = lines[i];
-                if let Some((_, text)) = item(l) {
-                    items.push(text.to_string());
-                } else if !l.trim().is_empty() && l.starts_with("  ") && !is_fence(l) && !items.is_empty() {
-                    // A wrapped line continues the item before it; a fence under it is a code
-                    // block of its own.
-                    let last = items.last_mut().expect("an item");
-                    last.push(' ');
-                    last.push_str(l.trim());
-                } else {
+                if l.trim().is_empty() {
+                    match (i..lines.len()).find(|&j| !lines[j].trim().is_empty()) {
+                        Some(j) if sibling(lines[j]) => {
+                            i = j;
+                            continue;
+                        }
+                        _ => break,
+                    }
+                }
+                if !sibling(l) {
                     break;
                 }
+                let (_, text) = item(l).expect("a sibling is an item");
+                let mut own = text.to_string();
                 i += 1;
+                // Its wrapped lines: indented under it, and no block of their own.
+                while i < lines.len() && !lines[i].trim().is_empty() && indent_of(lines[i]) > at && !starts_block(lines[i]) {
+                    own.push(' ');
+                    own.push_str(lines[i].trim());
+                    i += 1;
+                }
+                items.push(own);
+                let mut under: Vec<&str> = Vec::new();
+                let mut fenced = false;
+                while i < lines.len() {
+                    let m = lines[i];
+                    if fenced {
+                        fenced = !is_fence(m);
+                    } else if m.trim().is_empty() {
+                        match (i..lines.len()).find(|&j| !lines[j].trim().is_empty()) {
+                            Some(j) if indent_of(lines[j]) > at => {}
+                            _ => break,
+                        }
+                    } else if indent_of(m) > at {
+                        fenced = is_fence(m);
+                    } else {
+                        break;
+                    }
+                    under.push(m);
+                    i += 1;
+                }
+                if under.iter().any(|m| !m.trim().is_empty()) {
+                    // The items so far, then what's under the last of them; the list goes on
+                    // after it, numbered on.
+                    let n = items.len() as u32;
+                    out.push((depth, MdBlock::List { ordered, start, items: std::mem::take(&mut items) }));
+                    if ordered {
+                        start += n;
+                    }
+                    let cut = under.iter().filter(|m| !m.trim().is_empty()).map(|m| leading_spaces(m)).min().unwrap_or(0);
+                    let inner: Vec<&str> = under.iter().map(|m| &m[leading_spaces(m).min(cut)..]).collect();
+                    read_blocks(&inner.join("\n"), depth + 1, out);
+                }
             }
-            out.push(MdBlock::List { ordered: number.is_some(), start: number.unwrap_or(1), items });
+            if !items.is_empty() {
+                out.push((depth, MdBlock::List { ordered, start, items }));
+            }
             continue;
         }
         if is_quote(line) {
@@ -373,7 +467,7 @@ pub(crate) fn blocks(src: &str) -> Vec<MdBlock> {
                 body.push(l.strip_prefix(' ').unwrap_or(l));
                 i += 1;
             }
-            out.push(MdBlock::Quote { text: body.join(" ") });
+            out.push((depth, MdBlock::Quote { text: body.join(" ") }));
             continue;
         }
         let mut body = Vec::new();
@@ -385,9 +479,8 @@ pub(crate) fn blocks(src: &str) -> Vec<MdBlock> {
             body.push(l.trim());
             i += 1;
         }
-        out.push(MdBlock::Paragraph { text: body.join(" ") });
+        out.push((depth, MdBlock::Paragraph { text: body.join(" ") }));
     }
-    out
 }
 
 // ---- links ----
@@ -556,7 +649,9 @@ mod tests {
             [
                 MdBlock::Heading { level: 1, text: "Title".into() },
                 para("First line second line"),
-                MdBlock::List { ordered: false, start: 1, items: vec!["one wrapped".into(), "two".into(), "three".into()] },
+                // A list of another kind starts a new one, numbered from its own first number.
+                MdBlock::List { ordered: false, start: 1, items: vec!["one wrapped".into(), "two".into()] },
+                MdBlock::List { ordered: true, start: 3, items: vec!["three".into()] },
                 MdBlock::Quote { text: "quoted more".into() },
                 MdBlock::Rule,
                 MdBlock::Code { text: "fn main() {}".into() },
@@ -578,6 +673,52 @@ mod tests {
         // A hash without a space, or seven of them, isn't a heading.
         assert_eq!(blocks("#hashtag"), [para("#hashtag")]);
         assert_eq!(blocks("####### seven"), [para("####### seven")]);
+    }
+
+    fn list(ordered: bool, start: u32, items: &[&str]) -> MdBlock {
+        MdBlock::List { ordered, start, items: items.iter().map(|i| i.to_string()).collect() }
+    }
+
+    #[test]
+    fn nests_what_is_indented_under_an_item_as_the_mac_does() {
+        // A reply that came out flat on the Mac, its sub-items beside their items and its
+        // paragraph out of the list (Markdown.test.ts, 2026-10-08).
+        let src = [
+            "- **For a Northwind review, effort sets how many checks the planner proposes:**",
+            "  - Quick: about 10.",
+            "  - Deep: also every interface.",
+            "",
+            "  The approval card would say what the next level adds.",
+            "- **A customer's own list has no effort setting.** The list is the scope.",
+            "- **\"Only P1s\" isn't effort.** It fits in two places:",
+            "  - the list;",
+            "  - a filter.",
+        ]
+        .join("\n");
+        assert_eq!(
+            parts(&src),
+            [
+                (0, list(false, 1, &["**For a Northwind review, effort sets how many checks the planner proposes:**"])),
+                (1, list(false, 1, &["Quick: about 10.", "Deep: also every interface."])),
+                (1, para("The approval card would say what the next level adds.")),
+                (0, list(false, 1, &["**A customer's own list has no effort setting.** The list is the scope.", "**\"Only P1s\" isn't effort.** It fits in two places:"])),
+                (1, list(false, 1, &["the list;", "a filter."])),
+            ]
+        );
+        // Items a blank line apart stay one list, and another starts where the kind changes.
+        assert_eq!(parts("1. one\n\n2. two\n\n- a"), [(0, list(true, 1, &["one", "two"])), (0, list(false, 1, &["a"]))]);
+        // A numbered list that starts later keeps its number, and lists nest three deep.
+        assert_eq!(
+            parts("3. three\n   - a\n     - b\n\nafter"),
+            [(0, list(true, 3, &["three"])), (1, list(false, 1, &["a"])), (2, list(false, 1, &["b"])), (0, para("after"))]
+        );
+        // A code block under an item is part of it, whole however its lines are indented.
+        assert_eq!(
+            parts("- Run:\n  ```\nmake all\n  ```\n- Then check."),
+            [(0, list(false, 1, &["Run:"])), (1, MdBlock::Code { text: "make all".into() }), (0, list(false, 1, &["Then check."]))]
+        );
+        // The numbers go on after what's under an item.
+        assert_eq!(parts("1. one\n   more under it\n\n   - x\n2. two"), [(0, list(true, 1, &["one more under it"])), (1, list(false, 1, &["x"])), (0, list(true, 2, &["two"]))]);
     }
 
     #[test]

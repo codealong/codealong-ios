@@ -4,47 +4,54 @@ import UIKit
 /// What agents write, in Markdown, as the Mac's conversation draws it: headings, lists, quotes,
 /// code blocks, tables, rules and paragraphs. The core reads the blocks and settles the links (its
 /// `markdown`, the Mac's Markdown.tsx rules); each block's text is inline Markdown, which
-/// SwiftUI's Text draws with its emphasis, code spans and links.
+/// SwiftUI's Text draws with its emphasis, code spans and links. What's indented under a list's
+/// item is indented under it here, as deep as lists nest.
 struct MarkdownText: View {
     let text: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(MarkdownCache.blocks(text).enumerated()), id: \.offset) { _, block in
-                switch block {
-                case .heading(let level, let s):
-                    Text(Self.inline(s))
-                        .font(level == 1 ? .title3.weight(.semibold) : level == 2 ? .headline : .subheadline.weight(.semibold))
-                        .padding(.top, 4)
-                case .paragraph(let s):
-                    Text(Self.inline(s))
-                case .list(let ordered, let start, let items):
-                    VStack(alignment: .leading, spacing: 4) {
-                        ForEach(Array(items.enumerated()), id: \.offset) { i, s in
-                            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                                Text(ordered ? "\(Int(start) + i)." : "•").foregroundStyle(.secondary).monospacedDigit()
-                                Text(Self.inline(s))
-                            }
-                        }
-                    }
-                case .quote(let s):
-                    Text(Self.inline(s))
-                        .foregroundStyle(.secondary)
-                        .padding(.leading, 12)
-                        .overlay(alignment: .leading) {
-                            Capsule().fill(.quaternary).frame(width: 3)
-                        }
-                case .code(let s):
-                    CodeView(text: s)
-                case .table(let align, let head, let rows):
-                    TableView(align: align, head: head, rows: rows)
-                case .rule:
-                    Divider().padding(.vertical, 4)
-                }
+            ForEach(Array(MarkdownCache.parts(text).enumerated()), id: \.offset) { _, part in
+                block(part.block, depth: Int(part.depth))
+                    .padding(.leading, CGFloat(part.depth) * 18)
             }
         }
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func block(_ block: MdBlock, depth: Int) -> some View {
+        switch block {
+        case .heading(let level, let s):
+            Text(Self.inline(s))
+                .font(level == 1 ? .title3.weight(.semibold) : level == 2 ? .headline : .subheadline.weight(.semibold))
+                .padding(.top, 4)
+        case .paragraph(let s):
+            Text(Self.inline(s))
+        case .list(let ordered, let start, let items):
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(Array(items.enumerated()), id: \.offset) { i, s in
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(ordered ? "\(Int(start) + i)." : depth == 0 ? "•" : depth == 1 ? "◦" : "▪").foregroundStyle(.secondary).monospacedDigit()
+                        Text(Self.inline(s))
+                    }
+                }
+            }
+        case .quote(let s):
+            Text(Self.inline(s))
+                .foregroundStyle(.secondary)
+                .padding(.leading, 12)
+                .overlay(alignment: .leading) {
+                    Capsule().fill(.quaternary).frame(width: 3)
+                }
+        case .code(let s):
+            CodeView(text: s)
+        case .table(let align, let head, let rows):
+            TableView(align: align, head: head, rows: rows)
+        case .rule:
+            Divider().padding(.vertical, 4)
+        }
     }
 
     static func inline(_ s: String) -> AttributedString {
@@ -57,14 +64,14 @@ struct MarkdownText: View {
 /// again. A reply being written goes in afresh with every piece, so it's cleared now and then.
 @MainActor
 private enum MarkdownCache {
-    private static var read: [String: [MdBlock]] = [:]
+    private static var read: [String: [MdPart]] = [:]
 
-    static func blocks(_ text: String) -> [MdBlock] {
-        if let blocks = read[text] { return blocks }
-        let blocks = markdown(text: text)
+    static func parts(_ text: String) -> [MdPart] {
+        if let parts = read[text] { return parts }
+        let parts = markdown(text: text)
         if read.count > 400 { read.removeAll() }
-        read[text] = blocks
-        return blocks
+        read[text] = parts
+        return parts
     }
 }
 

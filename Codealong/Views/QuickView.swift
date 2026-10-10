@@ -90,6 +90,13 @@ struct QuickView: View {
         }
     }
 
+    /// Asks a Mac for something from a row's menu, saying what went wrong if it didn't go.
+    private func act(_ ask: @escaping () async throws -> Void) {
+        Task {
+            do { try await ask() } catch { store.notice = words(error) }
+        }
+    }
+
     // MARK: The input
 
     private var header: some View {
@@ -194,7 +201,8 @@ struct QuickView: View {
                             QuickSessionRow(row: r, said: hit, words: matching, showDevice: store.devices.count > 1, showProject: project.isEmpty)
                                 .contentShape(.rect)
                                 .onTapGesture { path.append(r.key) }
-                                // As a session's right-click menu on the Mac: seen or unread.
+                                // As a session's right-click menu on the Mac: seen or unread, snooze,
+                                // quiet.
                                 .contextMenu {
                                     if r.seenable {
                                         Button("Mark as seen", systemImage: "checkmark.circle") { store.markSeen(r.key) }
@@ -205,6 +213,17 @@ struct QuickView: View {
                                                 do { try await store.markUnread(r.key) } catch { store.notice = words(error) }
                                             }
                                         }
+                                    }
+                                    Menu("Snooze", systemImage: "moon.zzz") {
+                                        ForEach(Snooze.choices()) { c in
+                                            Button(c.label) { act { try await store.snooze(r.key, until: c.until) } }
+                                        }
+                                        if r.snoozedUntil != nil {
+                                            Button("Wake now", systemImage: "sun.max") { act { try await store.snooze(r.key, until: nil) } }
+                                        }
+                                    }
+                                    Toggle(isOn: Binding(get: { r.quiet }, set: { on in act { try await store.quiet(r.key, on) } })) {
+                                        Label("Quiet", systemImage: "speaker.slash")
                                     }
                                 }
                                 .swipeActions(edge: .trailing) {

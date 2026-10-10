@@ -183,7 +183,7 @@ struct StartBar: View {
 
     private var worktreeChip: some View {
         Button { pickingWorktree = true } label: {
-            Chip(symbol: worktree?.chat == true ? "bubble.left" : "arrow.triangle.branch", text: worktree.map { $0.chat ? "No project" : $0.main ? "\($0.name) (main)" : $0.name } ?? "No worktree")
+            Chip(symbol: worktree?.chat == true ? "bubble.left" : "folder", text: worktree.map { $0.chat ? "No project" : $0.main ? "\($0.name) (main)" : $0.name } ?? "No worktree")
         }
         .buttonStyle(.plain)
         .disabled(composer.device == nil)
