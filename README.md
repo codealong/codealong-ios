@@ -44,7 +44,7 @@ waiting), then the rest from the last day. Narrow it to one project if you like.
 lives on two Macs is one project here.
 
 **Read any conversation.** Each session's conversation shows as it does on the Mac: replies as
-formatted text with tables, nested lists and code you can copy, your prompts, the commands that ran and
+formatted text with tables, nested lists and code you can copy, your prompts with their images, the commands that ran and
 what they printed, and the questions an agent asked with what you picked. Scroll up to read
 further back, with the prompt you're reading the answer to pinned at the top. A session running
 inside Codealong on your Mac streams its reply as it's written.
@@ -59,7 +59,8 @@ it, and automatic PR reviews) stay out of your lists unless they need you, as on
 
 **Act on a session**, on any Mac that has remote control turned on:
 
-- reply to it, or slip a message into the turn it's taking right now;
+- reply to it, or slip a message into the turn it's taking right now, with photos or a pasted
+  image (screenshots and the like) attached, which the agent gets as the Mac's paste does;
 - allow or deny what it wants to run (or deny it and say what to do instead), and answer its
   questions;
 - stop its turn;

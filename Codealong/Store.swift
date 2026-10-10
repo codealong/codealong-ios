@@ -36,6 +36,10 @@ final class Store {
     /// What you've written to each session and not sent, by key: kept as you go from one to
     /// another, and where a message that didn't go comes back.
     var drafts: [String: String] = [:]
+    /// The images attached to each session's reply and not sent, by key, kept as its draft is.
+    var attached: [String: [AttachedImage]] = [:]
+    /// The images Macs keep for prompts, as read from them.
+    @ObservationIgnored let images = ImageCache()
     /// Messages on their way to each session, by key, oldest first: shown in its conversation at
     /// once, as the Mac's windows show theirs (ahead.ts), until its record has them.
     private(set) var outgoing: [String: [Outgoing]] = [:]
@@ -487,6 +491,41 @@ final class Store {
     /// Puts a message that went away: the session didn't show it, and you've seen that.
     func dismissOutgoing(_ key: String, id: String) {
         outgoing[key]?.removeAll { $0.id == id }
+    }
+
+    /// Attaches an image to a session's reply: in it at once, so the reply waits for it, and kept
+    /// on its Mac, so it's ready when you send. `failed` says why it couldn't be, when it couldn't,
+    /// and it's taken off.
+    func attach(_ data: Data, to key: String, mac: String, failed: @escaping (String) -> Void) {
+        guard let prepared = ImagePrep.jpeg(data) else { return failed("That isn't an image.") }
+        let image = AttachedImage(thumb: prepared.image.preparingThumbnail(of: CGSize(width: 168, height: 168)) ?? prepared.image, state: .keeping)
+        attached[key, default: []].append(image)
+        let bytes = prepared.data
+        Task {
+            do {
+                let core = try running()
+                let reference = try await Task.detached { try core.keepImage(device: mac, name: "image.jpg", bytes: bytes) }.value
+                // Kept here too, so the prompt shows it at once.
+                if let path = ImagePrep.path(of: reference) { images.put(bytes, at: path) }
+                if let at = attached[key]?.firstIndex(where: { $0.id == image.id }) {
+                    attached[key]?[at].state = .kept(reference: reference)
+                }
+            } catch {
+                detach(image.id, from: key)
+                failed(words(error))
+            }
+        }
+    }
+
+    func detach(_ id: UUID, from key: String) {
+        attached[key]?.removeAll { $0.id == id }
+        if attached[key]?.isEmpty == true { attached[key] = nil }
+    }
+
+    /// An image a prompt on `mac` refers to, read from there once and kept.
+    func image(mac: String, path: String) async -> UIImage? {
+        guard let core = try? running() else { return nil }
+        return await images.image(path) { try await Task.detached { try core.readImage(device: mac, path: path) }.value }
     }
 
     private func running() throws -> Core {

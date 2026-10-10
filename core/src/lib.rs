@@ -364,6 +364,20 @@ impl Core {
         self.client.ask(device, codealong_peer::api::SESSION_SUGGEST, params, std::time::Duration::from_secs(20)).map(|_| ()).map_err(CoreError::Failed)
     }
 
+    /// Keeps an image on `device` for a prompt to one of its sessions or a session started
+    /// there, as a paste into its reply box does: how the prompt refers to it,
+    /// `![name](images/<hash>.<ext>)`, which the Mac turns into the agent's way to the image as
+    /// the prompt goes. Macs before 2026-10-10 can't.
+    pub fn keep_image(&self, device: String, name: String, bytes: Vec<u8>) -> Result<String, CoreError> {
+        self.client.keep_image(&device, &name, &bytes).map(|k| k.reference).map_err(|e| CoreError::Failed(older_mac(e, &self.client, &device, "send images from here")))
+    }
+
+    /// An image a prompt on `device` refers to (`images/<hash>.<ext>`, `PromptPart::url`): its
+    /// bytes, to show.
+    pub fn read_image(&self, device: String, path: String) -> Result<Vec<u8>, CoreError> {
+        self.client.read_image(&device, &path).map_err(|e| CoreError::Failed(older_mac(e, &self.client, &device, "show images here")))
+    }
+
     /// Archives a session, or brings it back, on the Mac it's on.
     pub fn archive(&self, key: String, archived: bool) -> Result<(), CoreError> {
         let (device, own) = split_remote(&key).ok_or_else(|| CoreError::Failed("That isn't a session on one of your Macs.".into()))?;
@@ -1907,4 +1921,14 @@ mod start_tests {
         assert_eq!((c.accounts[0].place.as_deref(), c.accounts[0].resume.as_deref()), (Some("codealong"), Some("background")));
         assert!(c.accounts[1].resumes.is_empty() && c.accounts[1].resume.is_none());
     }
+}
+
+/// What a Mac's refusal of a request it doesn't know (`doesn't know how to …`, as every Mac since
+/// 2026-09-29 says it) means here: its Codealong is older than the phone's.
+fn older_mac(e: String, client: &Client, device: &str, to: &str) -> String {
+    if !e.contains("doesn't know how to") {
+        return e;
+    }
+    let name = client.devices().into_iter().find(|d| d.key == device || d.short == device).map(|d| d.name).unwrap_or_else(|| "that Mac".into());
+    format!("Update Codealong on {name} to {to}.")
 }

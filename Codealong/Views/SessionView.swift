@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftUI
 
 /// One session: its conversation, what it waits on you to allow, and a box to reply. It follows the
@@ -98,6 +99,16 @@ struct SessionView: View {
     @State private var renaming = false
     @State private var newName = ""
     @FocusState private var typing: Bool
+    /// The photo picker is open, and what was picked in it.
+    @State private var picking = false
+    @State private var picked: [PhotosPickerItem] = []
+    /// What you copied is an image, which the Paste chip attaches, and not one pasted already.
+    @State private var pasteHasImage = false
+    /// The pasteboard as it was when its image was pasted (`changeCount`).
+    @State private var pastedAt: Int?
+    /// Photos picked and still being read from the library: the reply waits for them.
+    @State private var loadingPhotos = 0
+    @Environment(\.scenePhase) private var scenePhase
     /// The send button's size, which a line of the reply box matches; it grows with the text size.
     @ScaledMetric(relativeTo: .body) private var sendSize: CGFloat = 32
     /// Between the send button and the reply box's edge.
@@ -138,6 +149,7 @@ struct SessionView: View {
         ZStack {
             besideViews
             page.modifier(FollowsSwipe(swipe: swipe, next: nextBeside != nil, back: backBeside != nil))
+                .environment(\.imageMac, row?.device)
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { swipe.width = $0 }
         .navigationTitle(row?.title ?? "Session")
@@ -452,98 +464,170 @@ struct SessionView: View {
                     Task { await switchModel(model) }
                 }
             }
-            HStack(alignment: .bottom, spacing: 8) {
-                // The words before you write say how a message gets there, which takes more than a
-                // line on a phone: up to two lines of them sit under the field while it's empty, and
-                // the box is as tall as they are.
-                ZStack(alignment: .leading) {
-                    if draft.isEmpty {
-                        Text(placeholder)
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(2)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .allowsHitTesting(false)
-                            .accessibilityHidden(true)
+            // The images going with the reply sit in the box, over what's written.
+            VStack(alignment: .leading, spacing: 2) {
+                if canAttach && (!attached.isEmpty || (typing && pasteHasImage)) {
+                    AttachedRow(images: attached, paste: typing && pasteHasImage) { id in
+                        store.detach(id, from: key)
+                        // Taken off, what's copied can be pasted again.
+                        pastedAt = nil
+                        lookAtPasteboard()
+                    } pasted: { data in
+                        pastedAt = UIPasteboard.general.changeCount
+                        pasteHasImage = false
+                        attach(data)
                     }
-                    TextField(text: Binding(get: { draft }, set: { draft = $0 }), prompt: Text(""), axis: .vertical) { Text(placeholder) }
-                        .lineLimit(1...6)
-                        .focused($typing)
-                        .disabled(!canAct || sending)
-                        // ⌘⏎ on a keyboard sends and goes on, as on the Mac.
-                        .onKeyPress(.return, phases: .down) { press in
-                            guard press.modifiers.contains(.command), canSend else { return .ignored }
-                            Task { await send(thenNext: true) }
-                            return .handled
+                }
+                HStack(alignment: .bottom, spacing: 8) {
+                    // Photos go with the reply, kept on its Mac as they're picked.
+                    if canAttach {
+                        Button {
+                            picking = true
+                        } label: {
+                            Image(systemName: "photo.badge.plus")
+                                .font(.system(size: sendSize / 2.1, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .frame(width: sendSize, height: sendSize)
+                                .contentShape(.circle)
                         }
-                }
-                .frame(minHeight: sendSize)
-                if canSendNow {
-                    // Into the turn it's taking, at once: Claude Code's send now, Codex's steer.
-                    Button {
-                        Task { await send(now: true) }
-                    } label: {
-                        Image(systemName: "bolt.fill")
-                            .font(.system(size: sendSize / 2.4, weight: .semibold))
-                            .foregroundStyle(Color.accentColor)
-                            .frame(width: sendSize, height: sendSize)
-                            .contentShape(.circle)
+                        .buttonStyle(.plain)
+                        .disabled(sending)
+                        .accessibilityLabel("Attach photos")
                     }
-                    .buttonStyle(.plain)
-                    .disabled(!canSend)
-                    .accessibilityLabel("Send now")
-                    .accessibilityHint("Into the turn it's taking, rather than once the step it's on ends")
-                }
-                Button {
-                    Task { await send() }
-                } label: {
-                    // Accent while there's something to send, a quiet grey while there isn't.
-                    let ready = canSend || sending
-                    ZStack {
-                        Circle().fill(ready ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.quaternary))
-                        if sending {
-                            ProgressView().controlSize(.small).tint(.white)
-                        } else {
-                            Image(systemName: "arrow.up")
-                                .font(.system(size: sendSize / 2, weight: .bold))
-                                .foregroundStyle(ready ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary))
+                    // The words before you write say how a message gets there, which takes more than a
+                    // line on a phone: up to two lines of them sit under the field while it's empty, and
+                    // the box is as tall as they are.
+                    ZStack(alignment: .leading) {
+                        if draft.isEmpty {
+                            Text(placeholder)
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(2)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
                         }
+                        TextField(text: Binding(get: { draft }, set: { draft = $0 }), prompt: Text(""), axis: .vertical) { Text(placeholder) }
+                            .lineLimit(1...6)
+                            .focused($typing)
+                            .disabled(!canAct || sending)
+                            // ⌘⏎ on a keyboard sends and goes on, as on the Mac.
+                            .onKeyPress(.return, phases: .down) { press in
+                                guard press.modifiers.contains(.command), canSend else { return .ignored }
+                                Task { await send(thenNext: true) }
+                                return .handled
+                            }
                     }
-                    .frame(width: sendSize, height: sendSize)
-                    // The margin around it takes a tap too.
-                    .contentShape(.circle.inset(by: -replyInset))
-                }
-                .buttonStyle(.plain)
-                .disabled(!canSend)
-                .accessibilityLabel("Send")
-                // Held, as Messages offers its send options: send and go straight on.
-                .contextMenu {
+                    .frame(minHeight: sendSize)
                     if canSendNow {
+                        // Into the turn it's taking, at once: Claude Code's send now, Codex's steer.
                         Button {
                             Task { await send(now: true) }
                         } label: {
-                            Label("Send now", systemImage: "bolt")
-                            Text("Into the turn it's taking")
+                            Image(systemName: "bolt.fill")
+                                .font(.system(size: sendSize / 2.4, weight: .semibold))
+                                .foregroundStyle(Color.accentColor)
+                                .frame(width: sendSize, height: sendSize)
+                                .contentShape(.circle)
                         }
+                        .buttonStyle(.plain)
                         .disabled(!canSend)
+                        .accessibilityLabel("Send now")
+                        .accessibilityHint("Into the turn it's taking, rather than once the step it's on ends")
                     }
-                    if let next = after.first {
-                        Button {
-                            Task { await send(thenNext: true) }
-                        } label: {
-                            Label("Send and go to next", systemImage: "arrow.forward")
-                            Text(next.title)
+                    Button {
+                        Task { await send() }
+                    } label: {
+                        // Accent while there's something to send, a quiet grey while there isn't.
+                        let ready = canSend || sending
+                        ZStack {
+                            Circle().fill(ready ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.quaternary))
+                            if sending {
+                                ProgressView().controlSize(.small).tint(.white)
+                            } else {
+                                Image(systemName: "arrow.up")
+                                    .font(.system(size: sendSize / 2, weight: .bold))
+                                    .foregroundStyle(ready ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary))
+                            }
                         }
-                        .disabled(!canSend)
+                        .frame(width: sendSize, height: sendSize)
+                        // The margin around it takes a tap too.
+                        .contentShape(.circle.inset(by: -replyInset))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canSend)
+                    .accessibilityLabel("Send")
+                    // Held, as Messages offers its send options: send and go straight on.
+                    .contextMenu {
+                        if canSendNow {
+                            Button {
+                                Task { await send(now: true) }
+                            } label: {
+                                Label("Send now", systemImage: "bolt")
+                                Text("Into the turn it's taking")
+                            }
+                            .disabled(!canSend)
+                        }
+                        if let next = after.first {
+                            Button {
+                                Task { await send(thenNext: true) }
+                            } label: {
+                                Label("Send and go to next", systemImage: "arrow.forward")
+                                Text(next.title)
+                            }
+                            .disabled(!canSend)
+                        }
                     }
                 }
             }
-            .padding(.leading, 16)
+            .padding(.leading, canAttach ? replyInset : 16)
             .padding(.trailing, replyInset)
             .padding(.vertical, replyInset)
             .glassEffect(.regular.interactive(), in: .rect(cornerRadius: sendSize / 2 + replyInset))
         }
         .padding(.horizontal)
         .padding(.bottom, 6)
+        .photosPicker(isPresented: $picking, selection: $picked, maxSelectionCount: 6, matching: .images)
+        .onChange(of: picked) { _, items in
+            guard !items.isEmpty else { return }
+            picked = []
+            loadingPhotos += items.count
+            for item in items {
+                Task {
+                    let data = try? await item.loadTransferable(type: Data.self)
+                    loadingPhotos -= 1
+                    if let data { attach(data) } else { said = "That photo couldn't be read from your library." }
+                }
+            }
+        }
+        // Whether what's copied is an image: asking that doesn't read it, so iOS doesn't ask you.
+        .onChange(of: typing, initial: true) { _, _ in lookAtPasteboard() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { lookAtPasteboard() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)) { _ in
+            lookAtPasteboard()
+        }
+    }
+
+    private func lookAtPasteboard() {
+        let board = UIPasteboard.general
+        pasteHasImage = board.hasImages && board.changeCount != pastedAt
+    }
+
+    /// The images attached to the reply, kept with its draft.
+    private var attached: [AttachedImage] { store.attached[key] ?? [] }
+
+    /// Images can go with what's written: not with a deny, which only takes words.
+    private var canAttach: Bool { canAct && !denying && !waitsElsewhere }
+
+    private func attach(_ data: Data) {
+        guard let mac = row?.device else { return }
+        store.attach(data, to: key, mac: mac) { why in
+            said = why
+            // One that didn't go can be pasted again.
+            pastedAt = nil
+            lookAtPasteboard()
+        }
     }
 
     /// Only a Mac with remote control on takes a reply or an answer from here.
@@ -556,7 +640,10 @@ struct SessionView: View {
     }
 
     private var canSend: Bool {
-        canAct && !sending && !waitsElsewhere && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let words = !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        // Images alone are a reply too, once each is kept on its Mac; a deny takes only words.
+        let images = !attached.isEmpty && !denying
+        return canAct && !sending && !waitsElsewhere && (words || images) && loadingPhotos == 0 && !attached.contains { $0.state == .keeping }
     }
 
     /// What's written can go into the turn it's taking at once.
@@ -836,8 +923,15 @@ struct SessionView: View {
         // A suggested reply goes as it is, and what's being written stays in the box.
         let text = reply ?? draft
         let clear = { if reply == nil { draft = "" } }
+        // The images attached go first, each on a line of its own, as the Mac's box writes them.
+        let images = reply == nil ? attached.compactMap(\.reference) : []
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if reply == nil && (trimmed == "/fork" || trimmed.hasPrefix("/fork ")) {
+            // A fork starts on words alone: the images would be left for the next reply here.
+            if !attached.isEmpty {
+                said = "A fork starts with words only: take the images off to fork, or send them in a reply."
+                return
+            }
             draft = ""
             await fork(String(trimmed.dropFirst("/fork".count)).trimmingCharacters(in: .whitespaces))
             return
@@ -853,8 +947,9 @@ struct SessionView: View {
                 how = .send(now: now)
             }
             clear()
+            if !images.isEmpty { store.attached[key] = nil }
             said = nil
-            store.post(key, title: title, text: text, how: how)
+            store.post(key, title: title, text: (images + [text]).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.joined(separator: "\n"), how: how)
             store.dealtWith(key)
             if thenNext, let next = after.first {
                 moveOn(to: next, outcome: "Sending to “\(title)”…")
@@ -1824,12 +1919,42 @@ private struct OutgoingView: View {
 }
 
 /// A prompt of yours as you wrote it, as the Mac shows one: not read as Markdown, its web links
-/// opening, and the images and files Codealong kept for it named (the phone isn't sent them).
+/// opening, the images Codealong kept for it shown above its words (read from its Mac), and the
+/// files named.
 private struct PromptText: View {
     let text: String
+    @Environment(\.imageMac) private var mac
 
     var body: some View {
-        prompt(promptParts(text: text))
+        let parts = promptParts(text: text)
+        let images = mac == nil ? [] : parts.compactMap { $0.kind == .image ? $0.url : nil }
+        let words = images.isEmpty ? parts : Self.trimmed(parts.filter { $0.kind != .image })
+        VStack(alignment: .trailing, spacing: 8) {
+            // One big; more three to a row, small enough for the narrowest phone's bubble.
+            if let mac, !images.isEmpty {
+                let side: CGFloat = images.count == 1 ? 180 : 72
+                LazyVGrid(columns: Array(repeating: GridItem(.fixed(side), spacing: 6), count: min(images.count, 3)), alignment: .trailing, spacing: 6) {
+                    ForEach(Array(images.enumerated()), id: \.offset) { _, path in
+                        KeptImage(mac: mac, path: path, side: side)
+                    }
+                }
+            }
+            if !words.isEmpty {
+                prompt(words)
+            }
+        }
+    }
+
+    /// The words left once the images are taken out, without the lines they stood on.
+    private static func trimmed(_ parts: [PromptPart]) -> [PromptPart] {
+        var parts = parts
+        if let first = parts.first, first.kind == .text {
+            parts[0] = PromptPart(kind: .text, text: String(first.text.drop { $0.isWhitespace }), url: nil)
+        }
+        if let last = parts.last, last.kind == .text {
+            parts[parts.count - 1] = PromptPart(kind: .text, text: String(last.text.reversed().drop { $0.isWhitespace }.reversed()), url: nil)
+        }
+        return parts.filter { $0.kind != .text || !$0.text.isEmpty }
     }
 
     private func prompt(_ parts: [PromptPart]) -> Text {
@@ -2166,6 +2291,11 @@ private struct SessionGlance: View {
     }
 
     var body: some View {
+        glance.environment(\.imageMac, row?.device)
+    }
+
+    @ViewBuilder
+    private var glance: some View {
         let entries = Entry.of(kept.items)
         // Its newest at the foot, what doesn't fit going off the top: laid over a screen's worth of
         // nothing, so it's a screen high however long the conversation is (a frame that fills the
@@ -2419,5 +2549,64 @@ private struct UpTo: Layout {
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         subviews.first?.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
+    }
+}
+
+/// The images attached to a reply, over its box: each with a way to take it off, a spinner while
+/// it's kept on its Mac, and the system's Paste button while what you copied is an image (it
+/// pastes without iOS asking, being one you tap).
+private struct AttachedRow: View {
+    let images: [AttachedImage]
+    let paste: Bool
+    let remove: (UUID) -> Void
+    let pasted: (Data) -> Void
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 10) {
+                ForEach(images) { image in
+                    Image(uiImage: image.thumb)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 56, height: 56)
+                        .clipShape(.rect(cornerRadius: 10))
+                        .accessibilityLabel(image.state == .keeping ? "Image, sending to its Mac" : "Image")
+                        .overlay {
+                            if image.state == .keeping {
+                                RoundedRectangle(cornerRadius: 10).fill(.black.opacity(0.35))
+                                ProgressView().tint(.white)
+                            }
+                        }
+                        .overlay(alignment: .topTrailing) {
+                            Button {
+                                remove(image.id)
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 20))
+                                    .symbolRenderingMode(.palette)
+                                    .foregroundStyle(.white, .black.opacity(0.65))
+                            }
+                            .buttonStyle(.plain)
+                            .offset(x: 7, y: -7)
+                            .accessibilityLabel("Take this image off")
+                        }
+                }
+                if paste {
+                    PasteButton(supportedContentTypes: [.image]) { providers in
+                        for provider in providers {
+                            _ = provider.loadDataRepresentation(for: .image) { data, _ in
+                                guard let data else { return }
+                                Task { @MainActor in pasted(data) }
+                            }
+                        }
+                    }
+                    .labelStyle(.titleAndIcon)
+                    .buttonBorderShape(.capsule)
+                }
+            }
+            .padding(.top, 8)
+            .padding(.trailing, 8)
+        }
+        .scrollIndicators(.hidden)
     }
 }

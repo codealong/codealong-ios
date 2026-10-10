@@ -109,7 +109,8 @@ pub struct PromptPart {
     pub kind: PromptPartKind,
     /// The words: the text itself, a link's URL, or a file's or image's name.
     pub text: String,
-    /// Where a link goes.
+    /// Where a link goes; for an image, where its Mac keeps it (`images/<hash>.<ext>`), to read
+    /// it from there.
     pub url: Option<String>,
 }
 
@@ -117,7 +118,7 @@ pub struct PromptPart {
 pub enum PromptPartKind {
     Text,
     Link,
-    /// An image Codealong kept with the prompt, which shows on the Mac; the phone isn't sent it.
+    /// An image Codealong kept with the prompt, read from its Mac to show (`Core::read_image`).
     Image,
     /// A file Codealong kept with the prompt, as a chip on the Mac.
     File,
@@ -176,7 +177,7 @@ fn kept_at(s: &str) -> Option<(PromptPart, usize)> {
             return None;
         }
         let alt = if words.is_empty() { "image" } else { words };
-        return Some((PromptPart { kind: PromptPartKind::Image, text: alt.to_string(), url: None }, len));
+        return Some((PromptPart { kind: PromptPartKind::Image, text: alt.to_string(), url: Some(target.to_string()) }, len));
     }
     let rest = target.strip_prefix("files/")?;
     let (hash, name) = rest.split_once('/')?;
@@ -787,6 +788,8 @@ mod tests {
         // An image link that isn't one Codealong kept is text.
         assert_eq!(prompt_parts("![a](images/b.png)".into())[0].kind, PromptPartKind::Text);
         assert_eq!(prompt_parts("![](images/0123456789abcdef.jpg)".into())[0].text, "image");
+        // An image says where its Mac keeps it, to read it from there.
+        assert_eq!(parts[3].url.as_deref(), Some("images/0123456789abcdef.png"));
     }
 
     #[test]
