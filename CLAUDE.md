@@ -65,9 +65,9 @@ then `scripts/build-core.sh` (cargo fetches it with your git login).
 
 - `scripts/build.sh && scripts/run.sh`, then look at it in the simulator: the iOS Simulator
   tool's `screenshot` does it without the panel. Check light and dark.
-- Don't use real data to test actions that reach outside the phone or can't be undone:
-  sending prompts, answering approvals, archiving. Linking the simulator with this Mac is fine
-  (unlink it after with `codealong devices unlink`).
+- Real sessions are fine to test with, actions included: sending prompts, answering approvals,
+  archiving. Linking the simulator with this Mac is fine too (unlink it after with `codealong
+  devices unlink`).
 
 ## Conventions
 
