@@ -49,14 +49,19 @@ struct QuickView: View {
             .navigationDestination(for: String.self) { key in
                 // A view of its own per session: going from one to another by a link keeps nothing.
                 // Next puts the next session in this one's place, so Back is still this list.
-                // One a swipe slid in starts as the swipe drew it.
-                SessionView(key: key, opening: store.slidIn.flatMap { $0.key == key ? $0.opening : nil }, go: { next in path = [next] }).id(key)
+                // One a swipe slid in starts as the swipe drew it. A PR's is `pr:` and its key.
+                if key.hasPrefix(PrView.prefix) {
+                    PrView(key: String(key.dropFirst(PrView.prefix.count))).id(key)
+                } else {
+                    SessionView(key: key, opening: store.slidIn.flatMap { $0.key == key ? $0.opening : nil }, go: { next in path = [next] }).id(key)
+                }
             }
             .sheet(isPresented: $showingMacs) {
                 DevicesView()
             }
             // A session started here, or a link to one, opens once its Mac lists it.
             .onChange(of: store.sessions) { _, _ in openListed() }
+            .onChange(of: store.prs) { _, _ in openListed() }
             .onChange(of: store.openWhenListed) { _, _ in openListed() }
             // The first that wait on you are the likeliest to be opened: read them ahead, so they
             // show at once. Again as they change, and once a Mac connects.
@@ -240,7 +245,28 @@ struct QuickView: View {
                             QuickPrRow(pr: pr, words: matching)
                                 .contentShape(.rect)
                                 .onTapGesture {
-                                    if let url = URL(string: pr.url) { openURL(url) }
+                                    // A PR its Mac can read from GitHub opens here; one whose repo
+                                    // has no GitHub name there, on GitHub.
+                                    if !pr.slug.isEmpty {
+                                        path.append(PrView.prefix + pr.key)
+                                    } else if let url = URL(string: pr.url) {
+                                        openURL(url)
+                                    }
+                                }
+                                .contextMenu {
+                                    if let url = URL(string: pr.url) {
+                                        Button("Open on GitHub", systemImage: "safari") { openURL(url) }
+                                    }
+                                    if pr.reviewRequested && !pr.slug.isEmpty {
+                                        Menu("Snooze review", systemImage: "moon.zzz") {
+                                            ForEach(Snooze.choices()) { c in
+                                                Button(c.label) { act { try await store.prSnooze(pr, until: c.until) } }
+                                            }
+                                            if pr.snoozedUntil != nil {
+                                                Button("Wake now", systemImage: "sun.max") { act { try await store.prSnooze(pr, until: nil) } }
+                                            }
+                                        }
+                                    }
                                 }
                         }
                     }
@@ -395,7 +421,9 @@ struct QuickView: View {
     }
 
     private func openListed() {
-        if let key = store.openWhenListed, store.sessions.contains(where: { $0.key == key }) {
+        guard let key = store.openWhenListed else { return }
+        let listed = key.hasPrefix(PrView.prefix) ? store.pr(String(key.dropFirst(PrView.prefix.count))) != nil : store.sessions.contains { $0.key == key }
+        if listed {
             store.openWhenListed = nil
             path = [key]
         }
@@ -425,6 +453,7 @@ extension QuickGroup {
         switch self {
         case .needsYou: "Needs you"
         case .yourTurn: "Your turn"
+        case .reviews: "Review requested"
         case .working: "Working"
         case .sessions: "Sessions"
         case .prs: "PRs"

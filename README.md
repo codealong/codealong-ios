@@ -71,6 +71,16 @@ Renaming, archiving, marking seen, *Mark as unread*, *Snooze* (off what waits on
 you pick, on every device) and *Quiet* (its turns stop waiting on you; it comes to you only when it
 needs you) work with any Mac, remote control or not.
 
+**Review and merge PRs.** The PRs that wait on your review are listed after the sessions whose
+turn ended (*Review requested*), longest waiting first, and a search finds any PR your Macs know.
+Open one to see where it stands (checks, whether it can merge, its size, who asked you), your
+draft review of it if you began one, its description, reviews, comments and changed files with
+their diffs. *Review* approves it, comments or asks for changes, submitting your draft with it as
+GitHub's *Finish your review* does; *Merge…* is its merge box as on the Mac: the way to merge and
+the commit's words, auto-merge, the merge queue, updating the branch, ready for review and the
+branch's deletion. Your Mac's `gh` does it as you, so reviewing and merging need remote control on
+that Mac; reading and snoozing a review don't.
+
 **Start new work.** Type a prompt and start it on the Mac, worktree, account, model, effort and
 place the chips under it say: an existing worktree, a new one, or a chat in no project. As you
 type, it finds sessions by what was said in them, and the Mac you pick suggests where the prompt

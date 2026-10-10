@@ -107,12 +107,17 @@ struct QuickPrRow: View {
         }
         .padding(.vertical, 3)
         .accessibilityElement(children: .combine)
-        .accessibilityHint("Opens it on GitHub")
+        .accessibilityHint(pr.slug.isEmpty ? "Opens it on GitHub" : "Opens it")
     }
 
     private var why: String {
         var parts = ["#\(pr.number)", stateWord]
         if pr.failing > 0 { parts.append("\(pr.failing) failing") }
+        if pr.waits {
+            parts.append(pr.requestedBy.map { "\($0) asked for your review" } ?? "Your review is asked for")
+        } else if pr.reviewRequested && pr.snoozedUntil != nil {
+            parts.append("Review snoozed")
+        }
         return parts.joined(separator: " · ")
     }
 
@@ -140,7 +145,7 @@ struct QuickPrRow: View {
         case "merged": .purple
         case "closed": .secondary
         case "draft": .secondary
-        default: pr.failing > 0 ? .red : .green
+        default: pr.waits ? .orange : pr.failing > 0 ? .red : .green
         }
     }
 }

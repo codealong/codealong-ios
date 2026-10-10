@@ -18,6 +18,8 @@ uniffi::setup_scaffolding!();
 
 mod kept;
 mod md;
+mod merge;
+mod prs;
 mod quick;
 pub use md::*;
 pub use quick::*;
@@ -212,6 +214,8 @@ pub struct Snapshot {
     pub devices: Vec<DeviceRow>,
     /// In the inbox's order (`inbox_order`).
     pub sessions: Vec<SessionRow>,
+    /// Every PR the Macs list, once each (`quick::all_prs`).
+    pub prs: Vec<quick::PrRow>,
     /// The projects those sessions are in, lined up across Macs (`Projects`): by name, with
     /// worktrees in no project last, as the Mac lists them.
     pub projects: Vec<String>,
@@ -390,8 +394,11 @@ impl Core {
             }
             let mut sessions: Vec<SessionRow> = all.into_iter().filter(|s| in_inbox(s, now)).collect();
             sessions.sort_by(inbox_order);
-            let projects = project_list(sessions.iter().map(|s| s.project.as_str()));
-            Snapshot { devices, sessions, projects }
+            let prs = quick::all_prs(feeds);
+            // A project whose reviews wait on you can be narrowed to, though no session of it is
+            // in the list.
+            let projects = project_list(sessions.iter().map(|s| s.project.as_str()).chain(prs.iter().filter(|p| p.waits && !p.project.is_empty()).map(|p| p.project.as_str())));
+            Snapshot { devices, sessions, prs, projects }
         })
     }
 }
@@ -1542,7 +1549,7 @@ impl Core {
     pub fn start_session(&self, device: String, worktree: String, account: String, place: String, prompt: String, model: Option<String>, effort: Option<String>, new_worktree: bool) -> Result<StartedSession, CoreError> {
         let place = api::Place::from_word(&place).ok_or_else(|| CoreError::Failed(format!("{place} isn't a place a session can start.")))?;
         let takes = place_takes_model(place);
-        let spec = api::StartSpec { lane_id: worktree, account, place, prompt, model: model.filter(|_| takes), effort: effort.filter(|_| takes), worktree: new_worktree, todos: Vec::new(), from: None, helper: false };
+        let spec = api::StartSpec { lane_id: worktree, account, place, prompt, model: model.filter(|_| takes), effort: effort.filter(|_| takes), worktree: new_worktree, todos: Vec::new(), from: None, helper: false, report: false };
         let started = self.client.start_session(&device, &spec)?;
         let short = device.get(..10).unwrap_or(&device);
         Ok(StartedSession { key: started.key.map(|k| remote_key(short, &k)), message: started.message })

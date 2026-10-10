@@ -34,6 +34,8 @@ const TEXT_SEARCH_MIN: usize = 3;
 pub enum QuickGroup {
     NeedsYou,
     YourTurn,
+    /// PRs that wait on your review, as the Mac's Review requested lists them.
+    Reviews,
     Working,
     Sessions,
     Prs,
@@ -60,21 +62,51 @@ pub struct SaidFound {
     pub building: bool,
 }
 
-/// A PR of a worktree on one of the Macs.
+/// A PR on one of the Macs: from its PR list (Macs from 2026-10-10 send one), else the PR of one
+/// of its worktrees.
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
 pub struct PrRow {
+    /// `owner/name#number` (`name#number` for a worktree's PR whose repo has no GitHub name).
     pub key: String,
+    /// The Mac to ask about it: one that's online, where several list it.
     pub device: String,
+    pub device_name: String,
+    /// `owner/name`, which the requests about it name it by; empty for a worktree's PR whose repo
+    /// has no GitHub name.
+    pub slug: String,
     pub number: u64,
     pub title: String,
     pub url: String,
     /// `draft`, `open`, `approved`, `changes`, `merged` or `closed`.
     pub state: String,
     pub failing: u32,
+    /// Checks still running.
+    pub pending: u32,
+    pub passed: u32,
+    /// `clean`, `conflicts`, `behind`, `blocked`, `unstable` or `unknown`.
+    pub merge: String,
+    /// Its repo's name.
     pub repo: String,
     pub branch: Option<String>,
+    pub base: Option<String>,
     pub project: String,
     pub updated_at: i64,
+    pub author: Option<String>,
+    /// You opened it.
+    pub mine: bool,
+    /// It waits on your review: asked for, open, not snoozed, not held by Codealong's own review.
+    pub waits: bool,
+    /// Your review is asked for, whether it waits on you now or is snoozed.
+    pub review_requested: bool,
+    pub requested_by: Option<String>,
+    pub requested_at: Option<i64>,
+    pub snoozed_until: Option<i64>,
+    pub pinned: bool,
+    pub additions: u64,
+    pub deletions: u64,
+    pub changed_files: u64,
+    /// The sessions that worked on it, by their keys here (`@<device>:<key>`).
+    pub sessions: Vec<String>,
 }
 
 #[derive(uniffi::Enum, Clone, Debug, PartialEq)]
@@ -219,6 +251,10 @@ pub(crate) fn quick_list(rows: &[SessionRow], prs: &[PrRow], project: &str, quer
         attention.sort_by(|a, b| inbox_order(a, b));
         let working = attention.iter().filter(|r| r.section == InboxSection::Working).count() as u32;
         let waiting = attention.iter().any(|r| r.section != InboxSection::Working);
+        // PRs that wait on your review, the longest wait first, as the Mac's queue takes them.
+        let mut reviews: Vec<&PrRow> = prs.iter().filter(|p| p.waits && inp(&p.project)).collect();
+        reviews.sort_by_key(|p| (p.requested_at.unwrap_or(p.updated_at), p.key.clone()));
+        let waiting = waiting || !reviews.is_empty();
         let mut shown = std::collections::HashSet::new();
         for (group, section) in [(QuickGroup::NeedsYou, InboxSection::NeedsYou), (QuickGroup::YourTurn, InboxSection::YourTurn), (QuickGroup::Working, InboxSection::Working)] {
             // With something waiting on you, what's working stays out of the way, as on the Mac.
@@ -226,11 +262,14 @@ pub(crate) fn quick_list(rows: &[SessionRow], prs: &[PrRow], project: &str, quer
                 continue;
             }
             let these: Vec<&SessionRow> = attention.iter().copied().filter(|r| r.section == section).collect();
-            if these.is_empty() {
-                continue;
+            if !these.is_empty() {
+                shown.extend(these.iter().map(|r| r.key.clone()));
+                sections.push(QuickSection { group, count: these.len() as u32, rows: these.into_iter().map(session).collect() });
             }
-            shown.extend(these.iter().map(|r| r.key.clone()));
-            sections.push(QuickSection { group, count: these.len() as u32, rows: these.into_iter().map(session).collect() });
+            // Reviews go after the turns that ended, before what's working.
+            if section == InboxSection::YourTurn && !reviews.is_empty() {
+                sections.push(QuickSection { group: QuickGroup::Reviews, count: reviews.len() as u32, rows: reviews.iter().map(|p| QuickRow::Pr { pr: (*p).clone() }).collect() });
+            }
         }
         let mut recent: Vec<&SessionRow> = rows.iter().copied().filter(|r| !shown.contains(&r.key) && now - r.started_at.unwrap_or(r.last_activity) <= RECENT_MS).collect();
         recent.sort_by(|a, b| status_time(b).cmp(&status_time(a)).then_with(|| a.key.cmp(&b.key)));
@@ -287,42 +326,121 @@ pub(crate) fn quick_list(rows: &[SessionRow], prs: &[PrRow], project: &str, quer
 }
 
 /// Every worktree's PR on the linked Macs, once each.
-fn all_prs(feeds: &Feeds) -> Vec<PrRow> {
+pub(crate) fn all_prs(feeds: &Feeds) -> Vec<PrRow> {
     let worktrees = all_worktrees(feeds);
+    let projects = crate::Projects::of_feeds(feeds);
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
+    // Each Mac's PR list, the ones online first, of those the ones that take remote control: a
+    // PR two Macs list is asked about where it can be read, and reviewed and merged.
+    let mut macs: Vec<&(codealong_peer::client::Device, &codealong_peer::feed::Replica)> = feeds.iter().collect();
+    macs.sort_by_key(|(d, _)| (!d.online, !d.remote_control));
+    for (d, replica) in macs {
+        for p in &replica.prs {
+            if !seen.insert(p.key.to_lowercase()) {
+                continue;
+            }
+            out.push(PrRow {
+                key: p.key.clone(),
+                device: d.key.clone(),
+                device_name: d.name.clone(),
+                slug: p.repo.clone(),
+                number: p.number,
+                title: p.title.clone(),
+                url: p.url.clone(),
+                state: state_word(p.state).into(),
+                failing: p.checks.failed,
+                pending: p.checks.pending,
+                passed: p.checks.passed,
+                merge: merge_word(p.merge).into(),
+                repo: p.repo.rsplit('/').next().unwrap_or(&p.repo).to_string(),
+                branch: Some(p.head.clone()),
+                base: p.base.clone(),
+                // In the project the Macs line its repo up in, as a session's is.
+                project: projects.of(&p.project, &[p.repo.to_lowercase()]).unwrap_or_else(|| p.project.clone()),
+                updated_at: p.updated_at,
+                author: p.author.clone(),
+                mine: p.mine,
+                waits: p.waits,
+                review_requested: p.review_requested,
+                requested_by: p.requested_by.clone(),
+                requested_at: p.requested_at,
+                snoozed_until: p.snoozed_until,
+                pinned: p.pinned,
+                additions: p.additions,
+                deletions: p.deletions,
+                changed_files: p.changed_files,
+                sessions: p.sessions.iter().map(|k| remote_key(&d.short, k)).collect(),
+            });
+        }
+    }
+    // Worktrees' PRs, from Macs that send no PR list.
     for (d, replica) in feeds {
         for l in &replica.lanes {
             let Some(pr) = &l.pr else { continue };
             // Two worktrees of one repo can be on the same PR's branch.
-            if !seen.insert((l.repo_slug.clone().unwrap_or_else(|| l.repo.clone()), pr.number)) {
+            let key = format!("{}#{}", l.repo_slug.as_deref().unwrap_or(&l.repo), pr.number);
+            if !seen.insert(key.to_lowercase()) {
                 continue;
             }
             let Some(w) = worktrees.iter().find(|w| w.device == d.key && w.id == l.id) else { continue };
-            let state = match pr.state {
-                PrState::Draft => "draft",
-                PrState::Open => "open",
-                PrState::Approved => "approved",
-                PrState::Changes => "changes",
-                PrState::Merged => "merged",
-                PrState::Closed => "closed",
-            };
             out.push(PrRow {
-                key: format!("{}#{}", l.repo_slug.as_deref().unwrap_or(&l.repo), pr.number),
+                key,
                 device: d.key.clone(),
+                device_name: d.name.clone(),
+                slug: l.repo_slug.clone().unwrap_or_default(),
                 number: pr.number,
                 title: pr.title.clone(),
                 url: pr.url.clone(),
-                state: state.into(),
+                state: state_word(pr.state).into(),
                 failing: pr.checks.failed,
+                pending: pr.checks.pending,
+                passed: pr.checks.passed,
+                merge: merge_word(pr.merge).into(),
                 repo: l.repo.clone(),
                 branch: l.branch.clone(),
+                base: None,
                 project: w.project.clone(),
                 updated_at: pr.updated_at,
+                author: None,
+                mine: false,
+                waits: false,
+                review_requested: false,
+                requested_by: None,
+                requested_at: None,
+                snoozed_until: None,
+                pinned: false,
+                additions: 0,
+                deletions: 0,
+                changed_files: 0,
+                sessions: l.sessions.iter().map(|s| remote_key(&d.short, &s.key)).collect(),
             });
         }
     }
     out
+}
+
+fn state_word(s: PrState) -> &'static str {
+    match s {
+        PrState::Draft => "draft",
+        PrState::Open => "open",
+        PrState::Approved => "approved",
+        PrState::Changes => "changes",
+        PrState::Merged => "merged",
+        PrState::Closed => "closed",
+    }
+}
+
+fn merge_word(m: codealong_peer::model::Merge) -> &'static str {
+    use codealong_peer::model::Merge;
+    match m {
+        Merge::Clean => "clean",
+        Merge::Conflicts => "conflicts",
+        Merge::Behind => "behind",
+        Merge::Blocked => "blocked",
+        Merge::Unstable => "unstable",
+        Merge::Unknown => "unknown",
+    }
 }
 
 fn sureness(p: f64) -> Sureness {
@@ -577,13 +695,80 @@ mod tests {
         assert_eq!(l.working, 1);
     }
 
+    fn pr_row(key: &str, title: &str, waits: bool) -> PrRow {
+        PrRow {
+            key: key.into(),
+            device: "d".into(),
+            device_name: "Mac".into(),
+            slug: String::new(),
+            number: 3,
+            title: title.into(),
+            url: String::new(),
+            state: "open".into(),
+            failing: 0,
+            pending: 0,
+            passed: 0,
+            merge: "clean".into(),
+            repo: "app".into(),
+            branch: None,
+            base: None,
+            project: "App".into(),
+            updated_at: NOW,
+            author: None,
+            mine: false,
+            waits,
+            review_requested: waits,
+            requested_by: None,
+            requested_at: None,
+            snoozed_until: None,
+            pinned: false,
+            additions: 0,
+            deletions: 0,
+            changed_files: 0,
+            sessions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_pr_two_macs_list_is_asked_of_one_that_takes_remote_control_in_the_project_they_line_up() {
+        use codealong_peer::client::Device;
+        use codealong_peer::feed::Replica;
+        let mac = |key: &str, remote_control: bool| Device { key: key.into(), short: key.into(), name: key.into(), online: true, since: None, last_seen: None, remote_control, app: String::new(), loading: false, linked_back: true };
+        let card = |project: &str| serde_json::from_value::<codealong_peer::pr::PrCard>(serde_json::json!({"key": "O/App#5", "repo": "O/App", "project": project, "number": 5, "title": "T", "url": "u", "state": "open", "author": null, "head": "b"})).unwrap();
+        // The first Mac lists its worktree of the repo in its project "Apps"; the second calls
+        // its own project "app".
+        let mut lane = codealong_peer::model::Lane::new("l1", "Apps", "App");
+        lane.repo_slug = Some("O/App".into());
+        let first = Replica { lanes: vec![lane], prs: vec![card("Apps")], ..Replica::default() };
+        let second = Replica { prs: vec![card("app")], ..Replica::default() };
+        let feeds = vec![(mac("watching", false), &first), (mac("driving", true), &second)];
+        let prs = all_prs(&feeds);
+        assert_eq!(prs.len(), 1);
+        assert_eq!((prs[0].device.as_str(), prs[0].project.as_str()), ("driving", "Apps"));
+    }
+
+    #[test]
+    fn reviews_that_wait_on_you_follow_your_turn_the_longest_wait_first() {
+        let rows = vec![row("turn", "Done", Status::Unread, NOW)];
+        let mut late = pr_row("o/app#4", "Later", true);
+        late.requested_at = Some(NOW - 5);
+        let mut early = pr_row("o/app#5", "Earlier", true);
+        early.requested_at = Some(NOW - 50);
+        let prs = [late, early, pr_row("o/app#6", "Not asked", false)];
+        let l = quick_list(&rows, &prs, "", "", &[], &[], NOW);
+        assert_eq!(keys(&l)[..2], [(QuickGroup::YourTurn, vec!["turn".to_string()]), (QuickGroup::Reviews, vec!["o/app#5".to_string(), "o/app#4".into()])]);
+        assert!(!l.nothing_waits);
+        // A review alone is something waiting on you.
+        assert!(!quick_list(&[], &prs, "", "", &[], &[], NOW).nothing_waits);
+    }
+
     #[test]
     fn typed_words_find_titles_first_then_what_was_said() {
         let mut other = row("branch", "Fix login", Status::Idle, NOW);
         other.branch = Some("quick-search".into());
         let rows = vec![row("said", "Other work", Status::Needs, NOW), other, row("title", "Quick search on the phone", Status::Idle, NOW - 5)];
         let said = [SaidHit { key: "said".into(), snippet: "make the quick search".into(), you: true, at: NOW, score: 0 }];
-        let prs = [PrRow { key: "app#3".into(), device: "d".into(), number: 3, title: "Quick search".into(), url: String::new(), state: "open".into(), failing: 0, repo: "app".into(), branch: None, project: "App".into(), updated_at: NOW }];
+        let prs = [pr_row("app#3", "Quick search", false)];
         let l = quick_list(&rows, &prs, "", "quick search", &said, &[], NOW);
         assert_eq!(keys(&l), [(QuickGroup::Sessions, vec!["title".to_string(), "branch".into(), "said".into()]), (QuickGroup::Prs, vec!["app#3".into()])]);
         // Jev's ranking leads.

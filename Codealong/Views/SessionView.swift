@@ -1485,15 +1485,21 @@ private struct QuestionsCard: View {
 
 /// What a session waits on you for, over the foot of its conversation: solid, so what scrolls under
 /// it doesn't show through (it did, and a long question was hard to read over the reply it came
-/// with), in the orange of a session that needs you, lifted a little off the page.
+/// with), in the orange of a session that needs you, lifted a little off the page. Suggested
+/// replies sit in one too, untinted: they only offer.
 private struct WaitingCard: ViewModifier {
+    var tint: Color? = .orange
+
     func body(content: Content) -> some View {
         content
             .padding(14)
             .background {
                 let shape = RoundedRectangle(cornerRadius: 20)
+                // Untinted, a hairline edge keeps it apart from the page in dark mode, where both
+                // are black.
                 shape.fill(.background)
-                    .overlay(shape.fill(.orange.opacity(0.1)))
+                    .overlay(shape.fill((tint ?? .clear).opacity(0.1)))
+                    .overlay(shape.strokeBorder(Color.primary.opacity(tint == nil ? 0.1 : 0)))
                     .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
             }
     }
@@ -1515,7 +1521,7 @@ private struct LostConnection: View {
 }
 
 /// Replies another session suggested for this one (a supervisor going over what waits on you),
-/// above the box as on the Mac: a tap sends one as it is, as your own message (denying the call it
+/// above the box as on the Mac, in a solid card: a tap sends one as it is, as your own message (denying the call it
 /// waits on, or declining its questions, and saying this instead, as the box would); held, one goes
 /// in the box to change first. Dismiss takes them away on its Mac. They go by themselves once
 /// something is sent to it or a turn of its starts.
@@ -1572,9 +1578,11 @@ private struct SuggestedRepliesView: View {
                 .accessibilityHint(blocked ?? "Sends this as your reply")
             }
             if let blocked {
-                Text(blocked).font(.caption2).foregroundStyle(.tertiary)
+                Text(blocked).font(.caption2).foregroundStyle(.secondary)
             }
         }
+        // Solid, as what waits on you is: over the conversation they were hard to read.
+        .modifier(WaitingCard(tint: nil))
     }
 }
 

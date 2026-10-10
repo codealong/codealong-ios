@@ -8,6 +8,8 @@ import UIKit
 final class Store {
     private(set) var devices: [DeviceRow] = []
     private(set) var sessions: [SessionRow] = []
+    /// Every PR the Macs list, once each.
+    private(set) var prs: [PrRow] = []
     private(set) var projects: [String] = []
     private(set) var problem: String?
     /// Goes up with every change the core reports, rows or not: a reply being written comes this way.
@@ -85,6 +87,7 @@ final class Store {
         tick &+= 1
         if snap.devices != devices { devices = snap.devices }
         if snap.sessions != sessions { sessions = snap.sessions }
+        if snap.prs != prs { prs = snap.prs }
         if snap.projects != projects { projects = snap.projects }
     }
 
@@ -283,6 +286,44 @@ final class Store {
     /// Back to the session you went on from: it and what was gone on to from it come off the trail.
     func back(to key: String) {
         if let i = trail.lastIndex(of: key) { trail.removeSubrange(i...) }
+    }
+
+    /// A PR by its key (`owner/name#number`).
+    func pr(_ key: String) -> PrRow? {
+        prs.first { $0.key == key }
+    }
+
+    /// A PR's description, reviews, comments, changed files and your draft review of it, as its
+    /// Mac's `gh` reads them.
+    func prDetail(_ pr: PrRow) async throws -> PrDetail {
+        let core = try running()
+        return try await Task.detached { try core.prDetail(device: pr.device, repo: pr.slug, number: pr.number) }.value
+    }
+
+    /// What a PR's merge box offers you, as its Mac's `gh` reads it.
+    func prMergeBox(_ pr: PrRow) async throws -> MergeBox {
+        let core = try running()
+        return try await Task.detached { try core.prMergeBox(device: pr.device, repo: pr.slug, number: pr.number) }.value
+    }
+
+    /// Reviews a PR as you on GitHub, through its Mac. `draft` is the stamp of the draft review
+    /// shown with it: the Mac refuses to submit another, or one changed since.
+    func prReview(_ pr: PrRow, verdict: PrVerdict, body: String, draft: String?) async throws -> UInt64? {
+        let core = try running()
+        return try await Task.detached { try core.prReview(device: pr.device, repo: pr.slug, number: pr.number, verdict: verdict, body: body, draft: draft) }.value
+    }
+
+    /// Does one thing a PR's merge box does, as you on GitHub, through its Mac.
+    func prMerge(_ pr: PrRow, id: String, act: MergeAct) async throws -> MergeDone {
+        let core = try running()
+        return try await Task.detached { try core.prMerge(device: pr.device, repo: pr.slug, number: pr.number, id: id, act: act) }.value
+    }
+
+    /// Snoozes your review of a PR until `until`, or wakes it with none, on its Mac.
+    func prSnooze(_ pr: PrRow, until: Date?) async throws {
+        let core = try running()
+        let ms = until.map { Int64($0.timeIntervalSince1970 * 1000) }
+        try await Task.detached { try core.prSnooze(device: pr.device, keys: [pr.key], until: ms) }.value
     }
 
     /// Snoozes a session until `until`, or wakes it with none, on its Mac: off Needs you and Your
