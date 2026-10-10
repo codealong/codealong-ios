@@ -837,7 +837,7 @@ struct SessionView: View {
             pending = nil
             draft = ""
             typing = false
-            done(result, outcome: "Denied “\(title)”, saying what to do instead.", thenNext: thenNext)
+            done(result, outcome: "\(p.questions.isEmpty ? "Denied" : "Declined") “\(title)”, saying what to do instead.", thenNext: thenNext)
         } catch {
             said = words(error)
         }
@@ -1187,8 +1187,7 @@ private struct ApprovalCard: View {
                 Text(why).font(.footnote).foregroundStyle(.secondary)
             }
         }
-        .padding(14)
-        .background(.orange.opacity(0.1), in: .rect(cornerRadius: 20))
+        .modifier(WaitingCard())
     }
 
     /// What its answers do, as the Mac's card says it.
@@ -1211,9 +1210,12 @@ private struct ApprovalCard: View {
     }
 }
 
-/// Questions a session asks you (Claude Code's `AskUserQuestion`): pick a choice, several where a
-/// question takes more, or write your own answer; your picks go back as its answer, as the Mac's
-/// panel sends them. Decline stops the turn.
+/// Questions a session asks you (Claude Code's `AskUserQuestion`), one at a time as the Mac's
+/// panel and Claude Code's own prompt show them, with a strip of their headers to go between them,
+/// ticked once answered: all at once, a few long ones filled the screen. Pick a choice, several
+/// where a question takes more, or write your own answer. A choice for a question that takes one
+/// goes on to the next without an answer, and the button says Next until none is left; your picks
+/// go back as its answer, as the Mac's panel sends them. Decline stops the turn.
 private struct QuestionsCard: View {
     let pending: Pending
     let account: String
@@ -1225,8 +1227,14 @@ private struct QuestionsCard: View {
     let decline: () -> Void
     @State private var picks: [String: [String]] = [:]
     @State private var own: [String: String] = [:]
+    /// The question showing.
+    @State private var at = 0
 
     var body: some View {
+        let questions = pending.questions
+        let shown = min(at, questions.count - 1)
+        let q = questions[shown]
+        let next = nextQuestion(after: shown)
         VStack(alignment: .leading, spacing: 12) {
             Label {
                 Text("Asks you").font(.subheadline.weight(.medium))
@@ -1239,14 +1247,14 @@ private struct QuestionsCard: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            // As tall as the questions are, up to a point, and it scrolls past that.
-            UpTo(most: 360) {
+            if questions.count > 1 {
+                steps(showing: shown)
+            }
+            // As tall as the question is, up to a point, and it scrolls past that.
+            UpTo(most: 320) {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
-                        ForEach(pending.questions, id: \.question) { q in
-                            question(q)
-                        }
-                    }
+                    question(q, alone: questions.count == 1)
+                        .id(q.question)
                 }
                 .scrollBounceBehavior(.basedOnSize)
             }
@@ -1255,23 +1263,66 @@ private struct QuestionsCard: View {
                     Button(answering == .deny ? "Declining…" : "Decline", role: .destructive, action: decline)
                         .buttonStyle(.bordered)
                     Spacer()
-                    Button(answering == .allow ? "Answering…" : "Answer") { answer(answers) }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(answers.isEmpty)
+                    if let next {
+                        Button("Next") { go(next) }
+                            .buttonStyle(.borderedProminent)
+                    } else {
+                        Button(answering == .allow ? "Answering…" : "Answer") { answer(answers) }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(answers.isEmpty)
+                    }
                 }
                 .disabled(answering != nil)
+                Text("\(q.multiSelect ? "Pick one or more." : "Pick one, or write your own.") Decline stops the turn, or write below to say something else.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             } else if let why {
                 Text(why).font(.footnote).foregroundStyle(.secondary)
             }
         }
-        .padding(14)
-        .background(.orange.opacity(0.1), in: .rect(cornerRadius: 20))
+        .modifier(WaitingCard())
+        // Another set of questions starts at its first, with nothing picked.
+        .onChange(of: pending.id) { _, _ in
+            at = 0
+            picks = [:]
+            own = [:]
+        }
     }
 
-    private func question(_ q: Question) -> some View {
+    /// The questions by their headers, the one showing filled, a tick on each answered.
+    private func steps(showing shown: Int) -> some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 6) {
+                ForEach(Array(pending.questions.enumerated()), id: \.offset) { i, q in
+                    let on = i == shown
+                    Button { go(i) } label: {
+                        HStack(spacing: 4) {
+                            if answered(q) {
+                                Image(systemName: "checkmark").font(.caption2.weight(.bold))
+                            }
+                            Text(q.header ?? "Question \(i + 1)").font(.caption.weight(.semibold)).lineLimit(1)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .foregroundStyle(on ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+                        .background(on ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.background), in: .capsule)
+                        .contentShape(.capsule)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(q.header ?? "Question \(i + 1)")
+                    .accessibilityValue(answered(q) ? "Answered" : "")
+                    .accessibilityAddTraits(on ? .isSelected : [])
+                }
+            }
+        }
+        .scrollIndicators(.hidden)
+    }
+
+    private func question(_ q: Question, alone: Bool) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                if let header = q.header {
+                // With several, the strip above names each by its header.
+                if alone, let header = q.header {
                     Text(header)
                         .font(.caption.weight(.semibold))
                         .padding(.horizontal, 6)
@@ -1307,18 +1358,44 @@ private struct QuestionsCard: View {
                 .textFieldStyle(.roundedBorder)
                 .disabled(!canAct || answering != nil)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// One answer to a question that takes one: a choice clears what was written, as on the Mac.
+    private func go(_ i: Int) {
+        withAnimation(.snappy) { at = i }
+    }
+
+    /// One answer to a question that takes one: a choice clears what was written, as on the Mac,
+    /// and is all it takes, so the next without an answer shows.
     private func pick(_ q: Question, _ label: String) {
         let chosen = picks[q.question] ?? []
         picks[q.question] = q.multiSelect ? (chosen.contains(label) ? chosen.filter { $0 != label } : chosen + [label]) : [label]
-        if !q.multiSelect { own[q.question] = "" }
+        if !q.multiSelect {
+            own[q.question] = ""
+            if let next = nextQuestion(after: min(at, pending.questions.count - 1)) { go(next) }
+        }
     }
 
     private func type(_ q: Question, _ text: String) {
         own[q.question] = text
         if !q.multiSelect && !text.trimmingCharacters(in: .whitespaces).isEmpty { picks[q.question] = [] }
+    }
+
+    private func answered(_ q: Question) -> Bool {
+        answers.contains { $0.question == q.question }
+    }
+
+    /// The next question after `at` without an answer, coming round from the first (the Mac's
+    /// `nextQuestion`); none once every other one has one.
+    private func nextQuestion(after at: Int) -> Int? {
+        let questions = pending.questions
+        let n = questions.count
+        guard n > 1 else { return nil }
+        for k in 1..<n {
+            let i = (at + k) % n
+            if !answered(questions[i]) { return i }
+        }
+        return nil
     }
 
     /// Each question's picks: several, with your words after them, where it takes more; else your
@@ -1330,6 +1407,22 @@ private struct QuestionsCard: View {
             let all = q.multiSelect ? chosen + (words.isEmpty ? [] : [words]) : (words.isEmpty ? Array(chosen.prefix(1)) : [words])
             return all.isEmpty ? nil : QuestionAnswer(question: q.question, multiSelect: q.multiSelect, picks: all)
         }
+    }
+}
+
+/// What a session waits on you for, over the foot of its conversation: solid, so what scrolls under
+/// it doesn't show through (it did, and a long question was hard to read over the reply it came
+/// with), in the orange of a session that needs you, lifted a little off the page.
+private struct WaitingCard: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .padding(14)
+            .background {
+                let shape = RoundedRectangle(cornerRadius: 20)
+                shape.fill(.background)
+                    .overlay(shape.fill(.orange.opacity(0.1)))
+                    .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
+            }
     }
 }
 
@@ -1819,7 +1912,10 @@ struct Kept: Sendable {
 private func replyWords(why: String?, pending: Pending?, account: String?, otherwise: () -> String) -> String {
     if let why { return why }
     if pending?.cannot != nil { return "It waits on you where it runs: send once that's answered" }
-    if pending != nil, let account { return "Deny it and tell \(account) what to do instead" }
+    // Questions are declined, as the Mac's box says it; a call is denied.
+    if let pending, let account {
+        return pending.questions.isEmpty ? "Deny it and tell \(account) what to do instead" : "Decline it and write to \(account) instead"
+    }
     return otherwise()
 }
 
