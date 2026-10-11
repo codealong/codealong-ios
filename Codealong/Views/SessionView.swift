@@ -307,20 +307,25 @@ struct SessionView: View {
             .simultaneousGesture(TapGesture().onEnded { typing = false })
             .gesture(QueueSwipe(back: before != nil, moved: swiping, ended: swiped))
             .onScrollGeometryChange(for: Bool.self) { geo in
-                geo.contentOffset.y + geo.containerSize.height >= geo.contentSize.height - 60
+                geo.atEnd
             } action: { _, now in
                 atBottom = now
             }
             // The top of what's in view, below the bars, in the conversation's coordinates. Its
             // height goes with it: a page too short to scroll is near the top without moving.
             .onScrollGeometryChange(for: ScrollSpot.Place.self) { geo in
-                .init(offset: geo.contentOffset.y, inset: geo.contentInsets.top, height: geo.contentSize.height)
+                .init(offset: geo.contentOffset.y, inset: geo.contentInsets.top, height: geo.contentSize.height, atEnd: geo.atEnd)
             } action: { was, place in
                 scrolled(from: was, to: place)
             }
             // A page that went in above while it scrolled goes in once it's still.
             .onScrollPhaseChange { _, phase in
                 scroll.still = phase == .idle
+                // You took it from there yourself.
+                if phase == .interacting {
+                    scroll.settling = false
+                    scroll.backToEnd = false
+                }
                 if scroll.still, let waiting = scroll.waiting { show(waiting) }
             }
             .onChange(of: items.count) { _, _ in
@@ -760,6 +765,18 @@ struct SessionView: View {
     /// The scroll view moved, or what's in it changed size.
     private func scrolled(from was: ScrollSpot.Place, to place: ScrollSpot.Place) {
         scroll.top = place.top
+        // The bars' inset arriving as the screen comes in (after a first layout without it, when
+        // the conversation was kept from before) moves the scroll view to its top, though its
+        // position still says the end: until you scroll it, it goes back. Left there, it read the
+        // page before as if you'd scrolled up, and held your place at the top of that.
+        if scroll.settling && place.inset != was.inset && !place.atEnd && scroll.hold == .none {
+            scroll.backToEnd = true
+            position.scrollTo(edge: .bottom)
+        }
+        if scroll.backToEnd {
+            guard place.atEnd else { return }
+            scroll.backToEnd = false
+        }
         // A page went in above: what's in view moves down with it, so it holds still. At the end,
         // or in a conversation shorter than the screen, the scroll view has done it already. By the
         // offset, not `top`: a short conversation sits at the bottom by a top inset that changes
@@ -883,6 +900,8 @@ struct SessionView: View {
             await older()
             if items.count == had && scroll.waiting == nil { return }
         }
+        scroll.settling = false
+        scroll.backToEnd = false
         withAnimation(.snappy) { proxy.scrollTo(id, anchor: .top) }
     }
 
@@ -1713,6 +1732,11 @@ private struct ToolChip: View {
     var waiting: [Item]?
     /// How far along holding your place a page going in above is.
     var hold = Hold.none
+    /// Opened at the newest and not scrolled by you since.
+    var settling = true
+    /// The bars came in and moved it off the newest: it's going back, and no page is read above
+    /// until it's there.
+    var backToEnd = false
 
     enum Hold: Equatable {
         case none
@@ -1726,8 +1750,16 @@ private struct ToolChip: View {
         var offset: CGFloat
         var inset: CGFloat
         var height: CGFloat
+        var atEnd = false
         var top: CGFloat { offset + inset }
     }
+}
+
+private extension ScrollGeometry {
+    /// Scrolled to the newest: the foot of what's in view, above the reply box, is at the end. Not
+    /// by the container's height, which leaves out the bars' insets: with them it said a
+    /// conversation at its end was scrolled up, and new messages didn't keep it there.
+    var atEnd: Bool { visibleRect.maxY - contentInsets.bottom >= contentSize.height - 60 }
 }
 
 /// Where one of your prompts is against the top of what's in view.
