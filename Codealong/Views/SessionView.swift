@@ -1847,7 +1847,7 @@ private struct PinnedPrompt: View {
         }
         .buttonStyle(.plain)
         .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 18))
-        .accessibilityLabel("Your prompt: \(line)")
+        .accessibilityLabel(images == 0 || !Self.hasWords(text) ? "Your prompt: \(line)" : "Your prompt, with \(images == 1 ? "an image" : "\(images) images"): \(line)")
         .accessibilityHint("Shows it in the conversation")
     }
 
@@ -1860,6 +1860,11 @@ private struct PinnedPrompt: View {
             .split(whereSeparator: \.isWhitespace).joined(separator: " ")
         if !words.isEmpty || images == 0 { return (words, images) }
         return (images == 1 ? "An image" : "\(images) images", images)
+    }
+
+    /// It has words besides its images: the line is them, and doesn't say the images.
+    static func hasWords(_ text: String) -> Bool {
+        promptParts(text: text).contains { $0.kind != .image && !$0.text.allSatisfy(\.isWhitespace) }
     }
 }
 
@@ -2613,7 +2618,7 @@ private struct ModelMenu: View {
                     label("in \(place)")
                 }
             }
-            .accessibilityLabel(takesModel ? "Goes on in \(place) on \(model)" : "Goes on in \(place)")
+            .accessibilityLabel(takesModel ? "Goes on in \(place) on \(model)\(effort.map { ", \($0) effort" } ?? "")" : "Goes on in \(place)")
         } else if rules.showsModel {
             let shown = rules.row?.model.map { modelName(model: $0, models: rules.account?.models ?? []) } ?? "Model"
             if rules.switchesModel, let account = rules.account {
