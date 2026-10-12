@@ -152,6 +152,17 @@ struct SessionView: View {
                 .environment(\.imageMac, row?.device)
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { swipe.width = $0 }
+        // What's next is in the menu and a swipe away; on a keyboard, ⌘] as on the Mac.
+        .background {
+            if let next = after.first {
+                // Unseen, at no size: one that takes no touches takes no keys either.
+                Button("Next") { moveOn(to: next) }
+                    .keyboardShortcut("]", modifiers: .command)
+                    .frame(width: 0, height: 0)
+                    .opacity(0)
+                    .accessibilityHidden(true)
+            }
+        }
         .navigationTitle(row?.title ?? "Session")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -164,15 +175,6 @@ struct SessionView: View {
                     if let titled {
                         Text("\(Names.short(titled.deviceName)) · \(titled.project)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                     }
-                }
-            }
-            if let next = after.first {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { moveOn(to: next) } label: {
-                        Label("Next", systemImage: "chevron.down")
-                    }
-                    .keyboardShortcut("]", modifiers: .command)
-                    .accessibilityLabel("Next that waits on you: \(next.title)")
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
@@ -361,6 +363,14 @@ struct SessionView: View {
     /// archive.
     @ViewBuilder
     private var sessionMenu: some View {
+        // A swipe across the screen does it too.
+        if let next = after.first {
+            Button { moveOn(to: next) } label: {
+                Label("Go to next", systemImage: "arrow.forward")
+                Text(next.title)
+            }
+            Divider()
+        }
         if canStop {
             Button("Stop", systemImage: "stop.circle") { Task { await stop() } }
         }
@@ -464,11 +474,6 @@ struct SessionView: View {
                     }
                 }
             }
-            if canAct && (resuming || showsModel) {
-                ReplyTools(rules: rules, resumePlace: $resumePlace, resumeModel: $resumeModel, resumeEffort: $resumeEffort, switching: switching) { model in
-                    Task { await switchModel(model) }
-                }
-            }
             // The images going with the reply sit in the box, over what's written.
             VStack(alignment: .leading, spacing: 2) {
                 if canAttach && (!attached.isEmpty || (typing && pasteHasImage)) {
@@ -501,7 +506,8 @@ struct SessionView: View {
                     }
                     // The words before you write say how a message gets there, which takes more than a
                     // line on a phone: up to two lines of them sit under the field while it's empty, and
-                    // the box is as tall as they are.
+                    // the box is as tall as they are. Where one that isn't running goes on is beside them
+                    // too, under its model.
                     ZStack(alignment: .leading) {
                         if draft.isEmpty {
                             Text(placeholder)
@@ -523,6 +529,11 @@ struct SessionView: View {
                             }
                     }
                     .frame(minHeight: sendSize)
+                    if canAct && (resuming || showsModel) {
+                        ModelMenu(rules: rules, resumePlace: $resumePlace, resumeModel: $resumeModel, resumeEffort: $resumeEffort, switching: switching, height: sendSize) { model in
+                            Task { await switchModel(model) }
+                        }
+                    }
                     if canSendNow {
                         // Into the turn it's taking, at once: Claude Code's send now, Codex's steer.
                         Button {
@@ -1603,10 +1614,11 @@ private struct QuestionsCard: View {
 /// replies sit in one too, untinted: they only offer.
 private struct WaitingCard: ViewModifier {
     var tint: Color? = .orange
+    var padding: CGFloat = 14
 
     func body(content: Content) -> some View {
         content
-            .padding(14)
+            .padding(padding)
             .background {
                 let shape = RoundedRectangle(cornerRadius: 20)
                 // Untinted, a hairline edge keeps it apart from the page in dark mode, where both
@@ -1646,8 +1658,49 @@ private struct SuggestedRepliesView: View {
     let send: (String) -> Void
     let edit: (String) -> Void
     let dismiss: () -> Void
+    /// Shown whole. Folded, they're a line over the box, so they don't take the conversation's
+    /// room until you look.
+    @State private var open = false
 
     var body: some View {
+        if open {
+            whole
+        } else {
+            folded
+        }
+    }
+
+    private var folded: some View {
+        let count = suggestions.replies.count
+        return Button {
+            withAnimation(.snappy) { open = true }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "sparkles").font(.caption).foregroundStyle(.secondary)
+                Text(count == 1 ? "A suggested reply" : "\(count) suggested replies")
+                    .font(.footnote.weight(.medium))
+                    .layoutPriority(1)
+                if let by = suggestions.by {
+                    Text("· \(by)").font(.footnote).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.up").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            }
+            .lineLimit(1)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .modifier(WaitingCard(tint: nil, padding: 0))
+        .contextMenu {
+            Button("Dismiss", systemImage: "xmark") { dismiss() }
+        }
+        .accessibilityLabel(suggestions.by.map { "\(count == 1 ? "A suggested reply" : "\(count) suggested replies") by \($0)" } ?? (count == 1 ? "A suggested reply" : "\(count) suggested replies"))
+        .accessibilityHint("Shows them")
+    }
+
+    private var whole: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Image(systemName: "sparkles").font(.caption)
@@ -1658,6 +1711,15 @@ private struct SuggestedRepliesView: View {
                 Button("Dismiss", action: dismiss)
                     .font(.caption)
                     .accessibilityHint("Takes these suggestions away")
+                Button {
+                    withAnimation(.snappy) { open = false }
+                } label: {
+                    Image(systemName: "chevron.down").font(.caption.weight(.semibold))
+                        .frame(width: 28, height: 22)
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Fold them away")
             }
             .foregroundStyle(.secondary)
             if let note = suggestions.note {
@@ -1697,26 +1759,6 @@ private struct SuggestedRepliesView: View {
         }
         // Solid, as what waits on you is: over the conversation they were hard to read.
         .modifier(WaitingCard(tint: nil))
-    }
-}
-
-/// A small chip above the reply box: where a session goes on, or its model.
-private struct ToolChip: View {
-    let symbol: String
-    let text: String
-    var chevron = true
-
-    var body: some View {
-        HStack(spacing: 5) {
-            Image(systemName: symbol).font(.caption)
-            Text(text).font(.footnote.weight(.medium)).lineLimit(1)
-            if chevron {
-                Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .glassEffect(.regular.interactive(), in: .capsule)
     }
 }
 
@@ -1788,9 +1830,10 @@ private struct PinnedPrompt: View {
     let action: () -> Void
 
     var body: some View {
+        let (line, images) = Self.line(text)
         Button(action: action) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(text.split(whereSeparator: \.isWhitespace).joined(separator: " "))
+                Text(images > 0 ? "\(Text(Image(systemName: "photo")).foregroundStyle(.secondary)) \(line)" : "\(line)")
                     .font(.subheadline)
                     .lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1804,8 +1847,19 @@ private struct PinnedPrompt: View {
         }
         .buttonStyle(.plain)
         .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 18))
-        .accessibilityLabel("Your prompt: \(text)")
+        .accessibilityLabel("Your prompt: \(line)")
         .accessibilityHint("Shows it in the conversation")
+    }
+
+    /// The prompt as a line: its words, on one line, without the images it refers to, which a
+    /// photo sign stands for; one of images alone says how many.
+    static func line(_ text: String) -> (String, images: Int) {
+        let parts = promptParts(text: text)
+        let images = parts.count { $0.kind == .image }
+        let words = parts.filter { $0.kind != .image }.map(\.text).joined()
+            .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        if !words.isEmpty || images == 0 { return (words, images) }
+        return (images == 1 ? "An image" : "\(images) images", images)
     }
 }
 
@@ -2419,14 +2473,14 @@ private struct SessionGlance: View {
             if let suggestions = row?.suggestions {
                 SuggestedRepliesView(suggestions: suggestions, blocked: canAct && pending?.cannot == nil ? nil : why ?? "It waits on you where it runs: answer that there first") { _ in } edit: { _ in } dismiss: {}
             }
-            if canAct && (rules.resuming || rules.showsModel) {
-                ReplyTools(rules: rules, resumePlace: .constant(nil), resumeModel: .constant(nil), resumeEffort: .constant(nil), switching: false) { _ in }
-            }
             HStack(alignment: .bottom, spacing: 8) {
                 Text(draft.isEmpty ? replyWords(why: why, pending: pending, account: row?.account) { store.replyPlaceholder(key, way: kept.way, resumePlace: rules.resuming ? rules.resumeAt?.id : nil, behind: rules.resuming && rules.resumeAt?.behind == true) } : draft)
                     .foregroundStyle(draft.isEmpty ? .tertiary : .primary)
                     .lineLimit(draft.isEmpty ? 2 : 6)
                     .frame(maxWidth: .infinity, minHeight: sendSize, alignment: .leading)
+                if canAct && (rules.resuming || rules.showsModel) {
+                    ModelMenu(rules: rules, resumePlace: .constant(nil), resumeModel: .constant(nil), resumeEffort: .constant(nil), switching: false, height: sendSize) { _ in }
+                }
                 // Buttons as the screen's are, dimmed as theirs are while there's nothing to send.
                 if canAct && row?.steerable == true && pending == nil {
                     Button {} label: {
@@ -2503,68 +2557,106 @@ private struct ReplyRules {
     var showsModel: Bool { row?.live == true && (switchesModel || row?.model != nil) }
 }
 
-/// Chips over the reply box: where a session that isn't running goes on, and on what; a running
-/// one's model, which switches where its Mac can.
-private struct ReplyTools: View {
+/// The model a reply goes on with, in the reply box beside send: a running session's, which
+/// switches where its Mac can; for one that isn't running, where it goes on, and on what.
+private struct ModelMenu: View {
     let rules: ReplyRules
     @Binding var resumePlace: String?
     @Binding var resumeModel: String?
     @Binding var resumeEffort: String?
     let switching: Bool
+    /// The send button's, so it lines up with it.
+    let height: CGFloat
     let switchModel: (String) -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
-            if rules.resuming, let account = rules.account {
-                Menu {
+        // Quiet, as the box's words are: not a link's accent.
+        menu.tint(.secondary)
+    }
+
+    @ViewBuilder
+    private var menu: some View {
+        if rules.resuming, let account = rules.account {
+            let takesModel = rules.resumeTakesModel && !account.models.isEmpty
+            let model = (resumeModel ?? account.defaultModel).map { modelName(model: $0, models: account.models) } ?? "Default model"
+            let effort = account.efforts.first { $0.id == resumeEffort }?.label
+            let place = rules.resumeAt?.label ?? "a terminal"
+            Menu {
+                Section("Goes on in") {
                     Picker("Goes on in", selection: Binding(get: { rules.resumeAt?.id }, set: { resumePlace = $0 })) {
                         ForEach(account.resumes, id: \.id) { p in
                             Text(p.behind ? "\(p.label) (behind its windows)" : p.label).tag(Optional(p.id))
                         }
                     }
-                } label: {
-                    ToolChip(symbol: "play.circle", text: "Goes on in \(rules.resumeAt?.label ?? "a terminal")")
                 }
-                if rules.resumeTakesModel && !account.models.isEmpty {
-                    Menu {
+                if takesModel {
+                    Section("Model") {
                         Picker("Model", selection: $resumeModel) {
                             Text(account.defaultModel.map { "Default (\(modelName(model: $0, models: account.models)))" } ?? "Default").tag(String?.none)
                             ForEach(account.models, id: \.id) { m in Text(m.label).tag(Optional(m.id)) }
                         }
-                        if !account.efforts.isEmpty {
+                    }
+                    if !account.efforts.isEmpty {
+                        Section("Effort") {
                             Picker("Effort", selection: $resumeEffort) {
                                 Text("Default effort").tag(String?.none)
                                 ForEach(account.efforts, id: \.id) { e in Text(e.label).tag(Optional(e.id)) }
                             }
                         }
-                    } label: {
-                        let model = (resumeModel ?? account.defaultModel).map { modelName(model: $0, models: account.models) } ?? "Default model"
-                        ToolChip(symbol: "cpu", text: [model, account.efforts.first { $0.id == resumeEffort }?.label].compactMap { $0 }.joined(separator: " · "))
                     }
                 }
-            } else if rules.showsModel {
-                let shown = rules.row?.model.map { modelName(model: $0, models: rules.account?.models ?? []) } ?? "Model"
-                if rules.switchesModel, let account = rules.account {
-                    Menu {
-                        // Which of the names it's on isn't known for sure (a reply names the model
-                        // without its context size), so none is checked; the chip says it.
-                        ForEach(account.models, id: \.id) { m in
-                            Button(m.label) { switchModel(m.id) }
-                        }
-                    } label: {
-                        ToolChip(symbol: "cpu", text: switching ? "Switching…" : shown)
-                    }
-                    // Not while its turn runs or it waits on you: the command would go in as a
-                    // prompt, or answer it.
-                    .disabled(switching || rules.row?.status == .working || rules.row?.status == .needs)
-                    .accessibilityHint("Switches this session's model, for it alone, once its turn ends")
+            } label: {
+                // On what, and under it where: the box's words have no room left to say it.
+                if takesModel {
+                    label([model, effort].compactMap { $0 }.joined(separator: " · "), under: "in \(place)")
                 } else {
-                    ToolChip(symbol: "cpu", text: shown, chevron: false)
+                    label("in \(place)")
                 }
             }
-            Spacer(minLength: 0)
+            .accessibilityLabel(takesModel ? "Goes on in \(place) on \(model)" : "Goes on in \(place)")
+        } else if rules.showsModel {
+            let shown = rules.row?.model.map { modelName(model: $0, models: rules.account?.models ?? []) } ?? "Model"
+            if rules.switchesModel, let account = rules.account {
+                Menu {
+                    // Which of the names it's on isn't known for sure (a reply names the model
+                    // without its context size), so none is checked; the label says it.
+                    ForEach(account.models, id: \.id) { m in
+                        Button(m.label) { switchModel(m.id) }
+                    }
+                } label: {
+                    label(switching ? "Switching…" : shown)
+                }
+                // Not while its turn runs or it waits on you: the command would go in as a
+                // prompt, or answer it.
+                .disabled(switching || rules.row?.status == .working || rules.row?.status == .needs)
+                .accessibilityLabel("Model: \(shown)")
+                .accessibilityHint("Switches this session's model, for it alone, once its turn ends")
+            } else {
+                label(shown, menu: false)
+                    .accessibilityLabel("Model: \(shown)")
+            }
         }
-        .tint(.primary)
+    }
+
+    private func label(_ text: String, under: String? = nil, menu: Bool = true) -> some View {
+        HStack(spacing: 3) {
+            VStack(alignment: .trailing, spacing: 0) {
+                Text(text)
+                if let under {
+                    Text(under).font(.caption2.weight(.regular)).foregroundStyle(.tertiary)
+                }
+            }
+            .lineLimit(1)
+            if menu {
+                Image(systemName: "chevron.up.chevron.down").font(.caption2.weight(.semibold))
+            }
+        }
+        .font(.footnote.weight(.medium))
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: 130)
+        .frame(height: height)
+        .fixedSize(horizontal: false, vertical: true)
+        .contentShape(.rect)
     }
 }
 
