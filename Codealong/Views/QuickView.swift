@@ -28,6 +28,21 @@ struct QuickView: View {
     @State private var composer = Composer()
     @State private var problem: String?
     @State private var acting = false
+    /// Improve Codealong: a session that improves Codealong itself, as the Mac's button beside
+    /// New session starts one. The list goes onto Codealong's own project and worktree on the Mac
+    /// the core picks, a picture of this screen as it was is kept on that Mac for the prompt, and
+    /// the input asks what to change. Nil while the list is up for anything else.
+    @State private var improving: Improving?
+
+    struct Improving {
+        let target: ImproveTarget
+        /// The picture of the screen, shown under the input until it's taken off.
+        var thumb: UIImage?
+        /// How the prompt refers to it once its Mac has it; nil while it's on its way or taken off.
+        var shot: ImproveShot?
+        var keeping = false
+        var problem: String?
+    }
 
     private var query: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
 
@@ -76,6 +91,13 @@ struct QuickView: View {
             .onAppear {
                 // Text typed for a test at launch (`QUERY=<text> scripts/run.sh`).
                 if let q = ProcessInfo.processInfo.environment["CODEALONG_QUERY"], !q.isEmpty, text.isEmpty { text = q }
+                // Improve Codealong pressed for a test at launch (`IMPROVE=1 scripts/run.sh`), once the Macs have answered.
+                if ProcessInfo.processInfo.environment["CODEALONG_IMPROVE"] == "1" {
+                    Task {
+                        try? await Task.sleep(for: .seconds(3))
+                        improveCodealong()
+                    }
+                }
             }
             .task(id: "\(query)\u{1}\(project)\u{1}\(routeDevice ?? "")") { await suggest() }
             .alert(store.notice ?? "", isPresented: Binding(get: { store.notice != nil }, set: { if !$0 { store.notice = nil } })) {
@@ -109,6 +131,16 @@ struct QuickView: View {
             HStack(spacing: 8) {
                 projectMenu
                 Spacer(minLength: 0)
+                Button { improveCodealong() } label: {
+                    Image(systemName: "lightbulb")
+                        .font(.body.weight(.medium))
+                        .frame(width: 36, height: 32)
+                }
+                .buttonStyle(.glass)
+                .tint(improving == nil ? nil : .orange)
+                .disabled(store.devices.isEmpty)
+                .accessibilityLabel("Improve Codealong")
+                .accessibilityHint("Starts a session that improves Codealong itself, with a picture of this screen")
                 Button { showingMacs = true } label: {
                     Image(systemName: "laptopcomputer")
                         .font(.body.weight(.medium))
@@ -119,7 +151,7 @@ struct QuickView: View {
                 .accessibilityLabel("Macs")
             }
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                TextField("Find a session, or describe new work…", text: $text, axis: .vertical)
+                TextField(improving == nil ? "Find a session, or describe new work…" : "Describe how to improve Codealong…", text: $text, axis: .vertical)
                     .font(.title3)
                     .lineLimit(1...6)
                     .focused($typing)
@@ -134,10 +166,58 @@ struct QuickView: View {
                     .accessibilityLabel("Clear")
                 }
             }
+            if let improving {
+                improveStrip(improving)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)
         .padding(.bottom, 12)
+    }
+
+    /// Improve Codealong's picture of the screen, as the Mac's panel shows its pictures under the
+    /// input: a thumbnail with a button to take it off, and where the session goes.
+    @ViewBuilder
+    private func improveStrip(_ improving: Improving) -> some View {
+        HStack(spacing: 10) {
+            if let thumb = improving.thumb {
+                ZStack(alignment: .topTrailing) {
+                    Image(uiImage: thumb)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 44, height: 72)
+                        .clipShape(.rect(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.separator))
+                        .opacity(improving.keeping ? 0.5 : 1)
+                    Button {
+                        self.improving?.thumb = nil
+                        self.improving?.shot = nil
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.footnote)
+                            .foregroundStyle(.white, .black.opacity(0.6))
+                    }
+                    .buttonStyle(.plain)
+                    .offset(x: 6, y: -6)
+                    .accessibilityLabel("Remove the picture")
+                }
+                .accessibilityLabel(improving.keeping ? "A picture of this screen, on its way to the Mac" : "A picture of this screen")
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Improving Codealong")
+                    .font(.subheadline.weight(.semibold))
+                Text(improving.problem ?? (improving.thumb == nil ? "Without a picture of this screen." : improving.keeping ? "Keeping a picture of this screen on the Mac…" : "With a picture of this screen as it was."))
+                    .font(.footnote)
+                    .foregroundStyle(improving.problem == nil ? .secondary : Color.red)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 0)
+            Button("Cancel") { self.improving = nil }
+                .font(.footnote)
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.top, 2)
     }
 
     private var projectMenu: some View {
@@ -402,13 +482,22 @@ struct QuickView: View {
         let worktree = over ?? composer.worktree(store: store, project: project)
         guard let worktree, let account = composer.account, let place = composer.place else { return }
         let newTree = composer.takesNewWorktree && !worktree.chat && (over2 ?? composer.newWorktree)
+        // The picture is still on its way to the Mac: the prompt would go without it.
+        if improving?.keeping == true {
+            problem = "The picture of the screen is still on its way to the Mac. Try again in a moment."
+            return
+        }
         acting = true
         problem = nil
         defer { acting = false }
+        // Improving Codealong: the picture of the screen goes after what you wrote, as the Mac's
+        // panel writes it (the core's rule).
+        let prompt = improving.map { improvePrompt(text: query, shots: $0.shot.map { [$0] } ?? []) } ?? query
         do {
-            let started = try await store.startSession(device: worktree.device, worktree: worktree.id, account: account, place: place, prompt: query, model: composer.takesModel ? composer.model : nil, effort: composer.takesModel ? composer.effort : nil, newWorktree: newTree)
+            let started = try await store.startSession(device: worktree.device, worktree: worktree.id, account: account, place: place, prompt: prompt, model: composer.takesModel ? composer.model : nil, effort: composer.takesModel ? composer.effort : nil, newWorktree: newTree)
             text = ""
             typing = false
+            improving = nil
             // It opens once its Mac lists it; a start whose id the Mac doesn't know yet says what's next.
             if let key = started.key {
                 store.openWhenListed = key
@@ -418,6 +507,57 @@ struct QuickView: View {
         } catch {
             problem = words(error)
         }
+    }
+
+    /// Improve Codealong: a picture of this screen as it is, then the list onto Codealong's own
+    /// project and worktree on the Mac the core picks, with the picture on its way there for the
+    /// prompt. With no Mac marking Codealong's source (none has it, or they run a Codealong from
+    /// before the mark), it says so and changes nothing.
+    private func improveCodealong() {
+        guard let target = store.improveTarget() else {
+            store.notice = "No Mac lists Codealong’s source. Clone github.com/codealong/codealong into a folder Codealong searches on a Mac, in a project there, and make sure the Mac runs a Codealong from October 12 or later."
+            return
+        }
+        // The picture first, before anything here changes.
+        let picture = screenshot()
+        improving = Improving(target: target, thumb: picture?.image, shot: nil, keeping: picture != nil)
+        composer.device = target.device
+        if project != target.project {
+            project = target.project
+            // The start bar drops the worktree picked when the project changes, so this one goes in after.
+            let worktree = target.worktree
+            Task { @MainActor in
+                await Task.yield()
+                composer.worktreeID = worktree
+            }
+        } else {
+            composer.worktreeID = target.worktree
+        }
+        typing = true
+        guard let picture else { return }
+        Task {
+            do {
+                let reference = try await store.keepScreenshot(picture.data, on: target.device)
+                // Taken off meanwhile, or the list opened for something else: the picture stays out.
+                guard improving?.target == target, improving?.thumb != nil else { return }
+                improving?.shot = ImproveShot(name: "iPhone screen", reference: reference)
+                improving?.keeping = false
+            } catch {
+                improving?.thumb = nil
+                improving?.keeping = false
+                improving?.problem = "The picture couldn’t be kept on the Mac: \(words(error))"
+            }
+        }
+    }
+
+    /// This screen as it's drawn now, as PNG bytes and an image, or nil with no window to draw.
+    private func screenshot() -> (data: Data, image: UIImage)? {
+        guard let window = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).flatMap(\.windows).first(where: \.isKeyWindow) else { return nil }
+        let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+            window.drawHierarchy(in: window.bounds, afterScreenUpdates: false)
+        }
+        guard let data = image.pngData() else { return nil }
+        return (data, image)
     }
 
     private func openListed() {

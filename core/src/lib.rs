@@ -1363,6 +1363,9 @@ pub struct Worktree {
     /// What it holds, for a worktree that takes one piece of work after another; none for one
     /// kept for a single piece of work.
     pub reuse: Option<WorktreeReuse>,
+    /// Codealong's own source (the Mac's improve.rs): Improve Codealong starts its sessions here.
+    /// Macs before 2026-10-12 mark none.
+    pub codealong: bool,
 }
 
 /// What a reusable worktree holds (the Mac's board.rs `reuse_of`).
@@ -1472,11 +1475,96 @@ pub(crate) fn all_worktrees(feeds: &Feeds) -> Vec<Worktree> {
                     Reuse::Review => WorktreeReuse::Review,
                     Reuse::Landed => WorktreeReuse::Landed,
                 }),
+                codealong: l.codealong,
             })
         })
         .collect();
     out.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
     out
+}
+
+// ---- improving Codealong ----
+
+/// Where a session that improves Codealong itself starts: Codealong's own source on one of your
+/// Macs, as the Mac's Improve Codealong button starts one (its improve.rs).
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct ImproveTarget {
+    /// The Mac (its key).
+    pub device: String,
+    /// The worktree's id there.
+    pub worktree: String,
+    /// Its project, as the list lines projects up.
+    pub project: String,
+}
+
+/// A picture of the phone's screen kept on the Mac for the prompt: what it's called in the prompt
+/// and how the Mac refers to it (`keep_image`'s answer, `![name](images/<hash>.<ext>)`).
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct ImproveShot {
+    pub name: String,
+    pub reference: String,
+}
+
+/// The source's main checkout on a connected Mac, else another of its worktrees there, else one
+/// on a Mac that isn't connected (the start says so). None when no Mac marks one: none has the
+/// source, or they run Codealong from before the mark.
+pub(crate) fn improve_target_of(worktrees: &[Worktree], online: &[String]) -> Option<ImproveTarget> {
+    // A checkout in none of the Mac's projects lists as Elsewhere there: no place to start.
+    let sources: Vec<&Worktree> = worktrees.iter().filter(|w| w.codealong && !w.chat && w.project != ELSEWHERE).collect();
+    let up = |w: &Worktree| online.iter().any(|d| *d == w.device);
+    let picked = sources.iter().find(|w| w.main && up(w)).or_else(|| sources.iter().find(|w| up(w))).or_else(|| sources.iter().find(|w| w.main)).or_else(|| sources.first())?;
+    Some(ImproveTarget { device: picked.device.clone(), worktree: picked.id.clone(), project: picked.project.clone() })
+}
+
+/// The prompt a session that improves Codealong starts on, as the Mac's panel writes it
+/// (improve.ts `improvePrompt`): what you wrote, then the pictures, each named for what it shows.
+#[uniffi::export]
+pub fn improve_prompt(text: String, shots: Vec<ImproveShot>) -> String {
+    let words = text.trim();
+    if shots.is_empty() {
+        return words.to_string();
+    }
+    let lead = "Codealong’s windows as they were when this was asked:";
+    let lines: Vec<String> = shots
+        .iter()
+        .map(|s| {
+            let path = s.reference.rsplit_once("](").and_then(|(_, p)| p.strip_suffix(')')).unwrap_or(&s.reference);
+            format!("![{}]({path})", s.name.replace(['[', ']', '\n'], ""))
+        })
+        .collect();
+    if words.is_empty() {
+        format!("{lead}\n{}", lines.join("\n"))
+    } else {
+        format!("{words}\n\n{lead}\n{}", lines.join("\n"))
+    }
+}
+
+#[cfg(test)]
+mod improve_tests {
+    use super::*;
+
+    fn wt(id: &str, device: &str, main: bool, codealong: bool) -> Worktree {
+        Worktree { id: id.into(), project: "Codealong".into(), repo: "codealong".into(), name: id.into(), branch: None, last_activity: 0, device: device.into(), main, chat: false, reuse: None, codealong }
+    }
+
+    #[test]
+    fn the_target_is_the_sources_main_checkout_on_a_connected_mac() {
+        let all = [wt("/mini/codealong", "mini", true, true), wt("/mac/other", "mac", true, false), wt("/mac/codealong/wt", "mac", false, true), wt("/mac/codealong", "mac", true, true)];
+        let on = |d: &[&str]| d.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(improve_target_of(&all, &on(&["mac"])).map(|t| t.worktree), Some("/mac/codealong".into()));
+        // Without the main checkout connected, a worktree there; with no Mac connected, a main checkout anywhere.
+        assert_eq!(improve_target_of(&all[..3], &on(&["mac"])).map(|t| t.worktree), Some("/mac/codealong/wt".into()));
+        assert_eq!(improve_target_of(&all, &on(&[])).map(|t| (t.device, t.project)), Some(("mini".into(), "Codealong".into())));
+        assert_eq!(improve_target_of(&all[1..2], &on(&["mac"])), None);
+    }
+
+    #[test]
+    fn the_prompt_is_what_you_wrote_then_the_pictures() {
+        let shots = vec![ImproveShot { name: "iPhone screen".into(), reference: "![image.jpg](images/abc.jpg)".into() }];
+        assert_eq!(improve_prompt("  Make the list denser.  ".into(), shots.clone()), "Make the list denser.\n\nCodealong’s windows as they were when this was asked:\n![iPhone screen](images/abc.jpg)");
+        assert_eq!(improve_prompt("Fix it".into(), vec![]), "Fix it");
+        assert_eq!(improve_prompt("".into(), shots), "Codealong’s windows as they were when this was asked:\n![iPhone screen](images/abc.jpg)");
+    }
 }
 
 /// Where a start from the phone goes unless you pick another: somewhere that needs nobody at the
@@ -1550,6 +1638,13 @@ impl Core {
     /// pick another (`start_worktree`).
     pub fn start_worktree(&self, device: String, project: String) -> Option<Worktree> {
         start_worktree(&self.worktrees(device), &project)
+    }
+
+    /// Where a session that improves Codealong itself starts (`improve_target_of`): Codealong's
+    /// own source on a connected Mac first. None when no Mac marks one.
+    pub fn improve_target(&self) -> Option<ImproveTarget> {
+        let online: Vec<String> = self.snapshot().devices.into_iter().filter(|d| d.online).map(|d| d.key).collect();
+        self.client.with_feeds(|feeds| improve_target_of(&all_worktrees(feeds), &online))
     }
 
     /// What `device` can start, asked of it.

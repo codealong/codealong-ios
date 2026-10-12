@@ -278,6 +278,22 @@ final class Store {
         Task.detached { core.markSeen(keys: [key]) }
     }
 
+    /// Where a session that improves Codealong itself starts: Codealong's own source on one of
+    /// the Macs, a connected one first (the core's rule). Nil when no Mac marks one.
+    func improveTarget() -> ImproveTarget? {
+        _ = tick
+        return core?.improveTarget()
+    }
+
+    /// Keeps a picture of this phone's screen on `device` for the prompt of a session that
+    /// improves Codealong, answering how the prompt refers to it.
+    func keepScreenshot(_ data: Data, on device: String) async throws -> String {
+        let core = try running()
+        guard let prepared = ImagePrep.jpeg(data) else { throw CoreError.Failed(message: "The screen couldn't be pictured.") }
+        let bytes = prepared.data
+        return try await Task.detached { try core.keepImage(device: device, name: "iphone-screen.jpg", bytes: bytes) }.value
+    }
+
     /// The session you went on from to `key`, the latest that's still listed: where swiping back
     /// goes.
     func previous(of key: String) -> SessionRow? {

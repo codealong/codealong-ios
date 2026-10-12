@@ -87,6 +87,12 @@ place the chips under it say: an existing worktree, a new one, or a chat in no p
 type, it finds sessions by what was said in them, and the Mac you pick suggests where the prompt
 belongs when it has Jev's suggestions on.
 
+**Improve Codealong.** The lightbulb at the top takes a picture of this screen, moves the list
+onto Codealong's own source on one of your Macs (its project and worktree there, a connected Mac
+first), and asks how to improve Codealong: describe it and start, and the session gets your words
+with the picture after them, as the Mac's own Improve Codealong button sends its windows. The
+Mac needs a Codealong from October 12 or later, which marks its source.
+
 **Write ahead.** A message shows in the conversation the moment you send it, marked sending, then
 sent, so you can write the next one or move on. One that doesn't go comes back to its box.
 
