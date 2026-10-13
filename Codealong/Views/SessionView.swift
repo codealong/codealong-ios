@@ -2647,21 +2647,22 @@ private struct ModelMenu: View {
     }
 
     private func label(_ text: String, under: String? = nil, menu: Bool = true) -> some View {
-        HStack(spacing: 3) {
-            VStack(alignment: .trailing, spacing: 0) {
-                Text(text)
-                if let under {
-                    Text(under).font(.caption2.weight(.regular)).foregroundStyle(.tertiary)
+        UpToWide(most: 130) {
+            HStack(spacing: 3) {
+                VStack(alignment: .trailing, spacing: 0) {
+                    Text(text)
+                    if let under {
+                        Text(under).font(.caption2.weight(.regular)).foregroundStyle(.tertiary)
+                    }
                 }
-            }
-            .lineLimit(1)
-            if menu {
-                Image(systemName: "chevron.up.chevron.down").font(.caption2.weight(.semibold))
+                .lineLimit(1)
+                if menu {
+                    Image(systemName: "chevron.up.chevron.down").font(.caption2.weight(.semibold))
+                }
             }
         }
         .font(.footnote.weight(.medium))
         .foregroundStyle(.secondary)
-        .frame(maxWidth: 130)
         .frame(height: height)
         .fixedSize(horizontal: false, vertical: true)
         .contentShape(.rect)
@@ -2677,6 +2678,22 @@ private struct UpTo: Layout {
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let needs = subviews.first?.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil)) ?? .zero
         return CGSize(width: proposal.width ?? needs.width, height: min(needs.height, most))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
+    }
+}
+
+/// As wide as what's in it needs, up to `most`, past which its words are cut. A frame with a
+/// greatest width takes all of it whenever it's offered: beside send, a short model's name took
+/// the whole 130 points and squeezed the reply box's field to the left.
+private struct UpToWide: Layout {
+    let most: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = min(proposal.width ?? .infinity, most)
+        return subviews.first?.sizeThatFits(ProposedViewSize(width: width, height: proposal.height)) ?? .zero
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
