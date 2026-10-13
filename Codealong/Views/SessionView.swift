@@ -171,7 +171,12 @@ struct SessionView: View {
                 // the slide is over.
                 let titled = swipe.to.flatMap { to in store.sessions.first { $0.key == to.key } } ?? row
                 VStack(spacing: 0) {
-                    Text(titled?.title ?? "Session").font(.headline).lineLimit(1)
+                    HStack(spacing: 6) {
+                        if let emblem = titled?.emblem {
+                            EmblemView(emblem: emblem, size: 18)
+                        }
+                        Text(titled?.title ?? "Session").font(.headline).lineLimit(1)
+                    }
                     if let titled {
                         Text("\(Names.short(titled.deviceName)) · \(titled.project)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                     }
@@ -1291,9 +1296,14 @@ private struct NextButton: View {
             HStack(spacing: 10) {
                 StatusMark(status: next.status, stalled: next.stalled, waiting: next.waitsInBackground)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(next.title)
-                        .font(.subheadline.weight(.semibold))
-                        .lineLimit(1)
+                    HStack(spacing: 5) {
+                        if let emblem = next.emblem {
+                            EmblemView(emblem: emblem, size: 15)
+                        }
+                        Text(next.title)
+                            .font(.subheadline.weight(.semibold))
+                            .lineLimit(1)
+                    }
                     Text(place)
                         .font(.caption)
                         .foregroundStyle(.secondary)

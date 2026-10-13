@@ -654,6 +654,7 @@ pub(crate) mod tests {
             quiet: false,
             helping: false,
             suggestions: None,
+            emblem: None,
         }
     }
 

@@ -18,6 +18,11 @@ struct QuickSessionRow: View {
             StatusMark(status: row.snoozedUntil == nil ? row.status : .idle, stalled: row.stalled, waiting: row.waitsInBackground)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    if let emblem = row.emblem {
+                        EmblemView(emblem: emblem, size: 18)
+                            .onCapitals(of: .body)
+                            .padding(.trailing, -2)
+                    }
                     Text(Marked.text(row.title, words: words))
                         .font(.body.weight(wantsYou ? .semibold : .regular))
                         .lineLimit(1)

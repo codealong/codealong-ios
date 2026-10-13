@@ -29,4 +29,6 @@ cp build/generated/codealong_mobile.swift Codealong/Generated/
 args=()
 for t in "${TARGETS[@]}"; do args+=(-library "$TARGET_DIR/$t/release/$LIB" -headers build/include); done
 xcodebuild -create-xcframework "${args[@]}" -output build/CodealongCore.xcframework >/dev/null
+# What sessions' emblems are drawn with, from the same commit of the main repo.
+scripts/build-emblems.sh
 echo "Built build/CodealongCore.xcframework (${TARGETS[*]})"

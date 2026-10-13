@@ -44,7 +44,8 @@ the Mac's quick panel does. The menu at the top left orders them *By project* in
 worktree (tap a worktree to fold it away, or its ✎ to start a session in it), or *Recent*, the
 last active first. The pills under it narrow the list to one project; a project that lives on two
 Macs is one project here. The magnifying glass searches sessions, by what was said in them too,
-and PRs.
+and PRs. Each session has the emblem its Mac gave it beside its title, a small icon for what
+it works on in two colors, so you know it at a glance as you do there.
 
 **Read any conversation.** Each session's conversation shows as it does on the Mac: replies as
 formatted text with tables, nested lists and code you can copy, your prompts with their images, the commands that ran and
@@ -200,7 +201,7 @@ so the two can't drift apart.
 ```
 Codealong/          SwiftUI: the quick search, a session, the Macs sheet, the store
 core/               Rust: a thin layer over codealong-peer's client, exported with UniFFI
-scripts/            build-core.sh (core → XCFramework + Swift bindings), build.sh, run.sh, install-device.sh
+scripts/            build-core.sh (core → XCFramework + Swift bindings, then build-emblems.sh), build.sh, run.sh, install-device.sh
 project.yml         XcodeGen's spec; Codealong.xcodeproj is generated from it
 ```
 

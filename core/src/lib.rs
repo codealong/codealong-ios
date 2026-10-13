@@ -188,6 +188,37 @@ pub struct SessionRow {
     /// Replies another session suggested for it, to send with a tap, until something is sent to
     /// it or a turn of its starts.
     pub suggestions: Option<SuggestedReplies>,
+    /// The small icon in two colors beside its title, as its Mac gave it. None until its Mac
+    /// has given it one, and from Macs that don't give them.
+    pub emblem: Option<Emblem>,
+}
+
+/// A session's emblem, as the Mac draws it (its primitives.tsx `SessionEmblem`): the icon Jev
+/// picked for what it works on, on a radial gradient of two colors that go together, the accent
+/// where its light falls and its main color over the rest, so sessions side by side read apart.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct Emblem {
+    /// The icon's name in Tabler's set, as the Mac's emblems.rs `ICONS` lists them.
+    pub icon: String,
+    /// The color over most of it, one of the thirteen the Mac's `--emblem-<color>` tokens name:
+    /// red, rose, pink, magenta, violet, purple, indigo, blue, sky, teal, mint, green or lime.
+    pub color: String,
+    /// The color where the light falls, from the same thirteen.
+    pub accent: String,
+    /// Where the light falls, as fractions of its width and height from its top left.
+    pub light_x: f32,
+    pub light_y: f32,
+}
+
+/// Where an emblem's light falls for each of the eight places a Mac gives, clockwise around its
+/// edge from the top left corner (primitives.tsx `EMBLEM_LIGHTS`). One past them is the first.
+const EMBLEM_LIGHTS: [(f32, f32); 8] = [(0.28, 0.26), (0.50, 0.16), (0.72, 0.26), (0.84, 0.50), (0.72, 0.74), (0.50, 0.84), (0.28, 0.74), (0.16, 0.50)];
+
+impl From<&codealong_peer::model::Emblem> for Emblem {
+    fn from(e: &codealong_peer::model::Emblem) -> Emblem {
+        let (light_x, light_y) = EMBLEM_LIGHTS.get(e.light as usize).copied().unwrap_or(EMBLEM_LIGHTS[0]);
+        Emblem { icon: e.icon.clone(), color: e.color.clone(), accent: e.accent.clone(), light_x, light_y }
+    }
 }
 
 /// Replies suggested for a session by another session that read it (a supervisor going over what
@@ -521,6 +552,7 @@ pub(crate) fn all_rows(feeds: &Feeds) -> Vec<SessionRow> {
                 quiet: s.quiet,
                 helping: s.helping(),
                 suggestions: s.suggestions.as_ref().filter(|g| !g.replies.is_empty()).map(|g| SuggestedReplies { replies: g.replies.clone(), note: g.note.clone(), by: g.by_title.clone() }),
+                emblem: s.emblem.as_ref().map(Emblem::from),
             });
         }
     }
@@ -1188,6 +1220,14 @@ impl From<api::Way> for Way {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_emblem_is_lit_where_its_mac_says_and_from_the_top_left_past_the_eight() {
+        let emblem = |light: u8| Emblem::from(&codealong_peer::model::Emblem { color: "teal".into(), accent: "blue".into(), light, icon: "bug".into() });
+        let lit = emblem(3);
+        assert_eq!((lit.icon.as_str(), lit.color.as_str(), lit.accent.as_str(), lit.light_x, lit.light_y), ("bug", "teal", "blue", 0.84, 0.50));
+        assert_eq!((emblem(8).light_x, emblem(8).light_y), (0.28, 0.26));
+    }
 
     fn item(kind: &str, cursor: u64, id: Option<&str>, output: Option<&str>) -> api::Item {
         api::Item { at: cursor as i64, kind: kind.into(), text: format!("{kind} {cursor}"), id: id.map(String::from), input: None, output: output.map(String::from), failed: false, withdrawn: false, questions: vec![], answers: Default::default(), link: None, cursor, n: 0 }
@@ -1907,6 +1947,7 @@ mod order_tests {
             quiet: false,
             helping: false,
             suggestions: None,
+            emblem: None,
         }
     }
 
