@@ -81,16 +81,12 @@ struct QuickView: View {
                 }
                 .task(id: query) { await searchSaid() }
                 .onAppear {
-                    chooseDevice()
                     // Text searched for a test at launch (`QUERY=<text> scripts/run.sh`).
                     if let q = ProcessInfo.processInfo.environment["CODEALONG_QUERY"], !q.isEmpty, text.isEmpty {
                         searching = true
                         text = q
                     }
                 }
-                .onChange(of: store.devices.map(\.key)) { _, _ in chooseDevice() }
-                // Again once the Mac connects: at launch it's chosen before it is.
-                .task(id: "\(composer.device ?? "")\(mac?.online == true)") { await loadChoices() }
                 // A worktree picked in one project isn't where the next project's work goes.
                 .onChange(of: project) { _, _ in composer.worktreeID = nil }
                 .sensoryFeedback(.selection, trigger: project)
@@ -112,12 +108,20 @@ struct QuickView: View {
                     Text("This phone will see the sessions on the Mac that showed this code, and the Mac will list it as a phone.")
                 }
         }
+        // The Mac to start on and what it can start, read on the stack rather than the list,
+        // which is off screen, its tasks cancelled, while New session is open: a Mac picked there,
+        // or one a worktree's ✎ picked as New session opened, has its choices read all the same.
+        .onAppear { chooseDevice() }
+        .onChange(of: store.devices.map(\.key)) { _, _ in chooseDevice() }
+        // Again once the Mac connects: at launch it's chosen before it is.
+        .task(id: "\(composer.device ?? "")\(mac?.online == true)") { await loadChoices() }
     }
 
     @ViewBuilder
     private func destination(_ key: String) -> some View {
         if key.hasPrefix(Self.newKey) {
-            NewSessionView(composer: $composer, project: project, go: { next in path = [next] })
+            // Improving Codealong, the Mac suggests among Codealong's own project's worktrees.
+            NewSessionView(composer: $composer, project: store.improving?.target.project ?? project, go: { next in path = [next] })
                 .navigationTransition(.zoom(sourceID: key, in: zoom))
         } else if key.hasPrefix(PrView.prefix) {
             // A view of its own per session: going from one to another by a link keeps nothing.
@@ -667,7 +671,7 @@ struct QuickView: View {
                 openURL(url)
             }
         } label: {
-            QuickPrRow(pr: pr, words: matching, showProject: project.isEmpty)
+            QuickPrRow(pr: pr, words: matching)
                 .contentShape(.rect)
         }
         .tint(.primary)
@@ -818,10 +822,12 @@ struct QuickView: View {
         return online == store.devices.count ? "\(online) connected" : "\(online) of \(store.devices.count) connected"
     }
 
-    /// The projects the list can narrow to, as the core lists them. One narrowed to stays while
-    /// it has nothing to show, so its pill is still there to go back from.
+    /// The projects the page can narrow to, as the core lists them: the PRs page's are its PRs'.
+    /// One narrowed to stays while it has nothing to show, so its pill is still there to go back
+    /// from.
     private var projects: [String] {
-        project.isEmpty || store.projects.contains(project) ? store.projects : [project] + store.projects
+        let all = page == .prs && query.isEmpty ? store.prProjects : store.projects
+        return project.isEmpty || all.contains(project) ? all : [project] + all
     }
 }
 

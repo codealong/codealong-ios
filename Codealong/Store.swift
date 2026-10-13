@@ -11,6 +11,8 @@ final class Store {
     /// Every PR the Macs list, once each.
     private(set) var prs: [PrRow] = []
     private(set) var projects: [String] = []
+    /// The projects of the PRs page's PRs, for its pills.
+    private(set) var prProjects: [String] = []
     private(set) var problem: String?
     /// Goes up with every change the core reports, rows or not: a reply being written comes this way.
     private(set) var tick = 0
@@ -93,6 +95,7 @@ final class Store {
         if snap.sessions != sessions { sessions = snap.sessions }
         if snap.prs != prs { prs = snap.prs }
         if snap.projects != projects { projects = snap.projects }
+        if snap.prProjects != prProjects { prProjects = snap.prProjects }
     }
 
     func start() {

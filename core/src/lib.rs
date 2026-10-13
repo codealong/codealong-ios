@@ -223,6 +223,8 @@ pub struct Snapshot {
     /// The projects those sessions are in, lined up across Macs (`Projects`): by name, with
     /// worktrees in no project last, as the Mac lists them.
     pub projects: Vec<String>,
+    /// The projects of the PRs the PRs page lists (`lists::pr_sections`), for its pills.
+    pub pr_projects: Vec<String>,
 }
 
 #[derive(uniffi::Object)]
@@ -416,7 +418,8 @@ impl Core {
             // A project whose reviews wait on you can be narrowed to, though no session of it is
             // in the list.
             let projects = project_list(sessions.iter().map(|s| s.project.as_str()).chain(prs.iter().filter(|p| p.waits && !p.project.is_empty()).map(|p| p.project.as_str())));
-            Snapshot { devices, sessions, prs, projects }
+            let pr_projects = lists::pr_projects(&prs, now);
+            Snapshot { devices, sessions, prs, projects, pr_projects }
         })
     }
 }
@@ -598,7 +601,7 @@ impl Projects {
 }
 
 /// Projects by name, each once, with worktrees in no project last.
-fn project_list<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
+pub(crate) fn project_list<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
     let mut out: Vec<String> = names.map(String::from).collect();
     out.sort_by_key(|n| (n == ELSEWHERE, n.to_lowercase()));
     out.dedup();

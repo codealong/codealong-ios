@@ -81,7 +81,6 @@ struct QuickSessionRow: View {
 struct QuickPrRow: View {
     let pr: PrRow
     var words: [String] = []
-    var showProject = true
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -102,12 +101,10 @@ struct QuickPrRow: View {
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
                 }
-                if let meta {
-                    Text(meta)
-                        .font(.footnote.monospaced())
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
+                Text(meta)
+                    .font(.footnote.monospaced())
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
                 HStack(spacing: 5) {
                     if let s = standing.symbol {
                         Image(systemName: s).font(.caption.weight(.bold))
@@ -130,10 +127,10 @@ struct QuickPrRow: View {
         .accessibilityHint(pr.slug.isEmpty ? "Opens it on GitHub" : "Opens it")
     }
 
-    /// Its repo, where the list spans projects, and who it's by or who asked for your review.
-    private var meta: String? {
-        var parts: [String] = []
-        if showProject { parts.append(pr.repo) }
+    /// Its repo, which tells two repos' numbers apart, and who it's by or who asked for your
+    /// review.
+    private var meta: String {
+        var parts = [pr.repo]
         if pr.waits {
             parts.append(pr.requestedBy.map { "\($0) asked you" } ?? "your review is asked for")
         } else if let until = pr.snoozedUntil, pr.reviewRequested {
@@ -141,7 +138,7 @@ struct QuickPrRow: View {
         } else if !pr.mine, let author = pr.author {
             parts.append(author)
         }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        return parts.joined(separator: " · ")
     }
 
     /// Where it stands, as GitHub's merge box would lead with it.

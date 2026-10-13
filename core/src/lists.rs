@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use codealong_peer::feed::remote_key;
 
-use crate::{all_rows, all_worktrees, in_inbox, now_ms, Core, Feeds, PrRow, SessionRow, Status, Worktree};
+use crate::{all_rows, all_worktrees, in_inbox, now_ms, project_list, Core, Feeds, PrRow, SessionRow, Status, Worktree};
 
 /// Merged and closed PRs stay on the page this long after their last change.
 const DONE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
@@ -95,6 +95,13 @@ pub(crate) fn pr_sections(prs: &[PrRow], project: &str, now: i64) -> Vec<PrSecti
             PrSection { group, rows: rows.into_iter().cloned().collect() }
         })
         .collect()
+}
+
+/// The projects of the PRs the PRs page lists, for its pills: a project with only PRs in it,
+/// none waiting on you, is on that page though the Sessions page has no pill for it.
+pub(crate) fn pr_projects(prs: &[PrRow], now: i64) -> Vec<String> {
+    let page = pr_sections(prs, "", now);
+    project_list(page.iter().flat_map(|s| s.rows.iter()).map(|p| p.project.as_str()).filter(|p| !p.is_empty()))
 }
 
 /// Where a status puts a session in its worktree: what needs you first, then the turns that
@@ -236,6 +243,18 @@ mod tests {
         let mut other = pr(2, "open", NOW);
         other.project = "Other".into();
         assert_eq!(groups(&pr_sections(&[pr(1, "open", NOW), other], "App", NOW)), vec![(PrGroup::Others, vec![1])]);
+    }
+
+    #[test]
+    fn the_prs_pages_pills_are_its_prs_projects() {
+        let mut theirs = pr(1, "open", NOW);
+        theirs.project = "Site".into();
+        let mut long_merged = pr(2, "merged", NOW - 8 * 24 * HOUR);
+        long_merged.project = "Old".into();
+        let mut no_project = pr(3, "open", NOW);
+        no_project.project = String::new();
+        let app = pr(4, "draft", NOW);
+        assert_eq!(pr_projects(&[theirs, long_merged, no_project, app], NOW), vec!["App".to_string(), "Site".to_string()]);
     }
 
     fn in_worktree(key: &str, project: &str, worktree: &str, status: Status, at: i64) -> SessionRow {

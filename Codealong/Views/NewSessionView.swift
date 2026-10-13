@@ -407,6 +407,13 @@ struct NewSessionView: View {
             // a start whose id the Mac doesn't know yet says what's next, and the list comes back.
             if let key = begun.key {
                 store.openWhenListed = key
+                // One its Mac doesn't list (it went offline, or the terminal's command failed)
+                // gives the box back, still opening if it turns up.
+                try? await Task.sleep(for: .seconds(30))
+                if store.openWhenListed == key {
+                    acting = false
+                    problem = "It started, but \(Names.short(mac?.name ?? "the Mac")) hasn’t listed it yet. It opens here once it does."
+                }
             } else {
                 acting = false
                 if let message = begun.message { store.notice = message }
