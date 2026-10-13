@@ -607,12 +607,12 @@ impl Core {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     const NOW: i64 = 100 * 24 * 60 * 60 * 1000;
 
-    fn row(key: &str, title: &str, status: Status, at: i64) -> SessionRow {
+    pub(crate) fn row(key: &str, title: &str, status: Status, at: i64) -> SessionRow {
         SessionRow {
             key: key.into(),
             device: "d".into(),
@@ -629,6 +629,7 @@ mod tests {
             project: "App".into(),
             repo: "app".into(),
             worktree: "app".into(),
+            worktree_id: "/src/app".into(),
             branch: Some("main".into()),
             last_prompt_at: at,
             last_activity: at,
@@ -695,7 +696,7 @@ mod tests {
         assert_eq!(l.working, 1);
     }
 
-    fn pr_row(key: &str, title: &str, waits: bool) -> PrRow {
+    pub(crate) fn pr_row(key: &str, title: &str, waits: bool) -> PrRow {
         PrRow {
             key: key.into(),
             device: "d".into(),

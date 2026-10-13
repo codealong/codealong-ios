@@ -497,6 +497,24 @@ final class Store {
         return core?.quick(project: project, query: query, said: said, ranked: ranked) ?? QuickList(sections: [], nothingWaits: false, working: 0)
     }
 
+    /// The PRs page's groups (the core's rules). Reads `tick`, as `quick` does.
+    func prList(project: String) -> [PrSection] {
+        _ = tick
+        return core?.prList(project: project) ?? []
+    }
+
+    /// The list's sessions by project and worktree. Reads `tick`.
+    func byProject(project: String) -> [ProjectGroup] {
+        _ = tick
+        return core?.byProject(project: project) ?? []
+    }
+
+    /// The list's sessions, the last active first. Reads `tick`.
+    func recent(project: String) -> [SessionRow] {
+        _ = tick
+        return core?.recent(project: project) ?? []
+    }
+
     /// What was said in sessions, searched on every connected Mac.
     func searchSaid(_ query: String) async -> SaidFound {
         guard let core else { return SaidFound(hits: [], building: false) }

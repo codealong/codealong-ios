@@ -20,7 +20,9 @@ mod kept;
 mod md;
 mod merge;
 mod prs;
+mod lists;
 mod quick;
+pub use lists::*;
 pub use md::*;
 pub use quick::*;
 
@@ -133,6 +135,8 @@ pub struct SessionRow {
     pub project: String,
     pub repo: String,
     pub worktree: String,
+    /// Its worktree's id on its Mac (the worktree's path there).
+    pub worktree_id: String,
     pub branch: Option<String>,
     pub last_prompt_at: i64,
     pub last_activity: i64,
@@ -443,7 +447,7 @@ type Feeds<'a> = [(codealong_peer::client::Device, &'a codealong_peer::feed::Rep
 
 /// Whether the inbox lists a session: what wants you or is running, and the rest for three days
 /// after you last prompted them.
-fn in_inbox(s: &SessionRow, now: i64) -> bool {
+pub(crate) fn in_inbox(s: &SessionRow, now: i64) -> bool {
     matches!(s.status, Status::Needs | Status::Error | Status::Working | Status::Unread) || now - s.last_prompt_at <= RECENT_MS
 }
 
@@ -488,6 +492,7 @@ pub(crate) fn all_rows(feeds: &Feeds) -> Vec<SessionRow> {
                 project: project.unwrap_or_else(|| lane.project.clone()),
                 repo: lane.repo.clone(),
                 worktree: lane.callsign.clone(),
+                worktree_id: lane.id.clone(),
                 branch: s.branch.clone().or_else(|| lane.branch.clone()),
                 last_prompt_at: s.last_prompt_at,
                 last_activity: s.last_activity,
@@ -1874,6 +1879,7 @@ mod order_tests {
             project: String::new(),
             repo: String::new(),
             worktree: String::new(),
+            worktree_id: String::new(),
             branch: None,
             last_prompt_at,
             last_activity: since,

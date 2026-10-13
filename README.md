@@ -38,10 +38,13 @@ other: directly, encrypted end to end, with no Codealong server in between.
 
 ## What you can do
 
-**See what needs you.** The home screen is the Mac's quick panel: a search box, and under it the
-sessions that need you, then the ones whose turn just ended (the working ones when nothing is
-waiting), then the rest from the last day. Narrow it to one project if you like. A project that
-lives on two Macs is one project here.
+**See what needs you.** The home screen lists the sessions that need you, then the ones whose
+turn just ended (the working ones when nothing is waiting), then the rest from the last day, as
+the Mac's quick panel does. The menu at the top left orders them *By project* instead, worktree by
+worktree (tap a worktree to fold it away, or its ✎ to start a session in it), or *Recent*, the
+last active first. The pills under it narrow the list to one project; a project that lives on two
+Macs is one project here. The magnifying glass searches sessions, by what was said in them too,
+and PRs.
 
 **Read any conversation.** Each session's conversation shows as it does on the Mac: replies as
 formatted text with tables, nested lists and code you can copy, your prompts with their images, the commands that ran and
@@ -73,8 +76,9 @@ you pick, on every device) and *Quiet* (its turns stop waiting on you; it comes 
 needs you) work with any Mac, remote control or not.
 
 **Review and merge PRs.** The PRs that wait on your review are listed after the sessions whose
-turn ended (*Review requested*), longest waiting first, and a search finds any PR your Macs know.
-Open one to see where it stands (checks, whether it can merge, its size, who asked you), your
+turn ended (*Review requested*), longest waiting first. The menu's *PRs* page lists every PR your
+Macs know: pinned ones, the reviews asked of you, yours, the other open ones, snoozed reviews, and
+the last week's merged and closed ones folded away. Open one to see where it stands (checks, whether it can merge, its size, who asked you), your
 draft review of it if you began one, its description, reviews, comments and changed files with
 their diffs. *Review* approves it, comments or asks for changes, submitting your draft with it as
 GitHub's *Finish your review* does; *Merge…* is its merge box as on the Mac: the way to merge and
@@ -82,15 +86,15 @@ the commit's words, auto-merge, the merge queue, updating the branch, ready for 
 branch's deletion. Your Mac's `gh` does it as you, so reviewing and merging need remote control on
 that Mac; reading and snoozing a review don't.
 
-**Start new work.** Type a prompt and start it on the Mac, worktree, account, model, effort and
-place the chips under it say: an existing worktree, a new one, or a chat in no project. As you
-type, it finds sessions by what was said in them, and the Mac you pick suggests where the prompt
-belongs when it has Jev's suggestions on.
+**Start new work.** The capsule at the bottom opens *New session*: type a prompt and start it on
+the Mac and worktree over the box (an existing worktree, a new one, or a chat in no project), with
+the account and the model, effort and place in it. As you type, the Mac you pick suggests where
+the prompt belongs when it has Jev's suggestions on, and says when a session may already be doing
+it.
 
-**Improve Codealong.** The lightbulb on every screen (the list, a conversation, a PR, the Macs
-sheet) takes a picture of that screen, brings the list back onto Codealong's own source on one of
-your Macs (its project and worktree there, a connected Mac first), and asks how to improve
-Codealong: describe it and start, and the session gets your words with the picture after them, as
+**Improve Codealong.** The lightbulb on every screen (a conversation, a PR, the Macs sheet, and
+the list's menu) takes a picture of that screen, opens New session on Codealong's own source on
+one of your Macs (its worktree there, a connected Mac first), and asks how to improve Codealong: describe it and start, and the session gets your words with the picture after them, as
 the Mac's own Improve Codealong button sends its windows. The Mac needs a Codealong from October
 12 or later, which marks its source.
 
