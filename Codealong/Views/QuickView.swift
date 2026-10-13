@@ -34,7 +34,9 @@ struct QuickView: View {
     var body: some View {
         NavigationStack(path: $path) {
             VStack(spacing: 0) {
-                header
+                // The input takes the lines it needs before the list gets any: with the keyboard
+                // up, an even split leaves it too short, and it scrolls its first lines away.
+                header.layoutPriority(1)
                 Divider()
                 list
             }
