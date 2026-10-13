@@ -56,6 +56,9 @@ struct DevicesView: View {
             .navigationTitle("Macs")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    ImproveButton()
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
                 }

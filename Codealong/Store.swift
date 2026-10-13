@@ -119,6 +119,12 @@ final class Store {
             if let key = ProcessInfo.processInfo.environment["CODEALONG_OPEN"], !key.isEmpty {
                 openWhenListed = key
             }
+            // Improve Codealong pressed for a test (`IMPROVE=1 scripts/run.sh`), once the Macs have
+            // answered and a session OPEN asked for is up, so the picture is of that screen.
+            if ProcessInfo.processInfo.environment["CODEALONG_IMPROVE"] == "1" {
+                try? await Task.sleep(for: .seconds(8))
+                improveCodealong()
+            }
         }
     }
 
@@ -278,6 +284,24 @@ final class Store {
         Task.detached { core.markSeen(keys: [key]) }
     }
 
+    /// Improve Codealong: a session that improves Codealong itself, as the Mac's button beside
+    /// New session starts one, from the lightbulb on any screen (ImproveButton). Pressing it takes
+    /// a picture of that screen and sets this; the list (QuickView) takes it up: goes onto
+    /// Codealong's own project and worktree on the Mac the core picks, shows the picture under
+    /// its input, asks what to change, and clears this when the session starts or you cancel.
+    var improving: Improving?
+
+    struct Improving: Identifiable {
+        let id = UUID()
+        let target: ImproveTarget
+        /// The picture of the screen, shown under the input until it's taken off.
+        var thumb: UIImage?
+        /// How the prompt refers to it once its Mac has it; nil while it's on its way or taken off.
+        var shot: ImproveShot?
+        var keeping = false
+        var problem: String?
+    }
+
     /// Where a session that improves Codealong itself starts: Codealong's own source on one of
     /// the Macs, a connected one first (the core's rule). Nil when no Mac marks one.
     func improveTarget() -> ImproveTarget? {
@@ -285,13 +309,51 @@ final class Store {
         return core?.improveTarget()
     }
 
+    /// The lightbulb pressed: a picture of the screen as it is, first, before anything changes,
+    /// then on its way to the target's Mac for the prompt. With no Mac marking Codealong's source
+    /// (none has it, or they run a Codealong from before the mark), it says so and changes nothing.
+    func improveCodealong() {
+        guard let target = improveTarget() else {
+            notice = "No Mac lists Codealong’s source. Clone github.com/codealong/codealong into a folder Codealong searches on a Mac, in a project there, and make sure the Mac runs a Codealong from October 12 or later."
+            return
+        }
+        let picture = Store.screenshot()
+        let begun = Improving(target: target, thumb: picture?.image, shot: nil, keeping: picture != nil)
+        improving = begun
+        guard let picture else { return }
+        Task {
+            do {
+                let reference = try await keepScreenshot(picture.data, on: target.device)
+                // Taken off meanwhile, or pressed again, or cancelled: the picture stays out.
+                guard improving?.id == begun.id, improving?.thumb != nil else { return }
+                improving?.shot = ImproveShot(name: "iPhone screen", reference: reference)
+                improving?.keeping = false
+            } catch {
+                guard improving?.id == begun.id else { return }
+                improving?.thumb = nil
+                improving?.keeping = false
+                improving?.problem = "The picture couldn’t be kept on the Mac: \(words(error))"
+            }
+        }
+    }
+
     /// Keeps a picture of this phone's screen on `device` for the prompt of a session that
     /// improves Codealong, answering how the prompt refers to it.
-    func keepScreenshot(_ data: Data, on device: String) async throws -> String {
+    private func keepScreenshot(_ data: Data, on device: String) async throws -> String {
         let core = try running()
         guard let prepared = ImagePrep.jpeg(data) else { throw CoreError.Failed(message: "The screen couldn't be pictured.") }
         let bytes = prepared.data
         return try await Task.detached { try core.keepImage(device: device, name: "iphone-screen.jpg", bytes: bytes) }.value
+    }
+
+    /// The screen as it's drawn now, as PNG bytes and an image, or nil with no window to draw.
+    private static func screenshot() -> (data: Data, image: UIImage)? {
+        guard let window = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).flatMap(\.windows).first(where: \.isKeyWindow) else { return nil }
+        let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+            window.drawHierarchy(in: window.bounds, afterScreenUpdates: false)
+        }
+        guard let data = image.pngData() else { return nil }
+        return (data, image)
     }
 
     /// The session you went on from to `key`, the latest that's still listed: where swiping back

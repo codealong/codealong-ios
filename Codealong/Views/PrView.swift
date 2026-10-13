@@ -117,6 +117,9 @@ struct PrView: View {
     @ToolbarContentBuilder
     private func menu(_ pr: PrRow) -> some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
+            ImproveButton()
+        }
+        ToolbarItem(placement: .topBarTrailing) {
             Menu {
                 if let url = URL(string: pr.url) {
                     Button("Open on GitHub", systemImage: "safari") { openURL(url) }

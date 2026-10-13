@@ -178,6 +178,9 @@ struct SessionView: View {
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
+                ImproveButton()
+            }
+            ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     sessionMenu
                 } label: {
