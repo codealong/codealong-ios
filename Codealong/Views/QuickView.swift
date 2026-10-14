@@ -581,7 +581,7 @@ struct QuickView: View {
                 act { try await store.pin(r.key, r.pinned == nil) }
             }
             if r.seenable {
-                Button("Mark as seen", systemImage: "checkmark.circle") { store.markSeen(r.key) }
+                Button("Mark as seen", systemImage: "eye") { store.markSeen(r.key) }
             }
             if r.unreadable {
                 Button("Mark as unread", systemImage: "circle.badge") {

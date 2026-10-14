@@ -247,7 +247,8 @@ final class Store {
     }
 
     /// You went on from `key` without replying: while it still needs you, it comes round again
-    /// after the rest (one whose turn had ended was marked seen, and leaves).
+    /// after the rest (a finished turn, or a reply that asks you something, was marked seen, and
+    /// leaves).
     func passedOver(_ key: String) {
         passed.removeAll { $0 == key }
         passed.append(key)
