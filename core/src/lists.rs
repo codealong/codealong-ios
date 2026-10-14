@@ -323,7 +323,7 @@ mod tests {
             in_worktree("c", "App", "app-2", Status::Unread, NOW - 2 * HOUR),
             in_worktree("d", "Site", "site", Status::Working, NOW - 10 * 60 * 1000),
         ];
-        let start = Worktree { id: "/src/app-2".into(), project: "App".into(), repo: "app".into(), name: "app-2".into(), branch: None, last_activity: NOW, device: "d".into(), main: false, chat: false, reuse: None, codealong: false };
+        let start = Worktree { id: "/src/app-2".into(), project: "App".into(), repo: "app".into(), name: "app-2".into(), branch: None, last_activity: NOW, device: "d".into(), main: false, chat: false, reuse: None, codealong: false, codealong_ios: false };
         let worktrees = HashMap::from([("@dshort:/src/app-2".to_string(), start.clone())]);
         let shorts = HashMap::from([("d", "dshort")]);
         let out = project_groups(&rows, &worktrees, &shorts, "", NOW);

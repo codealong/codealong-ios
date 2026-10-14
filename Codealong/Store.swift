@@ -36,7 +36,8 @@ final class Store {
     /// in turn. Back at the list it starts again.
     var trail: [String] = []
     /// What you've written to each session and not sent, by key: kept as you go from one to
-    /// another, and where a message that didn't go comes back.
+    /// another, and where a message that didn't go comes back. A PR's review is here too, under
+    /// its key after `PrView.prefix`.
     var drafts: [String: String] = [:]
     /// The images attached to each session's reply and not sent, by key, kept as its draft is.
     var attached: [String: [AttachedImage]] = [:]
@@ -308,8 +309,8 @@ final class Store {
         var problem: String?
     }
 
-    /// Where a session that improves Codealong itself starts: Codealong's own source on one of
-    /// the Macs, a connected one first (the core's rule). Nil when no Mac marks one.
+    /// Where a session that improves Codealong itself starts: this app's own source on one of the
+    /// Macs, else the Mac app's, a connected Mac first (the core's rule). Nil when no Mac has one.
     func improveTarget() -> ImproveTarget? {
         _ = tick
         return core?.improveTarget()
@@ -320,7 +321,7 @@ final class Store {
     /// (none has it, or they run a Codealong from before the mark), it says so and changes nothing.
     func improveCodealong() {
         guard let target = improveTarget() else {
-            notice = "No Mac lists Codealong’s source. Clone github.com/codealong/codealong into a folder Codealong searches on a Mac, in a project there, and make sure the Mac runs a Codealong from October 12 or later."
+            notice = "No Mac lists the source of Codealong for iPhone. Clone github.com/codealong/codealong-ios into a folder Codealong searches on a Mac, in a project there."
             return
         }
         let picture = Store.screenshot()

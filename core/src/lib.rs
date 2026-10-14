@@ -22,6 +22,7 @@ mod merge;
 mod prs;
 mod lists;
 mod quick;
+mod review;
 pub use lists::*;
 pub use md::*;
 pub use quick::*;
@@ -1479,6 +1480,9 @@ pub struct Worktree {
     /// Codealong's own source (the Mac's improve.rs): Improve Codealong starts its sessions here.
     /// Macs before 2026-10-12 mark none.
     pub codealong: bool,
+    /// This app's own source, Codealong for iPhone (`is_ios_source`): Improve Codealong on the
+    /// phone starts its sessions here before the Mac app's.
+    pub codealong_ios: bool,
 }
 
 /// What a reusable worktree holds (the Mac's board.rs `reuse_of`).
@@ -1589,6 +1593,7 @@ pub(crate) fn all_worktrees(feeds: &Feeds) -> Vec<Worktree> {
                     Reuse::Landed => WorktreeReuse::Landed,
                 }),
                 codealong: l.codealong,
+                codealong_ios: is_ios_source(l),
             })
         })
         .collect();
@@ -1618,14 +1623,26 @@ pub struct ImproveShot {
     pub reference: String,
 }
 
-/// The source's main checkout on a connected Mac, else another of its worktrees there, else one
-/// on a Mac that isn't connected (the start says so). None when no Mac marks one: none has the
-/// source, or they run Codealong from before the mark.
+/// Whether a worktree is of this app's own source: its GitHub repo is named `codealong-ios`, under
+/// any owner, so a fork counts. The Mac marks only its own app's source, by what's in it; this one
+/// is told by its remote, which every Mac sends.
+fn is_ios_source(lane: &Lane) -> bool {
+    [&lane.repo_slug, &lane.repo_slug_now].into_iter().flatten().any(|slug| slug.rsplit('/').next().is_some_and(|name| name.eq_ignore_ascii_case("codealong-ios")))
+}
+
+/// A source on a connected Mac, else one on a Mac that isn't (the start says so); on either, this
+/// app's own source before the Mac app's, since it's the phone being improved, and the main
+/// checkout before another worktree. You can pick another worktree before it starts. None when no
+/// Mac has either: none has the source, or none has this app's and they run Codealong from before
+/// the Mac's mark.
 pub(crate) fn improve_target_of(worktrees: &[Worktree], online: &[String]) -> Option<ImproveTarget> {
-    // A checkout in none of the Mac's projects lists as Elsewhere there: no place to start.
-    let sources: Vec<&Worktree> = worktrees.iter().filter(|w| w.codealong && !w.chat && w.project != ELSEWHERE).collect();
     let up = |w: &Worktree| online.iter().any(|d| *d == w.device);
-    let picked = sources.iter().find(|w| w.main && up(w)).or_else(|| sources.iter().find(|w| up(w))).or_else(|| sources.iter().find(|w| w.main)).or_else(|| sources.first())?;
+    // A checkout in none of the Mac's projects lists as Elsewhere there: no place to start. The
+    // first of those that rank alike is the most recently active.
+    let picked = worktrees
+        .iter()
+        .filter(|w| (w.codealong || w.codealong_ios) && !w.chat && w.project != ELSEWHERE)
+        .min_by_key(|w| (!up(w), !w.codealong_ios, !w.main))?;
     Some(ImproveTarget { device: picked.device.clone(), worktree: picked.id.clone(), project: picked.project.clone() })
 }
 
@@ -1657,7 +1674,11 @@ mod improve_tests {
     use super::*;
 
     fn wt(id: &str, device: &str, main: bool, codealong: bool) -> Worktree {
-        Worktree { id: id.into(), project: "Codealong".into(), repo: "codealong".into(), name: id.into(), branch: None, last_activity: 0, device: device.into(), main, chat: false, reuse: None, codealong }
+        Worktree { id: id.into(), project: "Codealong".into(), repo: "codealong".into(), name: id.into(), branch: None, last_activity: 0, device: device.into(), main, chat: false, reuse: None, codealong, codealong_ios: false }
+    }
+
+    fn ios(id: &str, device: &str, main: bool) -> Worktree {
+        Worktree { repo: "codealong-ios".into(), codealong_ios: true, ..wt(id, device, main, false) }
     }
 
     #[test]
@@ -1669,6 +1690,35 @@ mod improve_tests {
         assert_eq!(improve_target_of(&all[..3], &on(&["mac"])).map(|t| t.worktree), Some("/mac/codealong/wt".into()));
         assert_eq!(improve_target_of(&all, &on(&[])).map(|t| (t.device, t.project)), Some(("mini".into(), "Codealong".into())));
         assert_eq!(improve_target_of(&all[1..2], &on(&["mac"])), None);
+    }
+
+    #[test]
+    fn the_phones_own_source_comes_before_the_mac_apps() {
+        let on = |d: &[&str]| d.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let all = [wt("/mac/codealong", "mac", true, true), ios("/mac/codealong-ios/wt", "mac", false), ios("/mini/codealong-ios", "mini", true), ios("/mac/codealong-ios", "mac", true)];
+        assert_eq!(improve_target_of(&all, &on(&["mac"])).map(|t| t.worktree), Some("/mac/codealong-ios".into()));
+        // Another of its worktrees before the Mac app's main checkout; a main checkout before that.
+        assert_eq!(improve_target_of(&all[..3], &on(&["mac"])).map(|t| t.worktree), Some("/mac/codealong-ios/wt".into()));
+        assert_eq!(improve_target_of(&all[..3], &on(&["mac", "mini"])).map(|t| t.worktree), Some("/mini/codealong-ios".into()));
+        // A connected Mac's source before this app's on one that isn't.
+        assert_eq!(improve_target_of(&[all[0].clone(), all[2].clone()], &on(&["mac"])).map(|t| t.worktree), Some("/mac/codealong".into()));
+        assert_eq!(improve_target_of(&all[2..3], &on(&[])).map(|t| t.device), Some("mini".into()));
+    }
+
+    #[test]
+    fn the_phones_source_is_told_by_its_github_name() {
+        let lane = |slug: Option<&str>, now: Option<&str>| {
+            let mut l = Lane::new("/src/app", "App", "app");
+            l.repo_slug = slug.map(Into::into);
+            l.repo_slug_now = now.map(Into::into);
+            l
+        };
+        assert!(is_ios_source(&lane(Some("codealong/codealong-ios"), None)));
+        assert!(is_ios_source(&lane(Some("someone/Codealong-iOS"), None)));
+        assert!(is_ios_source(&lane(Some("old/name"), Some("codealong/codealong-ios"))));
+        assert!(!is_ios_source(&lane(Some("codealong/codealong"), None)));
+        assert!(!is_ios_source(&lane(Some("codealong/codealong-ios-fork"), None)));
+        assert!(!is_ios_source(&lane(None, None)));
     }
 
     #[test]

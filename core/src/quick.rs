@@ -824,7 +824,7 @@ pub(crate) mod tests {
         let mut waits = row(&remote_key(short, "s1"), "Waits", Status::Needs, NOW);
         waits.asks = false;
         let rows: HashMap<String, SessionRow> = [(waits.key.clone(), waits)].into_iter().collect();
-        let w = Worktree { id: "/r".into(), project: "App".into(), repo: "app".into(), name: "app".into(), branch: None, last_activity: NOW, device: "abcdef0123ffff".into(), main: true, chat: false, reuse: None, codealong: false };
+        let w = Worktree { id: "/r".into(), project: "App".into(), repo: "app".into(), name: "app".into(), branch: None, last_activity: NOW, device: "abcdef0123ffff".into(), main: true, chat: false, reuse: None, codealong: false, codealong_ios: false };
         let worktrees: HashMap<String, Worktree> = [(remote_key(short, "/r"), w)].into_iter().collect();
         let route = api::Route {
             action: api::Action::Send,
@@ -868,7 +868,7 @@ pub(crate) mod tests {
     }
 
     fn worktree(id: &str, main: bool, reuse: Option<crate::WorktreeReuse>, at: i64) -> Worktree {
-        Worktree { id: id.into(), project: "App".into(), repo: "app".into(), name: id.trim_start_matches('/').into(), branch: None, last_activity: at, device: "abcdef0123ffff".into(), main, chat: false, reuse, codealong: false }
+        Worktree { id: id.into(), project: "App".into(), repo: "app".into(), name: id.trim_start_matches('/').into(), branch: None, last_activity: at, device: "abcdef0123ffff".into(), main, chat: false, reuse, codealong: false, codealong_ios: false }
     }
 
     fn route(lanes: &[(&str, f64)], own_worktree: f64, no_repo: f64) -> api::Route {

@@ -2,9 +2,10 @@ import SwiftUI
 
 /// A PR, as the Mac's PR panel shows it: where it stands (its state, checks, whether it can merge,
 /// how big it is), your draft review of it when you began one, its description, reviews, comments
-/// and changed files with their diffs. Review approves it, comments or asks for changes; Merge opens
-/// its merge box. The phone has no GitHub of its own: its Mac's `gh` reads all of it and does what
-/// you ask, as you, so reviewing and merging need remote control on that Mac.
+/// and changed files with their diffs. Merge, beside its state, opens its merge box, and the box at
+/// its foot reviews it, as the Mac's does. The phone has no GitHub of its own: its Mac's `gh` reads
+/// all of it and does what you ask, as you, so reviewing and merging need remote control on that
+/// Mac.
 struct PrView: View {
     /// What a PR's place in the list's path starts with, before its key.
     static let prefix = "pr:"
@@ -17,9 +18,6 @@ struct PrView: View {
     @State private var loading = false
     /// Which read is the latest: an earlier one that answers after it is let go.
     @State private var reads = 0
-    /// The review sheet, open with the draft the page showed when it opened: what it submits
-    /// with, however the page reads the PR again behind it.
-    @State private var reviewing: ReviewAsk?
     @State private var merging = false
     /// How the last thing done here went.
     @State private var said: String?
@@ -40,10 +38,7 @@ struct PrView: View {
             if let pr {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
-                        PrHeader(pr: pr)
-                        if let said {
-                            Text(said).font(.footnote).foregroundStyle(.secondary)
-                        }
+                        PrHeader(pr: pr, canMerge: whyNot == nil && !pr.slug.isEmpty) { merging = true }
                         // A read again that failed, over what was read before.
                         if detail != nil, let problem {
                             Label("Couldn’t read it again: \(problem)", systemImage: "exclamationmark.triangle")
@@ -69,16 +64,19 @@ struct PrView: View {
                     .padding()
                 }
                 .refreshable { await load() }
-                .safeAreaInset(edge: .bottom) { actions(pr) }
-                .navigationTitle("#" + String(pr.number))
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar { menu(pr) }
-                .sheet(item: $reviewing) { ask in
-                    ReviewSheet(pr: pr, draft: ask.draft) { words in
+                .scrollDismissesKeyboard(.interactively)
+                // A bar, as the list's start bar is, with a hard edge: the page goes under it
+                // rather than reading through the box's glass.
+                .scrollEdgeEffectStyle(.hard, for: .bottom)
+                .safeAreaBar(edge: .bottom) {
+                    ReviewBoxView(pr: pr, draft: detail?.draft, read: detail != nil, whyNot: whyNot ?? (pr.slug.isEmpty ? "Its Mac can't review this PR: its repo has no GitHub name there." : nil), said: said) { words in
                         said = words
                         Task { await load() }
                     }
                 }
+                .navigationTitle("#" + String(pr.number))
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { menu(pr) }
                 .sheet(isPresented: $merging) {
                     MergeSheet(pr: pr) { words in
                         said = words
@@ -149,52 +147,14 @@ struct PrView: View {
             said = words(error)
         }
     }
-
-    /// Review and merge, over the foot of the page; why they can't be, when they can't.
-    @ViewBuilder
-    private func actions(_ pr: PrRow) -> some View {
-        let open = ["open", "draft", "approved", "changes"].contains(pr.state)
-        VStack(spacing: 6) {
-            if let whyNot {
-                Text(whyNot).font(.caption).foregroundStyle(.secondary)
-            }
-            HStack(spacing: 10) {
-                if open {
-                    // Only once the page has read the PR: a review submits your draft of it,
-                    // which the page shows first.
-                    Button {
-                        reviewing = ReviewAsk(draft: detail?.draft)
-                    } label: {
-                        Label("Review", systemImage: "checkmark.bubble").frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(detail == nil)
-                }
-                Button {
-                    merging = true
-                } label: {
-                    Label(open ? "Merge…" : "Branch…", systemImage: "arrow.triangle.merge").frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-            }
-            .controlSize(.large)
-            .disabled(whyNot != nil || pr.slug.isEmpty)
-        }
-        .padding(.horizontal)
-        .padding(.vertical, 8)
-        .background(.bar)
-    }
 }
 
-/// The review sheet asked for, with the draft the page showed then.
-private struct ReviewAsk: Identifiable {
-    let id = UUID()
-    let draft: PrDraft?
-}
-
-/// Where a PR stands, at the top of its page.
+/// Where a PR stands, at the top of its page, with Merge beside its state, as the Mac's panel has
+/// it under its header.
 private struct PrHeader: View {
     let pr: PrRow
+    let canMerge: Bool
+    let merge: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -212,8 +172,13 @@ private struct PrHeader: View {
                 StateChip(state: pr.state)
                 ChecksLine(passed: pr.passed, failed: pr.failing, pending: pr.pending)
                 if pr.additions + pr.deletions > 0 {
+                    // The first to give way, short of room.
                     Text("+\(pr.additions) −\(pr.deletions)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .layoutPriority(-1)
                 }
+                Spacer(minLength: 0)
+                mergeButton.fixedSize()
             }
             if let words = mergeWords {
                 Text(words).font(.caption).foregroundStyle(.secondary)
@@ -233,9 +198,29 @@ private struct PrHeader: View {
         }
     }
 
+    /// Opens the merge box: for an open PR, merging it; for one that's closed or merged, what's
+    /// left to do with its branch. Filled when it's ready to merge.
+    @ViewBuilder
+    private var mergeButton: some View {
+        let button = Button(action: merge) {
+            Label(open ? "Merge…" : "Branch…", systemImage: "arrow.triangle.merge")
+                .font(.subheadline.weight(.medium))
+        }
+        .controlSize(.small)
+        .buttonBorderShape(.capsule)
+        .disabled(!canMerge)
+        if open && (pr.merge == "clean" || pr.merge == "unstable") {
+            button.buttonStyle(.borderedProminent)
+        } else {
+            button.buttonStyle(.bordered)
+        }
+    }
+
+    private var open: Bool { ["open", "draft", "approved", "changes"].contains(pr.state) }
+
     /// Whether it can merge, as the board reads it, for an open PR.
     private var mergeWords: String? {
-        guard ["open", "draft", "approved", "changes"].contains(pr.state) else { return nil }
+        guard open else { return nil }
         switch pr.merge {
         case "clean": return "Ready to merge"
         case "conflicts": return "Conflicts with \(pr.base ?? "its base")"
@@ -543,89 +528,142 @@ private struct DiffView: View {
     }
 }
 
-/// Approves a PR, comments on it or asks for changes, as you on GitHub through its Mac. A comment
-/// or a request for changes needs something written. It submits your draft review when there's
-/// one, which the page above showed.
-private struct ReviewSheet: View {
+/// The box at the foot of a PR's page, as the Mac's (PrBox.tsx): what you write goes to GitHub with
+/// a verdict, Request changes, Comment or Approve, as you, through its Mac; your own PR, or one
+/// that's closed, takes a comment (the core's `review_box`). A verdict submits your draft review
+/// when there's one, which the page shows first, so they wait until the page has read the PR. It
+/// floats over the page in glass, as a session's reply box does, and what's written is kept with
+/// the PR while you look at others.
+private struct ReviewBoxView: View {
     let pr: PrRow
     let draft: PrDraft?
+    /// The page has read the PR, and so knows whether you have a draft review of it.
+    let read: Bool
+    /// Why nothing can be sent from here, if it can't.
+    let whyNot: String?
+    /// How the last thing done on the page went.
+    let said: String?
     let done: (String) -> Void
     @Environment(Store.self) private var store
-    @Environment(\.dismiss) private var dismiss
-    @State private var verdict: PrVerdict = .approve
-    @State private var text = ""
-    @State private var sending = false
-    @State private var problem: String?
+    @FocusState private var typing: Bool
+    @State private var sending: PrVerdict?
+    /// Why the last review didn't go, what was written still in the box.
+    @State private var failed: String?
+    @State private var sent = 0
 
-    private var needsText: Bool { verdict != .approve && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (draft?.body.isEmpty ?? true) && (draft?.count ?? 0) == 0 }
+    private var text: String {
+        get { store.drafts[PrView.prefix + pr.key] ?? "" }
+        nonmutating set { store.drafts[PrView.prefix + pr.key] = newValue.isEmpty ? nil : newValue }
+    }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    Picker("Review", selection: $verdict) {
-                        Text("Approve").tag(PrVerdict.approve)
-                        Text("Comment").tag(PrVerdict.comment)
-                        Text("Request changes").tag(PrVerdict.requestChanges)
+        let box = reviewBox(pr: pr, draft: draft)
+        VStack(alignment: .leading, spacing: 6) {
+            if let line = failed ?? (sending == nil ? nil : "Sending to GitHub…") ?? whyNot ?? said ?? box.note {
+                Text(line)
+                    .font(.footnote)
+                    .foregroundStyle(failed == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.red))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+            }
+            VStack(alignment: .leading, spacing: 10) {
+                TextField(box.hint, text: Binding(get: { text }, set: { text = $0; failed = nil }), axis: .vertical)
+                    .lineLimit(1...6)
+                    .focused($typing)
+                    .disabled(whyNot != nil || sending != nil)
+                    // ⌘⏎ on a keyboard approves (comments, where it can't), ⌥⌘⏎ comments, as on the Mac.
+                    .onKeyPress(.return, phases: .down) { press in
+                        guard press.modifiers.contains(.command) else { return .ignored }
+                        let verdict: PrVerdict = box.reviewable && !press.modifiers.contains(.option) ? .approve : .comment
+                        if can(verdict) { Task { await send(verdict) } }
+                        return .handled
                     }
-                    .pickerStyle(.segmented)
-                    .listRowBackground(Color.clear)
-                    .listRowInsets(EdgeInsets())
-                    .disabled(sending)
-                }
-                Section {
-                    TextField(verdict == .approve ? "Add a comment (optional)" : "What to say", text: $text, axis: .vertical)
-                        .lineLimit(4...12)
-                        .disabled(sending)
-                } footer: {
-                    if let draft {
-                        Text("Submits your draft review too, with its \(draft.count) \(draft.count == 1 ? "comment" : "comments").")
-                    }
-                }
-                if let problem {
-                    Section { Text(problem).foregroundStyle(.red) }
+                    .padding(.horizontal, 6)
+                    .padding(.top, 4)
+                // With less room (a larger text size), Request changes and Comment show as icons.
+                ViewThatFits(in: .horizontal) {
+                    verdicts(box, short: false)
+                    verdicts(box, short: true)
                 }
             }
-            .navigationTitle("Review #" + String(pr.number))
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(sending ? "Sending…" : send) { Task { await submit() } }
-                        .disabled(sending || needsText)
-                }
+            .padding(10)
+            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 24))
+        }
+        .padding(.horizontal)
+        .padding(.bottom, 6)
+        .animation(.snappy, value: failed)
+        .sensoryFeedback(.success, trigger: sent)
+    }
+
+    /// Request changes and Comment, then Approve at the far end, filled. Where only a comment goes,
+    /// Comment is at the end, filled.
+    private func verdicts(_ box: ReviewBox, short: Bool) -> some View {
+        HStack(spacing: 8) {
+            if box.reviewable {
+                button(.requestChanges, short: short, filled: false)
+                button(.comment, short: short, filled: false)
+                Spacer(minLength: 0)
+                button(.approve, short: false, filled: true)
+            } else {
+                Spacer(minLength: 0)
+                button(.comment, short: false, filled: true)
             }
         }
-        .presentationDetents([.medium, .large])
+        .controlSize(.small)
+        .buttonBorderShape(.capsule)
     }
 
-    private var send: String {
-        switch verdict {
-        case .approve: "Approve"
-        case .comment: "Comment"
-        case .requestChanges: "Request changes"
+    /// A verdict's button: the filled one says what it is with its icon too, and with little room
+    /// the others are only their icons.
+    @ViewBuilder
+    private func button(_ verdict: PrVerdict, short: Bool, filled: Bool) -> some View {
+        let (label, icon): (String, String) = switch verdict {
+        case .approve: ("Approve", "checkmark")
+        case .comment: ("Comment", "text.bubble")
+        case .requestChanges: ("Request changes", "exclamationmark.bubble")
+        }
+        let button = Button {
+            Task { await send(verdict) }
+        } label: {
+            Group {
+                if short {
+                    Image(systemName: icon)
+                } else if filled {
+                    Label(label, systemImage: icon)
+                } else {
+                    Text(label)
+                }
+            }
+            .font(.footnote.weight(filled ? .semibold : .medium))
+        }
+        .disabled(!can(verdict))
+        .accessibilityLabel(label)
+        if filled {
+            button.buttonStyle(.borderedProminent)
+        } else {
+            button.buttonStyle(.bordered)
         }
     }
 
-    private func submit() async {
-        sending = true
-        defer { sending = false }
-        // What went, as it was when sent.
-        let verdict = verdict
+    private func can(_ verdict: PrVerdict) -> Bool {
+        read && whyNot == nil && sending == nil && reviewSaysSomething(verdict: verdict, written: text, draft: draft)
+    }
+
+    private func send(_ verdict: PrVerdict) async {
+        guard can(verdict) else { return }
+        sending = verdict
+        failed = nil
+        defer { sending = nil }
+        let written = text
         do {
-            let went = try await store.prReview(pr, verdict: verdict, body: text, draft: draft?.stamp)
-            let what = switch verdict {
-            case .approve: "Approved"
-            case .comment: "Commented on"
-            case .requestChanges: "Asked for changes on"
-            }
-            let with = went.map { $0 > 0 ? ", with your draft review’s \($0) \($0 == 1 ? "comment" : "comments")" : "" } ?? ""
-            done("\(what) #\(pr.number)\(with).")
-            dismiss()
+            let went = try await store.prReview(pr, verdict: verdict, body: written.trimmingCharacters(in: .whitespacesAndNewlines), draft: draft?.stamp)
+            // Only what went: the page left and opened again meanwhile may have more written.
+            if text == written { text = "" }
+            typing = false
+            sent += 1
+            done(reviewedWords(verdict: verdict, number: pr.number, draft: went))
         } catch {
-            problem = words(error)
+            failed = words(error)
         }
     }
 }

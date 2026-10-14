@@ -83,10 +83,11 @@ turn ended (*Review requested*), longest waiting first. The menu's *PRs* page li
 Macs know: pinned ones, the reviews asked of you, yours, the other open ones, snoozed reviews, and
 the last week's merged and closed ones folded away. Open one to see where it stands (checks, whether it can merge, its size, who asked you), your
 draft review of it if you began one, its description, reviews, comments and changed files with
-their diffs. *Review* approves it, comments or asks for changes, submitting your draft with it as
-GitHub's *Finish your review* does; *Merge…* is its merge box as on the Mac: the way to merge and
-the commit's words, auto-merge, the merge queue, updating the branch, ready for review and the
-branch's deletion. Your Mac's `gh` does it as you, so reviewing and merging need remote control on
+their diffs. The box at its foot reviews it, as the Mac's does: write what to say, then *Request
+changes*, *Comment* or *Approve* (only *Comment* on your own PR or a closed one), submitting your
+draft with it as GitHub's *Finish your review* does. *Merge…*, beside its state, is its merge box
+as on the Mac: the way to merge and the commit's words, auto-merge, the merge queue, updating the
+branch, ready for review and the branch's deletion. Your Mac's `gh` does it as you, so reviewing and merging need remote control on
 that Mac; reading and snoozing a review don't.
 
 **Start new work.** Type a prompt in the same box and start it with the capsule at the bottom,
@@ -96,11 +97,12 @@ where the prompt belongs when it has Jev's suggestions on, and says when a sessi
 doing it.
 
 **Improve Codealong.** The lightbulb on every screen (the list, a conversation, a PR, the Macs
-sheet) takes a picture of that screen, brings the list back onto Codealong's own source on one of
-your Macs (its worktree there, a connected Mac first), and asks how to improve Codealong:
-describe it and start, and the session gets your words with the picture after them, as
-the Mac's own Improve Codealong button sends its windows. The Mac needs a Codealong from October
-12 or later, which marks its source.
+sheet) takes a picture of that screen, brings the list back onto this app's own source on one of
+your Macs (a checkout of [codealong-ios](https://github.com/codealong/codealong-ios) or a fork of
+it, its main checkout on a connected Mac first), and asks how to improve Codealong: describe it
+and start, and the session gets your words with the picture after them, as the Mac's own Improve
+Codealong button sends its windows. With no Mac holding this app's source it goes to the Mac
+app's, which a Codealong from October 12 or later marks.
 
 **Write ahead.** A message shows in the conversation the moment you send it, marked sending, then
 sent, so you can write the next one or move on. One that doesn't go comes back to its box.
