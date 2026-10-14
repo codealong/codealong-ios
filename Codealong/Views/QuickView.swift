@@ -61,13 +61,18 @@ struct QuickView: View {
                 header.layoutPriority(1)
                 Divider()
                 list
-            }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if !store.devices.isEmpty {
-                    StartBar(composer: $composer, project: startProject, prompt: query, duplicate: routedFor == query ? route?.duplicate : nil, problem: problem, acting: acting) {
-                        Task { await start() }
+                    .safeAreaBar(edge: .bottom) {
+                        if !store.devices.isEmpty {
+                            StartBar(composer: $composer, project: startProject, prompt: query, duplicate: routedFor == query ? route?.duplicate : nil, problem: problem, acting: acting) {
+                                // Nothing typed yet: the box is where the prompt goes.
+                                if query.isEmpty {
+                                    typing = true
+                                } else {
+                                    Task { await start() }
+                                }
+                            }
+                        }
                     }
-                }
             }
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: String.self) { key in destination(key) }

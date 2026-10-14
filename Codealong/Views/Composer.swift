@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Where a new session starts, as the chips under the quick search set it: the Mac, the worktree,
+/// Where a new session starts, as the start capsule's menu sets it: the Mac, the worktree,
 /// whether its harness makes a worktree of its own, the account, model and effort, and where it
 /// runs. The list keeps it, reading the Mac's choices on the navigation stack, so they're there
 /// when you're back from a session.
@@ -74,39 +74,5 @@ struct Composer {
             let how = place == "background" ? (behind ? " in a terminal behind the Mac's windows" : " in the background") : " in a terminal"
             return tree ? "\(chosenAccount?.harness ?? "Its harness") makes a new worktree of \(w.repo) and starts \(who) there\(how)." : "Starts \(who) in \(name)\(how)."
         }
-    }
-}
-
-/// A choice under the quick search, as the Mac's panel's chips are.
-struct Chip: View {
-    let symbol: String
-    let text: String
-    var detail: String?
-    var chevron = true
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: symbol)
-                .font(.footnote)
-            Text(text)
-                .font(.subheadline.weight(.medium))
-                .lineLimit(1)
-            if let detail, !detail.isEmpty {
-                Text(detail)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            if chevron {
-                Image(systemName: "chevron.down")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .foregroundStyle(.primary)
-        .padding(.horizontal, 11)
-        .padding(.vertical, 7)
-        .background(.background, in: .rect(cornerRadius: 9))
-        .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(.separator))
     }
 }

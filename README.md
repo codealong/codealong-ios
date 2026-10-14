@@ -89,9 +89,9 @@ the commit's words, auto-merge, the merge queue, updating the branch, ready for 
 branch's deletion. Your Mac's `gh` does it as you, so reviewing and merging need remote control on
 that Mac; reading and snoozing a review don't.
 
-**Start new work.** Type a prompt in the same box and start it on the Mac, worktree, account,
-model, effort and place the chips under it say: an existing worktree, a new one, or a chat in no
-project. As you type, it finds sessions by what was said in them, and the Mac you pick suggests
+**Start new work.** Type a prompt in the same box and start it with the capsule at the bottom,
+which says where it starts: its menu picks the Mac, worktree, account, model, effort and place,
+in an existing worktree, a new one, or a chat in no project. As you type, it finds sessions by what was said in them, and the Mac you pick suggests
 where the prompt belongs when it has Jev's suggestions on, and says when a session may already be
 doing it.
 

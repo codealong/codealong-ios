@@ -1,8 +1,10 @@
 import SwiftUI
 
-/// The bottom of the quick search: the row that starts a new session with what's typed, and the
-/// chips that say where. It rides above the keyboard, as the Mac's panel keeps it under the list.
-/// The list reads the Mac's choices into the composer; the chips change them.
+/// The bottom of the quick search: a glass capsule over the list that starts a new session with
+/// what's typed, or with nothing typed puts the cursor in the box for it. Under its title is where
+/// the session starts, and its menu changes that (the Mac, the worktree, the account, model and
+/// place), as the chips under the Mac's panel do; small, so the list keeps the screen. It rides
+/// above the keyboard. The list reads the Mac's choices into the composer.
 struct StartBar: View {
     @Binding var composer: Composer
     let project: String
@@ -11,6 +13,7 @@ struct StartBar: View {
     let duplicate: SessionRow?
     let problem: String?
     let acting: Bool
+    /// Starts with what's typed; with nothing typed, asks for it.
     let start: () -> Void
 
     @Environment(Store.self) private var store
@@ -24,57 +27,62 @@ struct StartBar: View {
     private var worktree: Worktree? { composer.worktree(store: store, project: project) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Divider()
-            Button(action: start) {
-                HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 28, height: 28)
-                        .background(Color.orange, in: .circle)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(prompt.isEmpty ? "Start a new session" : "Start a new session with this prompt")
-                            .font(.body.weight(.medium))
-                            .foregroundStyle(.primary)
-                        Text(happens)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(3)
-                            .multilineTextAlignment(.leading)
-                    }
-                    Spacer(minLength: 0)
-                    if acting { ProgressView() }
-                }
-                .contentShape(.rect)
-            }
-            .buttonStyle(.plain)
-            .disabled(!ready)
-            .opacity(ready ? 1 : 0.5)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            if let problem {
-                Label(problem, systemImage: "exclamationmark.triangle.fill")
+        VStack(alignment: .leading, spacing: 6) {
+            if let note {
+                Label(note.text, systemImage: note.symbol)
                     .font(.footnote)
-                    .foregroundStyle(.red)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 8)
+                    .foregroundStyle(note.color)
+                    .lineLimit(3)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .glassEffect(.regular, in: .rect(cornerRadius: 16))
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
-            ScrollView(.horizontal) {
-                HStack(spacing: 8) {
-                    if store.devices.count > 1 { macChip }
-                    worktreeChip
-                    newWorktreeChip
-                    agentChip
-                    placeChip
+            HStack(spacing: 4) {
+                Button(action: start) {
+                    HStack(spacing: 12) {
+                        ZStack {
+                            if acting {
+                                ProgressView().tint(.white)
+                            } else {
+                                Image(systemName: "plus").font(.body.weight(.bold))
+                            }
+                        }
+                        .foregroundStyle(.white)
+                        .frame(width: 36, height: 36)
+                        .background(Color.orange, in: .circle)
+                        .opacity(prompt.isEmpty || ready ? 1 : 0.4)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(prompt.isEmpty ? "Start a session…" : "Start with this prompt")
+                                .font(.body.weight(prompt.isEmpty ? .regular : .semibold))
+                                .foregroundStyle(prompt.isEmpty ? .secondary : .primary)
+                            Text(whereWords)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .contentTransition(.opacity)
+                        }
+                        .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.leading, 10)
+                    .frame(height: 56)
+                    .contentShape(.rect)
                 }
-                .padding(.horizontal, 16)
-                .tint(.primary)
+                .buttonStyle(.plain)
+                // With nothing typed it asks for the prompt, which it can do whatever the Mac says.
+                .disabled(!prompt.isEmpty && !ready)
+                .accessibilityLabel(prompt.isEmpty ? "Start a session" : "Start a session with this prompt")
+                .accessibilityValue(happens)
+                choices
             }
-            .scrollIndicators(.hidden)
-            .padding(.bottom, 10)
+            .padding(.trailing, 6)
+            // Tinted with the page, so the rows scrolling under it don't read through its words.
+            .glassEffect(.regular.tint(Color(.systemBackground).opacity(0.7)).interactive(), in: .capsule)
         }
-        .background(.bar)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 4)
+        .animation(.snappy, value: note?.text)
+        .animation(.snappy, value: prompt.isEmpty)
         .sheet(isPresented: $pickingWorktree) {
             NavigationStack {
                 WorktreePicker(worktrees: composer.device.map { store.worktrees($0) } ?? [], chosen: Binding(get: { worktree }, set: { composer.worktreeID = $0?.id }), first: project.isEmpty ? nil : project)
@@ -82,86 +90,102 @@ struct StartBar: View {
         }
     }
 
-    // MARK: Chips
+    // MARK: Where it starts
 
-    private var macChip: some View {
+    /// The Mac, the worktree, the account, model and effort, and where it runs, under what starting
+    /// does in a sentence.
+    private var choices: some View {
         Menu {
-            Picker("Mac", selection: Binding(get: { composer.device }, set: { composer.device = $0; lastDevice = $0 ?? "" })) {
-                ForEach(store.devices, id: \.key) { d in
-                    Text(d.online ? d.name : "\(d.name) (not connected)").tag(Optional(d.key))
+            Section(happens) {
+                if store.devices.count > 1 {
+                    Picker(selection: Binding(get: { composer.device }, set: { composer.device = $0; lastDevice = $0 ?? "" })) {
+                        ForEach(store.devices, id: \.key) { d in
+                            Text(d.online ? d.name : "\(d.name) (not connected)").tag(Optional(d.key))
+                        }
+                    } label: {
+                        Label("Mac", systemImage: "laptopcomputer")
+                    }
+                    .pickerStyle(.menu)
+                }
+                Button { pickingWorktree = true } label: {
+                    Label {
+                        Text("Worktree")
+                        Text(worktreeName)
+                    } icon: {
+                        Image(systemName: worktree?.chat == true ? "bubble.left" : "folder")
+                    }
+                }
+                .disabled(composer.device == nil)
+                if takesNewWorktree {
+                    Toggle(isOn: $composer.newWorktree) {
+                        Label("New worktree", systemImage: "plus.square.on.square")
+                    }
+                }
+            }
+            if let choices = composer.choices {
+                Section {
+                    Picker(selection: Binding(get: { composer.account }, set: { pickAccount($0) })) {
+                        ForEach(choices.accounts.filter { $0.unavailable == nil }, id: \.name) { a in
+                            Text("\(a.name) · \(a.harness)").tag(Optional(a.name))
+                        }
+                    } label: {
+                        Label("Account", systemImage: "person")
+                    }
+                    .pickerStyle(.menu)
+                    if let a = composer.chosenAccount, composer.takesModel, !a.models.isEmpty {
+                        Picker(selection: $composer.model) {
+                            Text(composer.defaultModelLabel.map { "Default (\($0))" } ?? "Default").tag(String?.none)
+                            ForEach(a.models, id: \.id) { m in
+                                Text(m.label).tag(Optional(m.id))
+                            }
+                        } label: {
+                            Label("Model", systemImage: "cpu")
+                        }
+                        .pickerStyle(.menu)
+                    }
+                    if let a = composer.chosenAccount, composer.takesModel, !a.efforts.isEmpty {
+                        Picker(selection: $composer.effort) {
+                            Text("Default effort").tag(String?.none)
+                            ForEach(a.efforts, id: \.id) { e in
+                                Text(e.label).tag(Optional(e.id))
+                            }
+                        } label: {
+                            Label("Effort", systemImage: "gauge.with.dots.needle.50percent")
+                        }
+                        .pickerStyle(.menu)
+                    }
+                    if let a = composer.chosenAccount, !a.places.isEmpty {
+                        Picker(selection: Binding(get: { composer.place }, set: { composer.place = $0; lastPlace = $0 ?? "" })) {
+                            ForEach(a.places, id: \.id) { p in
+                                // Background with no service of its own is a terminal behind the Mac's windows.
+                                Label(p.behind ? "\(p.label) (behind its windows)" : p.label, systemImage: placeSymbol(p.id)).tag(Optional(p.id))
+                            }
+                        } label: {
+                            Label("Runs in", systemImage: placeSymbol(composer.place ?? ""))
+                        }
+                        .pickerStyle(.menu)
+                    }
                 }
             }
         } label: {
-            Chip(symbol: "laptopcomputer", text: mac.map { Names.short($0.name) } ?? "Mac")
+            Image(systemName: "slider.horizontal.3")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 44, height: 44)
+                .contentShape(.circle)
         }
+        .tint(.primary)
+        .accessibilityLabel("Where it starts")
+        .accessibilityValue(whereWords)
     }
 
-    private var worktreeChip: some View {
-        Button { pickingWorktree = true } label: {
-            Chip(symbol: worktree?.chat == true ? "bubble.left" : "folder", text: worktree.map { $0.chat ? "No project" : $0.main ? "\($0.name) (main)" : $0.name } ?? "No worktree")
-        }
-        .buttonStyle(.plain)
-        .disabled(composer.device == nil)
+    private var worktreeName: String {
+        guard let w = worktree else { return composer.device == nil ? "No Mac" : "No worktree" }
+        return w.chat ? "No project" : w.main ? "\(w.name) (main)" : w.name
     }
 
     /// A chat has no repo to make a worktree of.
     private var takesNewWorktree: Bool { composer.takesNewWorktree && worktree?.chat != true }
-
-    private var newWorktreeChip: some View {
-        Button { composer.newWorktree.toggle() } label: {
-            Chip(symbol: composer.newWorktree && takesNewWorktree ? "checkmark.square.fill" : "square", text: "New worktree", chevron: false)
-        }
-        .buttonStyle(.plain)
-        .disabled(!takesNewWorktree)
-        .opacity(takesNewWorktree ? 1 : 0.5)
-    }
-
-    private var agentChip: some View {
-        Menu {
-            if let choices = composer.choices {
-                Picker("Account", selection: Binding(get: { composer.account }, set: { pickAccount($0) })) {
-                    ForEach(choices.accounts.filter { $0.unavailable == nil }, id: \.name) { a in
-                        Text("\(a.name) · \(a.harness)").tag(Optional(a.name))
-                    }
-                }
-                if let a = composer.chosenAccount, composer.takesModel, !a.models.isEmpty {
-                    Picker("Model", selection: $composer.model) {
-                        Text(composer.defaultModelLabel.map { "Default (\($0))" } ?? "Default").tag(String?.none)
-                        ForEach(a.models, id: \.id) { m in
-                            Text(m.label).tag(Optional(m.id))
-                        }
-                    }
-                }
-                if let a = composer.chosenAccount, composer.takesModel, !a.efforts.isEmpty {
-                    Picker("Effort", selection: $composer.effort) {
-                        Text("Default effort").tag(String?.none)
-                        ForEach(a.efforts, id: \.id) { e in
-                            Text(e.label).tag(Optional(e.id))
-                        }
-                    }
-                }
-            }
-        } label: {
-            Chip(symbol: "person", text: composer.account ?? (composer.choicesProblem == nil ? "Account" : "No accounts"), detail: [composer.modelLabel ?? (composer.takesModel ? composer.defaultModelLabel : nil), composer.effortLabel].compactMap { $0 }.joined(separator: " · "))
-        }
-        .disabled(composer.choices == nil)
-    }
-
-    @ViewBuilder
-    private var placeChip: some View {
-        if let a = composer.chosenAccount, !a.places.isEmpty {
-            Menu {
-                Picker("Runs in", selection: Binding(get: { composer.place }, set: { composer.place = $0; lastPlace = $0 ?? "" })) {
-                    ForEach(a.places, id: \.id) { p in
-                        // Background with no service of its own is a terminal behind the Mac's windows.
-                        Label(p.behind ? "\(p.label) (behind its windows)" : p.label, systemImage: placeSymbol(p.id)).tag(Optional(p.id))
-                    }
-                }
-            } label: {
-                Chip(symbol: placeSymbol(composer.place ?? ""), text: a.places.first { $0.id == composer.place }?.label ?? "Runs in")
-            }
-        }
-    }
 
     private func placeSymbol(_ id: String) -> String {
         switch id {
@@ -174,11 +198,13 @@ struct StartBar: View {
 
     // MARK: Starting
 
-    /// Why nothing can start on the Mac chosen, when nothing can.
-    private var whyNot: String? {
-        guard let mac else { return "Choose a Mac to start on." }
-        if !mac.online { return "\(Names.short(mac.name)) isn't connected." }
-        if !mac.remoteControl { return "Remote control is off on \(Names.short(mac.name)): turn it on there in Settings › Devices to start sessions from here." }
+    /// Why nothing can start on the Mac chosen, when nothing can: in a few words under the
+    /// capsule's title, and in full over it once there's a prompt to start.
+    private var whyNot: (short: String, full: String)? {
+        guard let mac else { return ("Choose a Mac to start on", "Choose a Mac to start on.") }
+        let name = Names.short(mac.name)
+        if !mac.online { return ("\(name) isn't connected", "\(name) isn't connected.") }
+        if !mac.remoteControl { return ("Remote control is off on \(name)", "Remote control is off on \(name): turn it on there in Settings › Devices to start sessions from here.") }
         return nil
     }
 
@@ -186,15 +212,42 @@ struct StartBar: View {
         whyNot == nil && worktree != nil && composer.account != nil && composer.place != nil && !acting
     }
 
+    /// What starting does, in a sentence, as the Mac's panel says it: over the capsule's menu.
     private var happens: String {
-        if let whyNot { return whyNot }
+        if let whyNot { return whyNot.full }
         guard let w = worktree else { return project.isEmpty ? "No worktrees on this Mac." : "No worktrees in \(project) on this Mac." }
         if let why = composer.choicesProblem { return "\(Names.short(mac?.name ?? "The Mac")) didn’t say where its accounts can start: \(why)" }
         if composer.account == nil || composer.place == nil { return "Asking \(Names.short(mac?.name ?? "the Mac")) where it can start…" }
         var out = composer.happens(in: w, newWorktree: takesNewWorktree && composer.newWorktree)
         if store.devices.count > 1, let mac { out = "On \(Names.short(mac.name)): " + out }
-        if let duplicate { out += " “\(duplicate.title)” (\(duplicate.account) · \(duplicate.worktree)) may already be doing this." }
         return out
+    }
+
+    /// Where it starts, on one line under the capsule's title: the Mac where there are several, the
+    /// worktree, the account, the model, and where it runs when that isn't where the account
+    /// usually starts (the line is short; the menu has it all).
+    private var whereWords: String {
+        if let whyNot { return whyNot.short }
+        guard let w = worktree else { return project.isEmpty ? "No worktrees on this Mac" : "No worktrees in \(project) on this Mac" }
+        if composer.choicesProblem != nil { return "\(Names.short(mac?.name ?? "The Mac")) didn’t say where it can start" }
+        guard let account = composer.account else { return "Asking \(Names.short(mac?.name ?? "the Mac")) where it can start…" }
+        var parts: [String] = []
+        if store.devices.count > 1, let mac { parts.append(Names.short(mac.name)) }
+        parts.append(takesNewWorktree && composer.newWorktree ? "a new worktree of \(w.repo)" : worktreeName)
+        parts.append(account)
+        if composer.takesModel, let model = composer.modelLabel ?? composer.defaultModelLabel { parts.append(model) }
+        if let a = composer.chosenAccount, composer.place != a.place, let place = a.places.first(where: { $0.id == composer.place })?.label { parts.append(place) }
+        return parts.joined(separator: " · ")
+    }
+
+    /// A line over the capsule: a start that didn't go, why one can't, or a session that may
+    /// already be doing what's typed.
+    private var note: (text: String, symbol: String, color: Color)? {
+        if let problem { return (problem, "exclamationmark.triangle.fill", .red) }
+        guard !prompt.isEmpty else { return nil }
+        if let whyNot { return (whyNot.full, "exclamationmark.triangle.fill", .orange) }
+        if let duplicate { return ("“\(duplicate.title)” (\(duplicate.account) · \(duplicate.worktree)) may already be doing this.", "square.on.square", .secondary) }
+        return nil
     }
 
     private func pickAccount(_ name: String?) {
