@@ -70,13 +70,20 @@ struct QuickSessionRow: View {
     }
 
     /// Where it is, as the Mac's panel says it: the account and the worktree, and the Mac and
-    /// project when those aren't plain.
+    /// project when those aren't plain. Then the headless runs its commands started, which the
+    /// list counts here rather than listing, as the Mac's row does on a chip; or, for a headless
+    /// run listed as a session of its own (no session on a linked Mac ran it), that it is one.
     private var place: String {
         var parts: [String] = []
         if showDevice { parts.append(Names.short(row.deviceName)) }
         if showProject { parts.append(row.project) }
         parts.append(row.account)
         parts.append(row.worktree)
+        if row.runs > 0 {
+            let runs = row.runs == 1 ? "1 run" : "\(row.runs) runs"
+            parts.append(row.runsWorking > 0 ? "\(runs), \(row.runsWorking) at work" : runs)
+        }
+        if row.headless { parts.append("headless") }
         return parts.joined(separator: " · ")
     }
 }

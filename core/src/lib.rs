@@ -184,10 +184,20 @@ pub struct SessionRow {
     /// Quiet, from its Mac: a turn it ends doesn't wait on you, and it comes to you only when it
     /// needs you (its Mac has already left its turns out of Your turn).
     pub quiet: bool,
-    /// A helper that doesn't need you: started by another session's agent to help it, or an
-    /// automatic review of a PR. It stays out of the inbox's lists and what waits on you, as it
-    /// stays off the Mac's bar (`Session::helping`), and is found by searching.
-    pub helping: bool,
+    /// A helper or a headless run that doesn't need you: started by another session's agent to
+    /// help it, an automatic review of a PR, or a `claude -p` or `codex exec` run a script or an
+    /// agent reads itself. It stays out of the inbox's lists and what waits on you, as it stays off
+    /// the Mac's bar (`Session::unattended`), and is found by searching. A headless run whose
+    /// session isn't on a linked Mac's board isn't: it's listed as a session of its own, as the
+    /// Mac's Sessions view lists it.
+    pub unattended: bool,
+    /// A run of its harness that nobody is at (`claude -p`, `codex exec`): the Mac counts it on the
+    /// row of the session that ran it (its `origin`) rather than listing it.
+    pub headless: bool,
+    /// The headless runs this session's commands started that are on its Mac's board, and how
+    /// many of them are at work, which the Mac's row shows as a chip: its `runs` there.
+    pub runs: u32,
+    pub runs_working: u32,
     /// Replies another session suggested for it, to send with a tap, until something is sent to
     /// it or a turn of its starts.
     pub suggestions: Option<SuggestedReplies>,
@@ -448,7 +458,7 @@ impl Core {
                     last_seen: d.last_seen,
                     linked_back: d.linked_back,
                     loading: d.loading,
-                    sessions: all.iter().filter(|s| s.device == d.key && in_inbox(s, now) && !s.helping).count() as u32,
+                    sessions: all.iter().filter(|s| s.device == d.key && in_inbox(s, now) && !s.unattended).count() as u32,
                 });
             }
             let mut sessions: Vec<SessionRow> = all.into_iter().filter(|s| in_inbox(s, now)).collect();
@@ -560,13 +570,42 @@ pub(crate) fn all_rows(feeds: &Feeds) -> Vec<SessionRow> {
                 limit: s.limit.as_ref().filter(|_| status != Status::Working).map(|l| limit_words(&s.account, l, now)),
                 connection_lost: s.connection_lost.as_ref().filter(|_| status != Status::Working).map(connection_lost_words),
                 quiet: s.quiet,
-                helping: s.helping(),
+                unattended: s.unattended(),
+                headless: s.headless,
+                runs: 0,
+                runs_working: 0,
                 suggestions: s.suggestions.as_ref().filter(|g| !g.replies.is_empty()).map(|g| SuggestedReplies { replies: g.replies.clone(), note: g.note.clone(), by: g.by_title.clone() }),
                 emblem: s.emblem.as_ref().map(Emblem::from),
             });
         }
     }
+    count_runs(&mut sessions);
     sessions
+}
+
+/// Each headless run counted on the row of the session it came from, as the Mac's Sessions view
+/// counts them (its boardLists.ts `runCounts`), and the ones whose session isn't on a linked
+/// Mac's board listed as sessions of their own (its `placeHelpers`): a script in a terminal ran
+/// it, its session was archived, or it ended before its Mac saw it running.
+fn count_runs(rows: &mut [SessionRow]) {
+    let keys: std::collections::HashSet<String> = rows.iter().map(|r| r.key.clone()).collect();
+    let mut runs: std::collections::HashMap<String, (u32, u32)> = std::collections::HashMap::new();
+    for r in rows.iter_mut().filter(|r| r.headless) {
+        match r.origin.as_ref().map(|o| o.key.clone()).filter(|k| keys.contains(k)) {
+            Some(parent) => {
+                let c = runs.entry(parent).or_default();
+                c.0 += 1;
+                c.1 += u32::from(r.status == Status::Working);
+            }
+            None => r.unattended = false,
+        }
+    }
+    for r in rows.iter_mut() {
+        if let Some(&(count, working)) = runs.get(&r.key) {
+            r.runs = count;
+            r.runs_working = working;
+        }
+    }
 }
 
 /// Why a session's last turn ended when its harness couldn't reach its API, and what happens next,
@@ -1972,10 +2011,40 @@ mod order_tests {
             limit: None,
             connection_lost: None,
             quiet: false,
-            helping: false,
+            unattended: false,
+            headless: false,
+            runs: 0,
+            runs_working: 0,
             suggestions: None,
             emblem: None,
         }
+    }
+
+    #[test]
+    fn headless_runs_count_on_their_sessions_row_and_ones_without_one_are_listed() {
+        let run = |key: &str, status: Status, from: Option<&str>| SessionRow {
+            headless: true,
+            unattended: status != Status::Needs,
+            origin: from.map(|k| SessionOrigin { key: k.into(), title: None, fork: false }),
+            ..row(key, status, 0, None, 0)
+        };
+        let mut rows = vec![
+            row("boss", Status::Working, 0, None, 0),
+            run("a", Status::Working, Some("boss")),
+            run("b", Status::Working, Some("boss")),
+            run("c", Status::Idle, Some("boss")),
+            run("asks", Status::Needs, Some("boss")),
+            // A script in a terminal ran it, or its session isn't on any linked Mac's board.
+            run("lone", Status::Working, None),
+            run("gone", Status::Idle, Some("closed")),
+        ];
+        count_runs(&mut rows);
+        let by = |k: &str| rows.iter().find(|r| r.key == k).unwrap().clone();
+        assert_eq!((by("boss").runs, by("boss").runs_working), (4, 2));
+        assert!(by("a").unattended && by("c").unattended);
+        assert!(!by("asks").unattended, "one that needs you waits on you");
+        assert!(!by("lone").unattended && !by("gone").unattended, "listed as sessions of their own");
+        assert_eq!(by("lone").runs, 0);
     }
 
     #[test]

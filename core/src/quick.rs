@@ -248,9 +248,9 @@ pub(crate) fn quick_list(rows: &[SessionRow], prs: &[PrRow], project: &str, quer
     if words.is_empty() {
         // What's pinned leads, whatever its state, helpers too: a pin is yours to make.
         let pinned = crate::lists::pinned_of(&rows);
-        // A helper that doesn't need you is out of the rest, as it's off the Mac's bar: its
-        // agent reads what it writes. Searching finds it.
-        let rows: Vec<&SessionRow> = rows.iter().copied().filter(|r| !r.helping).collect();
+        // A helper or a headless run that doesn't need you is out of the rest, as it's off the
+        // Mac's bar: its agent or script reads what it writes. Searching finds it.
+        let rows: Vec<&SessionRow> = rows.iter().copied().filter(|r| !r.unattended).collect();
         let mut attention: Vec<&SessionRow> = rows.iter().copied().filter(|r| matches!(r.section, InboxSection::NeedsYou | InboxSection::YourTurn | InboxSection::Working)).collect();
         attention.sort_by(|a, b| inbox_order(a, b));
         let working = attention.iter().filter(|r| r.section == InboxSection::Working).count() as u32;
@@ -662,7 +662,10 @@ pub(crate) mod tests {
             limit: None,
             connection_lost: None,
             quiet: false,
-            helping: false,
+            unattended: false,
+            headless: false,
+            runs: 0,
+            runs_working: 0,
             suggestions: None,
             emblem: None,
         }
@@ -721,7 +724,7 @@ pub(crate) mod tests {
         // A pinned one that needs you counts as waiting when it's the only one; a pinned helper
         // leads with the rest; a pinned one working counts as working.
         let mut helper = row("helper", "d", Status::Idle, NOW - hour);
-        helper.helping = true;
+        helper.unattended = true;
         helper.pinned = Some(2);
         let mut working = row("working", "e", Status::Working, NOW - hour);
         working.pinned = Some(3);

@@ -227,11 +227,11 @@ final class Store {
             let rest = fixed.firstIndex(of: key).map { fixed[($0 + 1)...] } ?? fixed[...]
             return rest.compactMap { k in sessions.first { $0.key == k } }
         }
-        // A helper that doesn't need you isn't waiting on you, as it's out of the lists: a pin
-        // keeps one listed (in Pinned), and a Mac from before the helpers' rule calls its turns
-        // Your turn.
+        // A helper or a headless run that doesn't need you isn't waiting on you, as it's out of
+        // the lists: a pin keeps one listed (in Pinned), and a Mac from before the helpers' rule
+        // calls its turns Your turn.
         let waiting = sessions.filter { row in
-            guard row.key != key, !row.helping, row.section == .needsYou || row.section == .yourTurn, project.isEmpty || row.project == project else { return false }
+            guard row.key != key, !row.unattended, row.section == .needsYou || row.section == .yourTurn, project.isEmpty || row.project == project else { return false }
             guard let at = handled[row.key] else { return true }
             return (row.statusSince ?? row.lastActivity) > at
         }

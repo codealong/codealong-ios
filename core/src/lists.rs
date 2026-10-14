@@ -116,9 +116,10 @@ fn status_rank(s: Status) -> u8 {
 }
 
 /// The list's sessions in `project` (empty for all): what the inbox lists, without the helpers
-/// that don't need you, as the quick search leaves them out.
+/// and headless runs that don't need you (`SessionRow::unattended`), as the quick search leaves
+/// them out.
 fn listed<'a>(rows: &'a [SessionRow], project: &'a str, now: i64) -> impl Iterator<Item = &'a SessionRow> {
-    rows.iter().filter(move |r| in_inbox(r, now) && !(r.helping && !matches!(r.status, Status::Needs | Status::Error)) && (project.is_empty() || r.project == project))
+    rows.iter().filter(move |r| in_inbox(r, now) && !r.unattended && (project.is_empty() || r.project == project))
 }
 
 /// The pinned ones among `rows`, in their Macs' order: by place, two Macs' firsts by Mac.
@@ -282,7 +283,7 @@ mod tests {
         let plain = in_worktree("d", "App", "app-1", Status::Idle, NOW - 3 * HOUR);
         // A helper pinned, from a search, leads with them.
         let mut helper = in_worktree("h", "App", "app-1", Status::Idle, NOW - HOUR);
-        helper.helping = true;
+        helper.unattended = true;
         helper.pinned = Some(2);
         let rows = [plain, second_old, first_here, first_there, helper];
         let keys = |rows: Vec<SessionRow>| rows.into_iter().map(|r| r.key).collect::<Vec<_>>();
@@ -343,9 +344,9 @@ mod tests {
     #[test]
     fn by_project_and_recent_leave_out_what_the_list_does() {
         let mut helper = in_worktree("h", "App", "app-1", Status::Unread, NOW - HOUR);
-        helper.helping = true;
-        let mut asking_helper = in_worktree("k", "App", "app-1", Status::Needs, NOW - HOUR);
-        asking_helper.helping = true;
+        helper.unattended = true;
+        // A helper that needs you isn't unattended (`Session::unattended`): it's listed.
+        let asking_helper = in_worktree("k", "App", "app-1", Status::Needs, NOW - HOUR);
         let mut old = in_worktree("o", "App", "app-1", Status::Idle, NOW - 5 * 24 * HOUR);
         old.last_prompt_at = NOW - 5 * 24 * HOUR;
         let other = in_worktree("x", "Site", "site", Status::Idle, NOW - 3 * HOUR);
