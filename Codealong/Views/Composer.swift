@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// Where a new session starts, as New session's choices set it: the Mac, the worktree, whether its
-/// harness makes a worktree of its own, the account, model and effort, and where it runs. The list
-/// keeps it, so the screen opens with the Mac's choices already read.
+/// Where a new session starts, as the chips under the quick search set it: the Mac, the worktree,
+/// whether its harness makes a worktree of its own, the account, model and effort, and where it
+/// runs. The list keeps it, reading the Mac's choices on the navigation stack, so they're there
+/// when you're back from a session.
 struct Composer {
     var device: String?
     /// The worktree picked by hand, by id on `device`; none goes by `worktree(store:project:)`'s default.
@@ -76,7 +77,7 @@ struct Composer {
     }
 }
 
-/// A choice on New session, as the Mac's panel's chips are.
+/// A choice under the quick search, as the Mac's panel's chips are.
 struct Chip: View {
     let symbol: String
     let text: String

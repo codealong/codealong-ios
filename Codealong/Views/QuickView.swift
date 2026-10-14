@@ -1,12 +1,13 @@
 import SwiftUI
 
-/// The app's first screen, laid out as Codex's phone app is: a floating glass bar with the page
-/// menu and search, the projects as pills, the list, and a capsule at the bottom that starts a
-/// session. The page menu switches between Sessions and PRs, orders Sessions (what needs you
-/// first, as the Mac's quick panel lists them, by project, or the last active first), and opens
-/// the Macs and Improve Codealong. Search finds sessions, by what was said in them too, and PRs.
-/// The core has the rules; this lays them out and moves them about with the system's own
-/// animations.
+/// The app's first screen, as the Mac's quick panel is: an input at the top, and below it what
+/// you can do next. With nothing typed it lists the sessions that need you, then the ones whose
+/// turn ended (the ones working when nothing waits), then the rest started in the last day; the
+/// page menu over the input orders them by project or the last active first instead, or lists
+/// PRs, and the pills narrow the list to one project. Typed words find sessions (by what was said
+/// in them too) and PRs, a Mac suggests where what's typed goes, and the row at the bottom starts
+/// a new session with it as the prompt, on the Mac, in the worktree, on the account and where the
+/// chips under it say. The core has the rules.
 struct QuickView: View {
     @Environment(Store.self) private var store
     @Environment(\.openURL) private var openURL
@@ -21,96 +22,105 @@ struct QuickView: View {
     /// Merged and closed PRs shown, which start folded.
     @State private var showingDone = false
 
-    @State private var searching = false
     @State private var text = ""
-    @FocusState private var searchFocused: Bool
+    @FocusState private var typing: Bool
     /// What the Macs' text search found for what's typed, and whether one is still reading.
     @State private var said: [SaidHit] = []
     @State private var saidBuilding = false
+    /// A Mac's suggestions for what's typed, and the text they're for.
+    @State private var route: RouteAnswer?
+    @State private var routedFor = ""
+    @State private var routing = false
+    @State private var routeProblem: String?
 
     @State private var composer = Composer()
+    @State private var problem: String?
+    @State private var acting = false
+    /// Starts that went, for the haptic.
+    @State private var started = 0
     /// The last account, place and Mac you started on, to start with again.
     @AppStorage("start.account") private var lastAccount = ""
     @AppStorage("start.place") private var lastPlace = ""
     @AppStorage("start.device") private var lastDevice = ""
 
-    @Namespace private var zoom
-    @Namespace private var glass
     @Namespace private var pills
 
     enum Page: String { case sessions, prs }
     enum Order: String { case needs, project, recent }
 
-    /// New session's place on the path; a worktree's ✎ adds the worktree's id, so the screen
-    /// zooms out of the button that opened it.
-    static let newKey = "new:"
+    private var query: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
 
-    private var query: String { searching ? text.trimmingCharacters(in: .whitespacesAndNewlines) : "" }
+    /// Where new work goes: the list's project, or Codealong's own while it's being improved.
+    private var startProject: String { store.improving?.target.project ?? project }
 
     var body: some View {
         NavigationStack(path: $path) {
-            list
-                .safeAreaBar(edge: .top) { bar }
-                .safeAreaBar(edge: .bottom) {
-                    if !store.devices.isEmpty && !searching {
-                        capsule
-                            .transition(.move(edge: .bottom).combined(with: .opacity))
+            VStack(spacing: 0) {
+                // The input takes the lines it needs before the list gets any: with the keyboard
+                // up, an even split leaves it too short, and it scrolls its first lines away.
+                header.layoutPriority(1)
+                Divider()
+                list
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if !store.devices.isEmpty {
+                    StartBar(composer: $composer, project: startProject, prompt: query, duplicate: routedFor == query ? route?.duplicate : nil, problem: problem, acting: acting) {
+                        Task { await start() }
                     }
                 }
-                .toolbar(.hidden, for: .navigationBar)
-                .navigationDestination(for: String.self) { key in destination(key) }
-                .sheet(isPresented: $showingMacs) {
-                    DevicesView()
-                }
-                // A session started here, or a link to one, opens once its Mac lists it.
-                .onChange(of: store.sessions) { _, _ in openListed() }
-                .onChange(of: store.prs) { _, _ in openListed() }
-                .onChange(of: store.openWhenListed) { _, _ in openListed() }
-                // The first that wait on you are the likeliest to be opened: read them ahead, so
-                // they show at once. Again as they change, and once a Mac connects.
-                .task(id: "\(firstWaiting)\(store.devices.filter(\.online).count)") {
-                    for key in firstWaiting { store.prefetch(key) }
-                }
-                // Back at the list, swiping back starts again from the next session opened.
-                .onChange(of: path) { _, now in
-                    if now.isEmpty { store.trail.removeAll() }
-                }
-                // Improve Codealong pressed on this or any other screen: New session takes it up.
-                .onChange(of: store.improving?.id) { _, id in
-                    if id != nil, let target = store.improving?.target { takeUpImprove(target) }
-                }
-                .task(id: query) { await searchSaid() }
-                .onAppear {
-                    // Text searched for a test at launch (`QUERY=<text> scripts/run.sh`).
-                    if let q = ProcessInfo.processInfo.environment["CODEALONG_QUERY"], !q.isEmpty, text.isEmpty {
-                        searching = true
-                        text = q
+            }
+            .toolbar(.hidden, for: .navigationBar)
+            .navigationDestination(for: String.self) { key in destination(key) }
+            .sheet(isPresented: $showingMacs) {
+                DevicesView()
+            }
+            // A session started here, or a link to one, opens once its Mac lists it.
+            .onChange(of: store.sessions) { _, _ in openListed() }
+            .onChange(of: store.prs) { _, _ in openListed() }
+            .onChange(of: store.openWhenListed) { _, _ in openListed() }
+            // The first that wait on you are the likeliest to be opened: read them ahead, so they
+            // show at once. Again as they change, and once a Mac connects.
+            .task(id: "\(firstWaiting)\(store.devices.filter(\.online).count)") {
+                for key in firstWaiting { store.prefetch(key) }
+            }
+            // Back at the list, swiping back starts again from the next session opened.
+            .onChange(of: path) { _, now in
+                if now.isEmpty { store.trail.removeAll() }
+            }
+            // Improve Codealong pressed on this or any other screen: the list takes it up.
+            .onChange(of: store.improving?.id) { _, id in
+                if id != nil, let target = store.improving?.target { takeUpImprove(target) }
+            }
+            .task(id: query) { await searchSaid() }
+            .task(id: "\(query)\u{1}\(startProject)\u{1}\(routeDevice ?? "")") { await suggest() }
+            .onAppear {
+                // Text typed for a test at launch (`QUERY=<text> scripts/run.sh`).
+                if let q = ProcessInfo.processInfo.environment["CODEALONG_QUERY"], !q.isEmpty, text.isEmpty { text = q }
+            }
+            // A worktree picked in one project isn't where the next project's work goes.
+            .onChange(of: project) { _, _ in composer.worktreeID = nil }
+            .sensoryFeedback(.selection, trigger: project)
+            .sensoryFeedback(.selection, trigger: page)
+            .sensoryFeedback(.selection, trigger: order)
+            .sensoryFeedback(.impact(weight: .light), trigger: foldedLines)
+            .sensoryFeedback(.success, trigger: started)
+            .alert(store.notice ?? "", isPresented: Binding(get: { store.notice != nil }, set: { if !$0 { store.notice = nil } })) {
+                Button("OK", role: .cancel) { store.notice = nil }
+            }
+            .alert("Link with this Mac?", isPresented: Binding(get: { store.offeredLink != nil }, set: { if !$0 { store.offeredLink = nil } })) {
+                Button("Link") {
+                    if let code = store.offeredLink {
+                        Task { await store.link(code) }
                     }
+                    store.offeredLink = nil
                 }
-                // A worktree picked in one project isn't where the next project's work goes.
-                .onChange(of: project) { _, _ in composer.worktreeID = nil }
-                .sensoryFeedback(.selection, trigger: project)
-                .sensoryFeedback(.selection, trigger: page)
-                .sensoryFeedback(.selection, trigger: order)
-                .sensoryFeedback(.impact(weight: .light), trigger: foldedLines)
-                .alert(store.notice ?? "", isPresented: Binding(get: { store.notice != nil }, set: { if !$0 { store.notice = nil } })) {
-                    Button("OK", role: .cancel) { store.notice = nil }
-                }
-                .alert("Link with this Mac?", isPresented: Binding(get: { store.offeredLink != nil }, set: { if !$0 { store.offeredLink = nil } })) {
-                    Button("Link") {
-                        if let code = store.offeredLink {
-                            Task { await store.link(code) }
-                        }
-                        store.offeredLink = nil
-                    }
-                    Button("Cancel", role: .cancel) { store.offeredLink = nil }
-                } message: {
-                    Text("This phone will see the sessions on the Mac that showed this code, and the Mac will list it as a phone.")
-                }
+                Button("Cancel", role: .cancel) { store.offeredLink = nil }
+            } message: {
+                Text("This phone will see the sessions on the Mac that showed this code, and the Mac will list it as a phone.")
+            }
         }
         // The Mac to start on and what it can start, read on the stack rather than the list,
-        // which is off screen, its tasks cancelled, while New session is open: a Mac picked there,
-        // or one a worktree's ✎ picked as New session opened, has its choices read all the same.
+        // whose tasks stop while a session covers it: back at the list, the chips are as they were.
         .onAppear { chooseDevice() }
         .onChange(of: store.devices.map(\.key)) { _, _ in chooseDevice() }
         // Again once the Mac connects: at launch it's chosen before it is.
@@ -119,14 +129,10 @@ struct QuickView: View {
 
     @ViewBuilder
     private func destination(_ key: String) -> some View {
-        if key.hasPrefix(Self.newKey) {
-            // Improving Codealong, the Mac suggests among Codealong's own project's worktrees.
-            NewSessionView(composer: $composer, project: store.improving?.target.project ?? project, go: { next in path = [next] })
-                .navigationTransition(.zoom(sourceID: key, in: zoom))
-        } else if key.hasPrefix(PrView.prefix) {
-            // A view of its own per session: going from one to another by a link keeps nothing.
-            // Next puts the next session in this one's place, so Back is still this list. One a
-            // swipe slid in starts as the swipe drew it. A PR's is `pr:` and its key.
+        // A view of its own per session: going from one to another by a link keeps nothing. Next
+        // puts the next session in this one's place, so Back is still this list. One a swipe slid
+        // in starts as the swipe drew it. A PR's is `pr:` and its key.
+        if key.hasPrefix(PrView.prefix) {
             PrView(key: String(key.dropFirst(PrView.prefix.count))).id(key)
         } else {
             SessionView(key: key, opening: store.slidIn.flatMap { $0.key == key ? $0.opening : nil }, go: { next in path = [next] }).id(key)
@@ -140,86 +146,50 @@ struct QuickView: View {
         }
     }
 
-    // MARK: The bar
+    // MARK: The input
 
-    /// The page menu and search, which turn into the search field and its close button, the
-    /// glass flowing from one to the other.
-    private var bar: some View {
-        GlassEffectContainer(spacing: 12) {
-            HStack(spacing: 10) {
-                if searching {
-                    searchField
-                        .glassEffectID("search", in: glass)
-                    Button(action: closeSearch) {
-                        Image(systemName: "xmark")
-                            .font(.body.weight(.semibold))
-                            .frame(width: 44, height: 44)
-                            .contentShape(.circle)
-                    }
-                    .buttonStyle(.plain)
-                    .glassEffect(.regular.interactive(), in: .circle)
-                    .glassEffectID("close", in: glass)
-                    .accessibilityLabel("Close search")
-                } else {
-                    pageMenu
-                        .glassEffectID("page", in: glass)
-                    Spacer(minLength: 0)
-                    Button(action: openSearch) {
-                        Image(systemName: "magnifyingglass")
-                            .font(.body.weight(.semibold))
-                            .frame(width: 44, height: 44)
-                            .contentShape(.circle)
-                    }
-                    .buttonStyle(.plain)
-                    .glassEffect(.regular.interactive(), in: .circle)
-                    .glassEffectID("search", in: glass)
-                    .disabled(store.devices.isEmpty)
-                    .accessibilityLabel("Search")
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                pageMenu
+                Spacer(minLength: 0)
+                ImproveButton(glass: true)
+                Button { showingMacs = true } label: {
+                    Image(systemName: "laptopcomputer")
+                        .font(.body.weight(.medium))
+                        .frame(width: 36, height: 32)
                 }
+                .buttonStyle(.glass)
+                .tint(macsNeedAttention ? .orange : nil)
+                .accessibilityLabel("Macs")
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                TextField(store.improving == nil ? "Find a session, or describe new work…" : "Describe how to improve Codealong…", text: $text, axis: .vertical)
+                    .font(.title3)
+                    .lineLimit(1...6)
+                    .focused($typing)
+                    .submitLabel(.return)
+                if !text.isEmpty {
+                    Button {
+                        text = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Clear")
+                }
+            }
+            if let improving = store.improving {
+                ImproveStrip(improving: improving)
+                    .padding(.top, 2)
             }
         }
         .padding(.horizontal, 16)
-        .padding(.top, 4)
-        .padding(.bottom, 6)
+        .padding(.top, 8)
+        .padding(.bottom, 12)
     }
 
-    private var searchField: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-            TextField("Search sessions and PRs", text: $text)
-                .focused($searchFocused)
-                .submitLabel(.search)
-                .autocorrectionDisabled()
-            if !text.isEmpty {
-                Button { text = "" } label: {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Clear")
-                .transition(.scale.combined(with: .opacity))
-            }
-        }
-        .padding(.horizontal, 14)
-        .frame(height: 44)
-        .glassEffect(.regular.interactive(), in: .capsule)
-        .animation(.snappy, value: text.isEmpty)
-    }
-
-    private func openSearch() {
-        withAnimation(.smooth(duration: 0.35)) { searching = true }
-        searchFocused = true
-    }
-
-    private func closeSearch() {
-        searchFocused = false
-        withAnimation(.smooth(duration: 0.35)) {
-            searching = false
-            text = ""
-        }
-    }
-
-    /// Sessions or PRs, how Sessions are ordered, and the Macs and Improve Codealong.
+    /// Sessions or PRs, and how Sessions are ordered.
     private var pageMenu: some View {
         Menu {
             Picker("Page", selection: animated($page)) {
@@ -243,49 +213,25 @@ struct QuickView: View {
                     .pickerStyle(.inline)
                 }
             }
-            Section {
-                Button { showingMacs = true } label: {
-                    Label {
-                        Text("Macs")
-                        Text(macsWords)
-                    } icon: {
-                        Image(systemName: "laptopcomputer")
-                    }
-                }
-                Button(action: improveFromMenu) {
-                    Label("Improve Codealong", systemImage: "lightbulb")
-                }
-                .disabled(store.devices.isEmpty)
-            }
         } label: {
             HStack(spacing: 6) {
+                Image(systemName: page == .sessions ? "bubble.left.and.text.bubble.right" : "arrow.triangle.pull")
+                    .font(.subheadline)
                 Text(page == .sessions ? "Sessions" : "PRs")
-                    .font(.headline)
+                    .font(.subheadline.weight(.semibold))
                     .contentTransition(.interpolate)
                 Image(systemName: "chevron.down")
-                    .font(.footnote.weight(.bold))
+                    .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(.fill.tertiary, in: .rect(cornerRadius: 10))
             .foregroundStyle(.primary)
-            .padding(.leading, 18)
-            .padding(.trailing, 14)
-            .frame(height: 44)
-            .overlay(alignment: .topTrailing) {
-                // A Mac that isn't connected, or dropped this phone, or a session being improved.
-                if macsNeedAttention || store.improving != nil {
-                    Circle()
-                        .fill(.orange)
-                        .frame(width: 9, height: 9)
-                        .offset(x: -3, y: 5)
-                        .transition(.scale)
-                }
-            }
-            .contentShape(.capsule)
         }
         .tint(.primary)
-        .glassEffect(.regular.interactive(), in: .capsule)
         .accessibilityLabel(page == .sessions ? "Sessions" : "PRs")
-        .accessibilityHint("Switches page, orders the list, and opens your Macs")
+        .accessibilityHint("Switches between sessions and PRs, and orders the sessions")
     }
 
     /// A binding whose changes animate, so a menu's pick moves the list rather than swapping it.
@@ -293,54 +239,12 @@ struct QuickView: View {
         Binding(get: { binding.wrappedValue }, set: { v in withAnimation(.smooth) { binding.wrappedValue = v } })
     }
 
-    /// Improve Codealong from the menu, once the menu has gone, so the picture is of the list.
-    private func improveFromMenu() {
-        Task {
-            try? await Task.sleep(for: .milliseconds(450))
-            store.improveCodealong()
-        }
-    }
-
-    // MARK: The capsule
-
-    private var capsule: some View {
-        Button(action: openNew) {
-            HStack(spacing: 12) {
-                Image(systemName: "plus")
-                    .font(.body.weight(.bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 36, height: 36)
-                    .background(Color.orange, in: .circle)
-                Text(store.improving == nil ? "Start a session…" : "Describe how to improve Codealong…")
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 10)
-            .frame(height: 56)
-            .contentShape(.capsule)
-        }
-        .buttonStyle(.plain)
-        // Tinted with the page, so the rows scrolling under it don't read through its words.
-        .glassEffect(.regular.tint(Color(.systemBackground).opacity(0.7)).interactive(), in: .capsule)
-        .matchedTransitionSource(id: Self.newKey, in: zoom)
-        .padding(.horizontal, 32)
-        .padding(.bottom, 4)
-        .accessibilityLabel("Start a session")
-    }
-
-    /// New session from the capsule: in the worktree new work goes to, unless Improve Codealong
-    /// picked Codealong's.
-    private func openNew() {
-        if store.improving == nil { composer.worktreeID = nil }
-        path.append(Self.newKey)
-    }
-
-    /// New session from a worktree's ✎ in the list by project.
-    private func startIn(_ group: WorktreeGroup, _ worktree: Worktree) {
+    /// A worktree's ✎ in the list by project: the start bar goes to it, and the input asks for
+    /// the work.
+    private func startIn(_ worktree: Worktree) {
         composer.device = worktree.device
         composer.worktreeID = worktree.id
-        path.append(Self.newKey + group.id)
+        typing = true
     }
 
     // MARK: The list
@@ -348,6 +252,7 @@ struct QuickView: View {
     @ViewBuilder
     private var list: some View {
         let content = listed
+        let suggested = routedFor == query ? route?.suggestions ?? [] : []
         List {
             if !store.devices.isEmpty {
                 pillsRow
@@ -361,9 +266,24 @@ struct QuickView: View {
                 }
                 .listRowSeparator(.hidden)
             }
+            if !store.devices.isEmpty {
+                notes(content, suggested: suggested)
+            }
+            if !suggested.isEmpty {
+                Section {
+                    ForEach(suggested, id: \.key) { s in
+                        Button { Task { await act(s) } } label: {
+                            SuggestionRow(suggestion: s, composer: composer, showDevice: store.devices.count > 1)
+                                .contentShape(.rect)
+                        }
+                        .tint(.primary)
+                    }
+                } header: {
+                    GroupHeading(title: "Suggested", count: suggested.count)
+                }
+            }
             switch content {
             case let .quick(quick):
-                if !store.devices.isEmpty { notes(quick) }
                 quickSections(quick)
             case let .projects(pinned, groups):
                 pinnedSection(pinned)
@@ -382,13 +302,15 @@ struct QuickView: View {
             }
         }
         .listStyle(.plain)
+        .contentMargins(.top, 4, for: .scrollContent)
         .scrollDismissesKeyboard(.interactively)
         .overlay { emptyState(content) }
         // Rows that come, go or move as the Macs report animate there, as a pick of yours does.
         .animation(.snappy, value: content.ids)
+        .animation(.smooth, value: suggested.map(\.key))
     }
 
-    /// What the list shows now: the core's lists for the page, the order and the search.
+    /// What the list shows now: the core's lists for the page, the order and what's typed.
     private enum Listed {
         case quick(QuickList)
         /// The pinned sessions, which lead apart, and the rest by project.
@@ -408,9 +330,10 @@ struct QuickView: View {
         var isEmpty: Bool { ids.isEmpty }
     }
 
+    /// Typed words search, whatever the page; with none, the page in its order.
     private var listed: Listed {
         if !query.isEmpty {
-            return .quick(store.quick(project: project, query: query, said: said, ranked: []))
+            return .quick(store.quick(project: project, query: query, said: said, ranked: routedFor == query ? route?.ranked ?? [] : []))
         }
         if page == .prs { return .prs(store.prList(project: project)) }
         switch order {
@@ -463,13 +386,19 @@ struct QuickView: View {
     }
 
     @ViewBuilder
-    private func notes(_ quick: QuickList) -> some View {
+    private func notes(_ content: Listed, suggested: [Suggestion]) -> some View {
         Group {
-            if query.isEmpty && quick.nothingWaits {
+            if query.isEmpty, case let .quick(quick) = content, quick.nothingWaits {
                 Note(text: "Nothing needs you\(quick.working > 0 ? " · \(quick.working) working" : "").")
             }
-            if !query.isEmpty && quick.sections.isEmpty && !saidBuilding {
-                Note(text: "No sessions or PRs match.")
+            if routing {
+                Note(text: "Working out where this goes…", symbol: "sparkles")
+            }
+            if let routeProblem, !query.isEmpty {
+                Note(text: "Couldn’t suggest where this goes: \(routeProblem)")
+            }
+            if !query.isEmpty && content.isEmpty && suggested.isEmpty && !routing && !saidBuilding {
+                Note(text: "No sessions or PRs match. Start a session with this prompt below.")
             }
             if !query.isEmpty && saidBuilding {
                 Note(text: "Still reading what recent sessions said, so more may match in a moment.")
@@ -538,8 +467,8 @@ struct QuickView: View {
         }
     }
 
-    /// A worktree's row: a tap folds its sessions away or brings them back; its ✎ starts a
-    /// session in it.
+    /// A worktree's row: a tap folds its sessions away or brings them back; its ✎ points the start
+    /// bar at it.
     private func worktreeRow(_ w: WorktreeGroup, folded: Bool) -> some View {
         HStack(spacing: 6) {
             Button { toggleFold(w.id) } label: {
@@ -583,7 +512,7 @@ struct QuickView: View {
             .accessibilityValue(folded ? "Folded" : "Open")
             .accessibilityHint(folded ? "Shows its sessions" : "Folds its sessions away")
             if let worktree = w.worktree {
-                Button { startIn(w, worktree) } label: {
+                Button { startIn(worktree) } label: {
                     Image(systemName: "square.and.pencil")
                         .font(.body)
                         .foregroundStyle(.secondary)
@@ -591,8 +520,7 @@ struct QuickView: View {
                         .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
-                .matchedTransitionSource(id: Self.newKey + w.id, in: zoom)
-                .accessibilityLabel("New session in \(w.name)")
+                .accessibilityLabel("Start a session in \(w.name)")
             }
         }
         .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 6))
@@ -738,11 +666,11 @@ struct QuickView: View {
         query.lowercased().split(whereSeparator: \.isWhitespace).map(String.init)
     }
 
-    // MARK: Searching
+    // MARK: Searching and suggesting
 
-    /// Looks for what's searched for in what sessions said, a moment after typing pauses. What
-    /// the last search found stays while its line still has every word, so a row doesn't blink
-    /// out with each key and come back when the answer comes.
+    /// Looks for what's typed in what sessions said, a moment after typing pauses. What the last
+    /// search found stays while its line still has every word, so a row doesn't blink out with
+    /// each key and come back when the answer comes.
     private func searchSaid() async {
         said = stillSaid(hits: said, query: query)
         guard worthSearchingSaid(query: query) else {
@@ -758,12 +686,103 @@ struct QuickView: View {
         saidBuilding = found.building
     }
 
+    /// Asks the Mac chosen below where what's typed goes, once typing pauses on a few words.
+    /// Improving Codealong, it suggests among Codealong's own project's worktrees.
+    private func suggest() async {
+        routeProblem = nil
+        guard worthRouting(text: query), let device = routeDevice else {
+            routing = false
+            route = nil
+            return
+        }
+        try? await Task.sleep(for: .milliseconds(350))
+        if Task.isCancelled { return }
+        routing = true
+        let asked = query
+        do {
+            let got = try await store.route(device: device, project: startProject, text: asked)
+            if Task.isCancelled { return }
+            route = got
+            routedFor = asked
+        } catch {
+            if Task.isCancelled { return }
+            route = nil
+            routeProblem = words(error)
+        }
+        routing = false
+    }
+
     /// The first two sessions that wait on you, in the inbox's order and its project.
     private var firstWaiting: [String] {
         store.sessions.filter { ($0.section == .needsYou || $0.section == .yourTurn) && (project.isEmpty || $0.project == project) }.prefix(2).map(\.key)
     }
 
-    // MARK: Starting
+    /// The Mac that suggests: the one new sessions start on, else any that's connected.
+    private var routeDevice: String? {
+        if let d = composer.device, store.devices.contains(where: { $0.key == d && $0.online }) { return d }
+        return store.devices.first { $0.online }?.key
+    }
+
+    // MARK: Acting
+
+    private func act(_ s: Suggestion) async {
+        switch s.kind {
+        case .open:
+            if let key = s.session?.key { path.append(key) }
+        case .send:
+            // It goes as a reply in the session's screen goes: shown there at once, back in its
+            // box if it doesn't go.
+            guard let row = s.session else { return }
+            store.post(row.key, title: row.title, text: query, how: .send(now: false))
+            text = ""
+            store.dealtWith(row.key)
+            path.append(row.key)
+        case .start:
+            guard let w = s.worktree else { return }
+            await start(in: w, newWorktree: s.newWorktree)
+        }
+    }
+
+    /// Starts a session with what's typed: in the worktree chosen below, or where a suggestion says.
+    private func start(in over: Worktree? = nil, newWorktree over2: Bool? = nil) async {
+        let worktree = over ?? composer.worktree(store: store, project: startProject)
+        guard let worktree, let account = composer.account, let place = composer.place else { return }
+        let newTree = composer.takesNewWorktree && !worktree.chat && (over2 ?? composer.newWorktree)
+        // The picture is still on its way to the Mac: the prompt would go without it.
+        if store.improving?.keeping == true {
+            problem = "The picture of the screen is still on its way to the Mac. Try again in a moment."
+            return
+        }
+        acting = true
+        problem = nil
+        // Improving Codealong: the picture of the screen goes after what you wrote, as the Mac's
+        // panel writes it (the core's rule).
+        let prompt = store.improving.map { improvePrompt(text: query, shots: $0.shot.map { [$0] } ?? []) } ?? query
+        do {
+            let begun = try await store.startSession(device: worktree.device, worktree: worktree.id, account: account, place: place, prompt: prompt, model: composer.takesModel ? composer.model : nil, effort: composer.takesModel ? composer.effort : nil, newWorktree: newTree)
+            acting = false
+            started += 1
+            text = ""
+            typing = false
+            store.improving = nil
+            // It opens once its Mac lists it; a start whose id the Mac doesn't know yet says what's next.
+            if let key = begun.key {
+                store.openWhenListed = key
+                // One its Mac doesn't list (it went offline, or the terminal's command failed)
+                // says so, still opening if it turns up.
+                try? await Task.sleep(for: .seconds(30))
+                if store.openWhenListed == key {
+                    let name = store.devices.first { $0.key == worktree.device }.map { Names.short($0.name) } ?? "the Mac"
+                    problem = "It started, but \(name) hasn’t listed it yet. It opens once it does."
+                }
+            } else if let message = begun.message {
+                store.notice = message
+            }
+        } catch {
+            acting = false
+            problem = words(error)
+        }
+    }
 
     private var mac: DeviceRow? { store.devices.first { $0.key == composer.device } }
 
@@ -774,8 +793,8 @@ struct QuickView: View {
         composer.device = (online.first { $0.key == lastDevice } ?? online.first { $0.remoteControl } ?? store.devices.first)?.key
     }
 
-    /// What the Mac chosen can start, read before New session opens so it's there at once; the
-    /// account and place you last chose, where they can go there.
+    /// What the Mac chosen can start, for the chips; the account and place you last chose, where
+    /// they can go there.
     private func loadChoices() async {
         composer.choices = nil
         composer.choicesProblem = nil
@@ -797,33 +816,30 @@ struct QuickView: View {
     }
 
     /// Improve Codealong pressed, on any screen (`Store.improveCodealong`, with the picture of
-    /// that screen already taken): New session opens on Codealong's own source, on the Mac the
-    /// core picked, and asks what to change.
+    /// that screen already taken): the list comes back to the front, the start bar onto
+    /// Codealong's own source on the Mac the core picked, and its input asks what to change.
     private func takeUpImprove(_ target: ImproveTarget) {
+        path = []
         showingMacs = false
         composer.device = target.device
         composer.worktreeID = target.worktree
-        path = [Self.newKey]
+        typing = true
     }
 
     private func openListed() {
         guard let key = store.openWhenListed else { return }
-        // New session isn't listed by a Mac: it opens at once (`OPEN=new: scripts/run.sh`).
-        if key.hasPrefix(Self.newKey) {
-            store.openWhenListed = nil
-            path = [key]
-            return
-        }
         let listed = key.hasPrefix(PrView.prefix) ? store.pr(String(key.dropFirst(PrView.prefix.count))) != nil : store.sessions.contains { $0.key == key }
         if listed {
             store.openWhenListed = nil
+            // A start that hadn't been listed yet has been now.
+            problem = nil
             path = [key]
         }
     }
 
     // MARK: Macs and projects
 
-    /// A Mac that isn't connected, or dropped this phone, marks the page menu.
+    /// The Macs button: a Mac that isn't connected, or dropped this phone, turns it orange.
     private var macsNeedAttention: Bool {
         store.devices.contains { !$0.online || !$0.linkedBack }
     }
@@ -831,14 +847,6 @@ struct QuickView: View {
     /// Connected Macs that don't have this phone on their list.
     private var forgotten: [DeviceRow] {
         store.devices.filter { $0.online && !$0.linkedBack }
-    }
-
-    /// How the Macs stand, under Macs in the menu.
-    private var macsWords: String {
-        let online = store.devices.filter(\.online).count
-        if store.devices.isEmpty { return "Link a Mac" }
-        if !forgotten.isEmpty { return "\(forgotten.count == 1 ? "One" : "\(forgotten.count)") no longer linked" }
-        return online == store.devices.count ? "\(online) connected" : "\(online) of \(store.devices.count) connected"
     }
 
     /// The projects the page can narrow to, as the core lists them: the PRs page's are its PRs'.
