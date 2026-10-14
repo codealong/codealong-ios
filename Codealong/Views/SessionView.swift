@@ -113,6 +113,8 @@ struct SessionView: View {
     @ScaledMetric(relativeTo: .body) private var sendSize: CGFloat = 32
     /// Between the send button and the reply box's edge.
     private let replyInset: CGFloat = 6
+    /// The reply box's words are this much further in than its buttons, clear of its round corners.
+    private let replyTextInset: CGFloat = 10
     /// Reads the page before once you're this close to the top, so it's usually in before you
     /// get there: a page comes from the Mac, which can take a moment.
     private let nearTop: CGFloat = 900
@@ -467,9 +469,10 @@ struct SessionView: View {
                 NextButton(next: next, more: after.count - 1, showDevice: store.devices.count > 1, showProject: project.isEmpty) { moveOn(to: next) }
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
-            // The reply box floats over the conversation in glass, as a control, not a bar. A line
-            // of text is as tall as the send button, so the button sits centered in the pill, and
-            // as the text grows it stays at the bottom, as far from the edges as before.
+            // The reply box floats over the conversation in glass, as a control, not a bar. Its
+            // field has the box's width to itself, over a row of its buttons: beside them, the
+            // words before you write were squeezed into a column between the photo button and the
+            // model. A line of text is as tall as the send button, which sits in the box's corner.
             if let suggestions = row?.suggestions {
                 SuggestedRepliesView(suggestions: suggestions, blocked: canAct && !waitsElsewhere ? nil : whyNot ?? "It waits on you where it runs: answer that there first") { reply in
                     Task { await send(text: reply) }
@@ -496,6 +499,31 @@ struct SessionView: View {
                         attach(data)
                     }
                 }
+                // The words before you write say how a message gets there, which can take more than
+                // a line on a phone: up to two lines of them sit under the field while it's empty,
+                // and the box is as tall as they are.
+                ZStack(alignment: .leading) {
+                    if draft.isEmpty {
+                        Text(placeholder)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                    }
+                    TextField(text: Binding(get: { draft }, set: { draft = $0 }), prompt: Text(""), axis: .vertical) { Text(placeholder) }
+                        .lineLimit(1...6)
+                        .focused($typing)
+                        .disabled(!canAct || sending)
+                        // ⌘⏎ on a keyboard sends and goes on, as on the Mac.
+                        .onKeyPress(.return, phases: .down) { press in
+                            guard press.modifiers.contains(.command), canSend else { return .ignored }
+                            Task { await send(thenNext: true) }
+                            return .handled
+                        }
+                }
+                .frame(minHeight: sendSize)
+                .padding(.horizontal, replyTextInset)
                 HStack(alignment: .bottom, spacing: 8) {
                     // Photos go with the reply, kept on its Mac as they're picked.
                     if canAttach {
@@ -512,31 +540,8 @@ struct SessionView: View {
                         .disabled(sending)
                         .accessibilityLabel("Attach photos")
                     }
-                    // The words before you write say how a message gets there, which takes more than a
-                    // line on a phone: up to two lines of them sit under the field while it's empty, and
-                    // the box is as tall as they are. Where one that isn't running goes on is beside them
-                    // too, under its model.
-                    ZStack(alignment: .leading) {
-                        if draft.isEmpty {
-                            Text(placeholder)
-                                .foregroundStyle(.tertiary)
-                                .lineLimit(2)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .allowsHitTesting(false)
-                                .accessibilityHidden(true)
-                        }
-                        TextField(text: Binding(get: { draft }, set: { draft = $0 }), prompt: Text(""), axis: .vertical) { Text(placeholder) }
-                            .lineLimit(1...6)
-                            .focused($typing)
-                            .disabled(!canAct || sending)
-                            // ⌘⏎ on a keyboard sends and goes on, as on the Mac.
-                            .onKeyPress(.return, phases: .down) { press in
-                                guard press.modifiers.contains(.command), canSend else { return .ignored }
-                                Task { await send(thenNext: true) }
-                                return .handled
-                            }
-                    }
-                    .frame(minHeight: sendSize)
+                    Spacer(minLength: 0)
+                    // Where one that isn't running goes on is said here too, under its model.
                     if canAct && (resuming || showsModel) {
                         ModelMenu(rules: rules, resumePlace: $resumePlace, resumeModel: $resumeModel, resumeEffort: $resumeEffort, switching: switching, height: sendSize) { model in
                             Task { await switchModel(model) }
@@ -603,9 +608,7 @@ struct SessionView: View {
                     }
                 }
             }
-            .padding(.leading, canAttach ? replyInset : 16)
-            .padding(.trailing, replyInset)
-            .padding(.vertical, replyInset)
+            .padding(replyInset)
             .glassEffect(.regular.interactive(), in: .rect(cornerRadius: sendSize / 2 + replyInset))
         }
         .padding(.horizontal)
@@ -2385,6 +2388,7 @@ private struct SessionGlance: View {
     @Environment(Store.self) private var store
     @ScaledMetric(relativeTo: .body) private var sendSize: CGFloat = 32
     private let replyInset: CGFloat = 6
+    private let replyTextInset: CGFloat = 10
     /// More than a screen of the conversation's end: what's above it is off the top.
     private let shown = 40
 
@@ -2491,40 +2495,48 @@ private struct SessionGlance: View {
             if let suggestions = row?.suggestions {
                 SuggestedRepliesView(suggestions: suggestions, blocked: canAct && pending?.cannot == nil ? nil : why ?? "It waits on you where it runs: answer that there first") { _ in } edit: { _ in } dismiss: {}
             }
-            HStack(alignment: .bottom, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(draft.isEmpty ? replyWords(why: why, pending: pending, account: row?.account) { store.replyPlaceholder(key, way: kept.way, resumePlace: rules.resuming ? rules.resumeAt?.id : nil, behind: rules.resuming && rules.resumeAt?.behind == true) } : draft)
                     .foregroundStyle(draft.isEmpty ? .tertiary : .primary)
                     .lineLimit(draft.isEmpty ? 2 : 6)
                     .frame(maxWidth: .infinity, minHeight: sendSize, alignment: .leading)
-                if canAct && (rules.resuming || rules.showsModel) {
-                    ModelMenu(rules: rules, resumePlace: .constant(nil), resumeModel: .constant(nil), resumeEffort: .constant(nil), switching: false, height: sendSize) { _ in }
-                }
+                    .padding(.horizontal, replyTextInset)
                 // Buttons as the screen's are, dimmed as theirs are while there's nothing to send.
-                if canAct && row?.steerable == true && pending == nil {
-                    Button {} label: {
-                        Image(systemName: "bolt.fill")
-                            .font(.system(size: sendSize / 2.4, weight: .semibold))
-                            .foregroundStyle(Color.accentColor)
+                HStack(alignment: .bottom, spacing: 8) {
+                    if canAct && pending == nil {
+                        Image(systemName: "photo.badge.plus")
+                            .font(.system(size: sendSize / 2.1, weight: .medium))
+                            .foregroundStyle(.secondary)
                             .frame(width: sendSize, height: sendSize)
+                    }
+                    Spacer(minLength: 0)
+                    if canAct && (rules.resuming || rules.showsModel) {
+                        ModelMenu(rules: rules, resumePlace: .constant(nil), resumeModel: .constant(nil), resumeEffort: .constant(nil), switching: false, height: sendSize) { _ in }
+                    }
+                    if canAct && row?.steerable == true && pending == nil {
+                        Button {} label: {
+                            Image(systemName: "bolt.fill")
+                                .font(.system(size: sendSize / 2.4, weight: .semibold))
+                                .foregroundStyle(Color.accentColor)
+                                .frame(width: sendSize, height: sendSize)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!ready)
+                    }
+                    Button {} label: {
+                        ZStack {
+                            Circle().fill(ready ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.quaternary))
+                            Image(systemName: "arrow.up")
+                                .font(.system(size: sendSize / 2, weight: .bold))
+                                .foregroundStyle(ready ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary))
+                        }
+                        .frame(width: sendSize, height: sendSize)
                     }
                     .buttonStyle(.plain)
                     .disabled(!ready)
                 }
-                Button {} label: {
-                    ZStack {
-                        Circle().fill(ready ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.quaternary))
-                        Image(systemName: "arrow.up")
-                            .font(.system(size: sendSize / 2, weight: .bold))
-                            .foregroundStyle(ready ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary))
-                    }
-                    .frame(width: sendSize, height: sendSize)
-                }
-                .buttonStyle(.plain)
-                .disabled(!ready)
             }
-            .padding(.leading, 16)
-            .padding(.trailing, replyInset)
-            .padding(.vertical, replyInset)
+            .padding(replyInset)
             .glassEffect(.regular.interactive(), in: .rect(cornerRadius: sendSize / 2 + replyInset))
         }
         .padding(.horizontal)
@@ -2624,7 +2636,7 @@ private struct ModelMenu: View {
                     }
                 }
             } label: {
-                // On what, and under it where: the box's words have no room left to say it.
+                // On what, and under it where.
                 if takesModel {
                     label([model, effort].compactMap { $0 }.joined(separator: " · "), under: "in \(place)")
                 } else {
@@ -2671,7 +2683,8 @@ private struct ModelMenu: View {
                 }
             }
         }
-        .font(.footnote.weight(.medium))
+        // A size under the box's words, so it reads as a setting of the box, not something said.
+        .font(.caption.weight(.medium))
         .foregroundStyle(.secondary)
         .frame(height: height)
         .fixedSize(horizontal: false, vertical: true)
