@@ -365,9 +365,11 @@ struct QuickView: View {
             case let .quick(quick):
                 if !store.devices.isEmpty { notes(quick) }
                 quickSections(quick)
-            case let .projects(groups):
+            case let .projects(pinned, groups):
+                pinnedSection(pinned)
                 projectSections(groups)
-            case let .recent(rows):
+            case let .recent(pinned, rows):
+                pinnedSection(pinned)
                 if !rows.isEmpty {
                     Section {
                         ForEach(rows, id: \.key) { sessionRow($0) }
@@ -389,15 +391,16 @@ struct QuickView: View {
     /// What the list shows now: the core's lists for the page, the order and the search.
     private enum Listed {
         case quick(QuickList)
-        case projects([ProjectGroup])
-        case recent([SessionRow])
+        /// The pinned sessions, which lead apart, and the rest by project.
+        case projects([SessionRow], [ProjectGroup])
+        case recent([SessionRow], [SessionRow])
         case prs([PrSection])
 
         var ids: [String] {
             switch self {
             case let .quick(q): q.sections.flatMap { $0.rows.map(\.id) }
-            case let .projects(p): p.flatMap { $0.worktrees.flatMap { [$0.id] + $0.sessions.map(\.key) } }
-            case let .recent(r): r.map(\.key)
+            case let .projects(pinned, p): pinned.map(\.key) + p.flatMap { $0.worktrees.flatMap { [$0.id] + $0.sessions.map(\.key) } }
+            case let .recent(pinned, r): pinned.map(\.key) + r.map(\.key)
             case let .prs(s): s.flatMap { $0.rows.map(\.key) }
             }
         }
@@ -412,8 +415,8 @@ struct QuickView: View {
         if page == .prs { return .prs(store.prList(project: project)) }
         switch order {
         case .needs: return .quick(store.quick(project: project, query: "", said: [], ranked: []))
-        case .project: return .projects(store.byProject(project: project))
-        case .recent: return .recent(store.recent(project: project))
+        case .project: return .projects(store.pinned(project: project), store.byProject(project: project))
+        case .recent: return .recent(store.pinned(project: project), store.recent(project: project))
         }
     }
 
@@ -486,7 +489,19 @@ struct QuickView: View {
                     }
                 }
             } header: {
-                GroupHeading(title: section.group.title, count: Int(section.count))
+                GroupHeading(title: section.group.title, count: Int(section.count), symbol: section.group == .pinned ? "pin.fill" : nil)
+            }
+        }
+    }
+
+    /// The sessions pinned on their Macs, leading By project and Recent as they lead the rest.
+    @ViewBuilder
+    private func pinnedSection(_ rows: [SessionRow]) -> some View {
+        if !rows.isEmpty {
+            Section {
+                ForEach(rows, id: \.key) { sessionRow($0) }
+            } header: {
+                GroupHeading(title: "Pinned", count: rows.count, symbol: "pin.fill")
             }
         }
     }
@@ -607,7 +622,7 @@ struct QuickView: View {
                     ForEach(s.rows, id: \.key) { prRow($0) }
                 }
             } header: {
-                GroupHeading(title: s.group.title, count: s.rows.count)
+                GroupHeading(title: s.group.title, count: s.rows.count, symbol: s.group == .pinned ? "pin.fill" : nil)
             }
         }
     }
@@ -628,6 +643,10 @@ struct QuickView: View {
         }
         .tint(.primary)
         .contextMenu {
+            // Pinned on its Mac, which lists it first there and here.
+            Button(r.pinned == nil ? "Pin" : "Unpin", systemImage: r.pinned == nil ? "pin" : "pin.slash") {
+                act { try await store.pin(r.key, r.pinned == nil) }
+            }
             if r.seenable {
                 Button("Mark as seen", systemImage: "checkmark.circle") { store.markSeen(r.key) }
             }
@@ -834,6 +853,7 @@ struct QuickView: View {
 extension QuickGroup {
     var title: String {
         switch self {
+        case .pinned: "Pinned"
         case .needsYou: "Needs you"
         case .yourTurn: "Your turn"
         case .reviews: "Review requested"
@@ -867,13 +887,19 @@ extension QuickRow {
     }
 }
 
-/// A group's heading, as the Mac's panel has it: small capitals and how many there are.
+/// A group's heading, as the Mac's panel has it: small capitals and how many there are, after
+/// the group's symbol where it has one (Pinned's pin).
 struct GroupHeading: View {
     let title: String
     let count: Int
+    var symbol: String?
 
     var body: some View {
         HStack(spacing: 6) {
+            if let symbol {
+                Image(systemName: symbol)
+                    .imageScale(.small)
+            }
             Text(title.uppercased())
             Text("\(count)")
                 .foregroundStyle(.tertiary)

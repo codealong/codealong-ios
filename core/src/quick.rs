@@ -32,6 +32,8 @@ const TEXT_SEARCH_MIN: usize = 3;
 
 #[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QuickGroup {
+    /// Pinned on their Macs, in each Mac's order, as the Mac's Sessions view leads with them.
+    Pinned,
     NeedsYou,
     YourTurn,
     /// PRs that wait on your review, as the Mac's Review requested lists them.
@@ -256,12 +258,18 @@ pub(crate) fn quick_list(rows: &[SessionRow], prs: &[PrRow], project: &str, quer
         reviews.sort_by_key(|p| (p.requested_at.unwrap_or(p.updated_at), p.key.clone()));
         let waiting = waiting || !reviews.is_empty();
         let mut shown = std::collections::HashSet::new();
+        // What's pinned leads, whatever its state, and isn't listed again below.
+        let pinned = crate::lists::pinned_of(&rows);
+        if !pinned.is_empty() {
+            shown.extend(pinned.iter().map(|r| r.key.clone()));
+            sections.push(QuickSection { group: QuickGroup::Pinned, count: pinned.len() as u32, rows: pinned.into_iter().map(session).collect() });
+        }
         for (group, section) in [(QuickGroup::NeedsYou, InboxSection::NeedsYou), (QuickGroup::YourTurn, InboxSection::YourTurn), (QuickGroup::Working, InboxSection::Working)] {
             // With something waiting on you, what's working stays out of the way, as on the Mac.
             if waiting && section == InboxSection::Working {
                 continue;
             }
-            let these: Vec<&SessionRow> = attention.iter().copied().filter(|r| r.section == section).collect();
+            let these: Vec<&SessionRow> = attention.iter().copied().filter(|r| r.section == section && !shown.contains(&r.key)).collect();
             if !these.is_empty() {
                 shown.extend(these.iter().map(|r| r.key.clone()));
                 sections.push(QuickSection { group, count: these.len() as u32, rows: these.into_iter().map(session).collect() });
@@ -630,6 +638,7 @@ pub(crate) mod tests {
             repo: "app".into(),
             worktree: "app".into(),
             worktree_id: "/src/app".into(),
+            pinned: None,
             branch: Some("main".into()),
             last_prompt_at: at,
             last_activity: at,
@@ -695,6 +704,20 @@ pub(crate) mod tests {
         assert_eq!(keys(&l)[0], (QuickGroup::Working, vec!["working".to_string()]));
         assert!(l.nothing_waits);
         assert_eq!(l.working, 1);
+    }
+
+    #[test]
+    fn pinned_sessions_lead_and_arent_listed_again() {
+        let hour = 3600 * 1000;
+        let mut needs = row("needs", "a", Status::Needs, NOW - hour);
+        needs.pinned = Some(1);
+        let mut idle = row("idle", "b", Status::Idle, NOW - 30 * hour);
+        idle.pinned = Some(0);
+        let rows = vec![needs, idle, row("turn", "c", Status::Unread, NOW - 2 * hour)];
+        let l = quick_list(&rows, &[], "", "", &[], &[], NOW);
+        assert_eq!(keys(&l), [(QuickGroup::Pinned, vec!["idle".to_string(), "needs".into()]), (QuickGroup::YourTurn, vec!["turn".into()])]);
+        // A pinned one that needs you still counts as waiting.
+        assert!(!l.nothing_waits);
     }
 
     pub(crate) fn pr_row(key: &str, title: &str, waits: bool) -> PrRow {

@@ -426,6 +426,12 @@ final class Store {
         try await Task.detached { try core.quiet(keys: [key], quiet: on) }.value
     }
 
+    /// Pins a session at the top of its Mac's pins, or unpins it.
+    func pin(_ key: String, _ on: Bool) async throws {
+        let core = try running()
+        try await Task.detached { try core.pin(keys: [key], pinned: on) }.value
+    }
+
     /// Takes away the replies suggested for a session, on its Mac.
     func dismissSuggestions(_ key: String) async throws {
         let core = try running()
@@ -510,6 +516,13 @@ final class Store {
     func byProject(project: String) -> [ProjectGroup] {
         _ = tick
         return core?.byProject(project: project) ?? []
+    }
+
+    /// The list's pinned sessions, in their Macs' order, which lead By project and Recent. Reads
+    /// `tick`.
+    func pinned(project: String) -> [SessionRow] {
+        _ = tick
+        return core?.pinned(project: project) ?? []
     }
 
     /// The list's sessions, the last active first. Reads `tick`.

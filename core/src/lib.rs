@@ -137,6 +137,9 @@ pub struct SessionRow {
     pub worktree: String,
     /// Its worktree's id on its Mac (the worktree's path there).
     pub worktree_id: String,
+    /// Its place among its Mac's pinned sessions, the first 0; none when it isn't pinned, or its
+    /// Mac is from before 2026-10-13 and doesn't say.
+    pub pinned: Option<u32>,
     pub branch: Option<String>,
     pub last_prompt_at: i64,
     pub last_activity: i64,
@@ -394,6 +397,11 @@ impl Core {
         each_mac(&keys, |device, keys| self.client.quiet(device, keys, quiet))
     }
 
+    /// Pins sessions at the top of their Macs' pins, or unpins them.
+    pub fn pin(&self, keys: Vec<String>, pinned: bool) -> Result<(), CoreError> {
+        each_mac(&keys, |device, keys| self.client.pin(device, keys, pinned))
+    }
+
     /// Takes away the replies suggested for a session, on its Mac, as the Mac's Dismiss does.
     pub fn dismiss_suggestions(&self, key: String) -> Result<(), CoreError> {
         let (device, own) = split_remote(&key).ok_or_else(|| CoreError::Failed("That isn't a session on one of your Macs.".into()))?;
@@ -479,10 +487,11 @@ pub(crate) fn now_ms() -> i64 {
 
 type Feeds<'a> = [(codealong_peer::client::Device, &'a codealong_peer::feed::Replica)];
 
-/// Whether the inbox lists a session: what wants you or is running, and the rest for three days
-/// after you last prompted them.
+/// Whether the inbox lists a session: what wants you or is running, what's pinned on its Mac, and
+/// the rest for three days after you last prompted them. A pin keeps one however old, as the
+/// Mac's Sessions view does.
 pub(crate) fn in_inbox(s: &SessionRow, now: i64) -> bool {
-    matches!(s.status, Status::Needs | Status::Error | Status::Working | Status::Unread) || now - s.last_prompt_at <= RECENT_MS
+    matches!(s.status, Status::Needs | Status::Error | Status::Working | Status::Unread) || s.pinned.is_some() || now - s.last_prompt_at <= RECENT_MS
 }
 
 /// Every session on the linked Macs once, archived ones left out, in the projects the Macs line
@@ -527,6 +536,7 @@ pub(crate) fn all_rows(feeds: &Feeds) -> Vec<SessionRow> {
                 repo: lane.repo.clone(),
                 worktree: lane.callsign.clone(),
                 worktree_id: lane.id.clone(),
+                pinned: s.pin,
                 branch: s.branch.clone().or_else(|| lane.branch.clone()),
                 last_prompt_at: s.last_prompt_at,
                 last_activity: s.last_activity,
@@ -1923,6 +1933,7 @@ mod order_tests {
             repo: String::new(),
             worktree: String::new(),
             worktree_id: String::new(),
+            pinned: None,
             branch: None,
             last_prompt_at,
             last_activity: since,

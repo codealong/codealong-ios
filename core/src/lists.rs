@@ -121,12 +121,25 @@ fn listed<'a>(rows: &'a [SessionRow], project: &'a str, now: i64) -> impl Iterat
     rows.iter().filter(move |r| in_inbox(r, now) && !(r.helping && !matches!(r.status, Status::Needs | Status::Error)) && (project.is_empty() || r.project == project))
 }
 
-/// Sessions by project and worktree: the project and the worktree with the last activity first,
+/// The pinned ones among `rows`, in their Macs' order: by place, two Macs' firsts by Mac.
+pub(crate) fn pinned_of<'a>(rows: &[&'a SessionRow]) -> Vec<&'a SessionRow> {
+    let mut out: Vec<&SessionRow> = rows.iter().copied().filter(|r| r.pinned.is_some()).collect();
+    out.sort_by(|a, b| a.pinned.cmp(&b.pinned).then_with(|| a.device_name.cmp(&b.device_name)).then_with(|| a.key.cmp(&b.key)));
+    out
+}
+
+/// The list's pinned sessions in `project` (empty for all), which lead every order.
+pub(crate) fn pinned_sessions(rows: &[SessionRow], project: &str, now: i64) -> Vec<SessionRow> {
+    pinned_of(&listed(rows, project, now).collect::<Vec<_>>()).into_iter().cloned().collect()
+}
+
+/// Sessions by project and worktree, the pinned ones left to lead apart (`pinned_sessions`): the
+/// project and the worktree with the last activity first,
 /// and in a worktree, what needs you first, then the newest. `worktrees` are the places to start,
 /// keyed by `@<device short id>:<id>`, and `shorts` each Mac's short id by its key.
 pub(crate) fn project_groups(rows: &[SessionRow], worktrees: &HashMap<String, Worktree>, shorts: &HashMap<&str, &str>, project: &str, now: i64) -> Vec<ProjectGroup> {
     let mut by_worktree: HashMap<String, (String, WorktreeGroup)> = HashMap::new();
-    for r in listed(rows, project, now) {
+    for r in listed(rows, project, now).filter(|r| r.pinned.is_none()) {
         let id = remote_key(shorts.get(r.device.as_str()).copied().unwrap_or(&r.device), &r.worktree_id);
         let (_, group) = by_worktree.entry(id.clone()).or_insert_with(|| {
             let group = WorktreeGroup { id: id.clone(), name: r.worktree.clone(), branch: r.branch.clone(), device: r.device.clone(), device_name: r.device_name.clone(), worktree: worktrees.get(&id).cloned(), sessions: Vec::new() };
@@ -151,9 +164,10 @@ pub(crate) fn project_groups(rows: &[SessionRow], worktrees: &HashMap<String, Wo
     projects
 }
 
-/// The list's sessions in `project` (empty for all), the last active first.
+/// The list's sessions in `project` (empty for all), the last active first, the pinned ones left
+/// to lead apart.
 pub(crate) fn recent_sessions(rows: &[SessionRow], project: &str, now: i64) -> Vec<SessionRow> {
-    let mut out: Vec<SessionRow> = listed(rows, project, now).cloned().collect();
+    let mut out: Vec<SessionRow> = listed(rows, project, now).filter(|r| r.pinned.is_none()).cloned().collect();
     out.sort_by(|a, b| b.last_activity.cmp(&a.last_activity).then_with(|| a.key.cmp(&b.key)));
     out
 }
@@ -181,6 +195,12 @@ impl Core {
     /// The list's sessions in `project` (empty for all), the last active first.
     pub fn recent(&self, project: String) -> Vec<SessionRow> {
         self.client.with_feeds(|feeds| recent_sessions(&all_rows(feeds), &project, now_ms()))
+    }
+
+    /// The list's pinned sessions in `project` (empty for all), in their Macs' order: they lead
+    /// By project and Recent, as `quick` puts them first.
+    pub fn pinned(&self, project: String) -> Vec<SessionRow> {
+        self.client.with_feeds(|feeds| pinned_sessions(&all_rows(feeds), &project, now_ms()))
     }
 }
 
@@ -243,6 +263,29 @@ mod tests {
         let mut other = pr(2, "open", NOW);
         other.project = "Other".into();
         assert_eq!(groups(&pr_sections(&[pr(1, "open", NOW), other], "App", NOW)), vec![(PrGroup::Others, vec![1])]);
+    }
+
+    #[test]
+    fn pinned_sessions_lead_apart_in_their_macs_order() {
+        let mut first_here = in_worktree("a", "App", "app-1", Status::Idle, NOW - HOUR);
+        first_here.pinned = Some(0);
+        first_here.device_name = "Studio".into();
+        let mut first_there = in_worktree("b", "App", "app-2", Status::Needs, NOW - 2 * HOUR);
+        first_there.pinned = Some(0);
+        first_there.device_name = "Air".into();
+        // A pin keeps a session listed however long ago it was last prompted.
+        let mut second_old = in_worktree("c", "App", "app-1", Status::Idle, NOW - 9 * 24 * HOUR);
+        second_old.pinned = Some(1);
+        second_old.last_prompt_at = NOW - 9 * 24 * HOUR;
+        let plain = in_worktree("d", "App", "app-1", Status::Idle, NOW - 3 * HOUR);
+        let rows = [plain, second_old, first_here, first_there];
+        let keys = |rows: Vec<SessionRow>| rows.into_iter().map(|r| r.key).collect::<Vec<_>>();
+        assert_eq!(keys(pinned_sessions(&rows, "", NOW)), vec!["b", "a", "c"]);
+        assert_eq!(keys(pinned_sessions(&rows, "Other", NOW)), Vec::<String>::new());
+        // By project and Recent leave them to lead apart.
+        assert_eq!(keys(recent_sessions(&rows, "", NOW)), vec!["d"]);
+        let by = project_groups(&rows, &HashMap::new(), &HashMap::new(), "", NOW);
+        assert_eq!(by.iter().flat_map(|p| p.worktrees.iter().flat_map(|w| w.sessions.iter().map(|s| s.key.clone()))).collect::<Vec<_>>(), vec!["d"]);
     }
 
     #[test]

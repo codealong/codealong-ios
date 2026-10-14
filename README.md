@@ -38,8 +38,9 @@ other: directly, encrypted end to end, with no Codealong server in between.
 
 ## What you can do
 
-**See what needs you.** The home screen lists the sessions that need you, then the ones whose
-turn just ended (the working ones when nothing is waiting), then the rest from the last day, as
+**See what needs you.** The home screen lists the sessions pinned on your Macs first, in each
+Mac's order (pin or unpin one from its long-press menu), then the ones that need you, then the
+ones whose turn just ended (the working ones when nothing is waiting), then the rest from the last day, as
 the Mac's quick panel does. The menu at the top left orders them *By project* instead, worktree by
 worktree (tap a worktree to fold it away, or its ✎ to start a session in it), or *Recent*, the
 last active first. The pills under it narrow the list to one project; a project that lives on two
