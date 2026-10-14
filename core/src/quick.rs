@@ -246,7 +246,9 @@ pub(crate) fn quick_list(rows: &[SessionRow], prs: &[PrRow], project: &str, quer
     let mut sections = Vec::new();
 
     if words.is_empty() {
-        // A helper that doesn't need you is out of the lists, as it's off the Mac's bar: its
+        // What's pinned leads, whatever its state, helpers too: a pin is yours to make.
+        let pinned = crate::lists::pinned_of(&rows);
+        // A helper that doesn't need you is out of the rest, as it's off the Mac's bar: its
         // agent reads what it writes. Searching finds it.
         let rows: Vec<&SessionRow> = rows.iter().copied().filter(|r| !r.helping).collect();
         let mut attention: Vec<&SessionRow> = rows.iter().copied().filter(|r| matches!(r.section, InboxSection::NeedsYou | InboxSection::YourTurn | InboxSection::Working)).collect();
@@ -258,8 +260,7 @@ pub(crate) fn quick_list(rows: &[SessionRow], prs: &[PrRow], project: &str, quer
         reviews.sort_by_key(|p| (p.requested_at.unwrap_or(p.updated_at), p.key.clone()));
         let waiting = waiting || !reviews.is_empty();
         let mut shown = std::collections::HashSet::new();
-        // What's pinned leads, whatever its state, and isn't listed again below.
-        let pinned = crate::lists::pinned_of(&rows);
+        // The pinned ones aren't listed again below.
         if !pinned.is_empty() {
             shown.extend(pinned.iter().map(|r| r.key.clone()));
             sections.push(QuickSection { group: QuickGroup::Pinned, count: pinned.len() as u32, rows: pinned.into_iter().map(session).collect() });
@@ -716,8 +717,19 @@ pub(crate) mod tests {
         let rows = vec![needs, idle, row("turn", "c", Status::Unread, NOW - 2 * hour)];
         let l = quick_list(&rows, &[], "", "", &[], &[], NOW);
         assert_eq!(keys(&l), [(QuickGroup::Pinned, vec!["idle".to_string(), "needs".into()]), (QuickGroup::YourTurn, vec!["turn".into()])]);
-        // A pinned one that needs you still counts as waiting.
         assert!(!l.nothing_waits);
+        // A pinned one that needs you counts as waiting when it's the only one; a pinned helper
+        // leads with the rest; a pinned one working counts as working.
+        let mut helper = row("helper", "d", Status::Idle, NOW - hour);
+        helper.helping = true;
+        helper.pinned = Some(2);
+        let mut working = row("working", "e", Status::Working, NOW - hour);
+        working.pinned = Some(3);
+        let rows = vec![rows[0].clone(), helper, working];
+        let l = quick_list(&rows, &[], "", "", &[], &[], NOW);
+        assert_eq!(keys(&l), [(QuickGroup::Pinned, vec!["needs".to_string(), "helper".into(), "working".into()])]);
+        assert!(!l.nothing_waits);
+        assert_eq!(l.working, 1);
     }
 
     pub(crate) fn pr_row(key: &str, title: &str, waits: bool) -> PrRow {

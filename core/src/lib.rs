@@ -512,9 +512,9 @@ pub(crate) fn all_rows(feeds: &Feeds) -> Vec<SessionRow> {
                 continue;
             }
             // Worktrees in no project stay off the Mac's board unless they need you, and
-            // off here unless another Mac has their repo in a project.
+            // off here unless another Mac has their repo in a project. One pinned there stays.
             let project = projects.lane(lane);
-            if lane.hidden && project.is_none() && !matches!(s.status, PeerStatus::Needs | PeerStatus::Error) {
+            if lane.hidden && project.is_none() && !matches!(s.status, PeerStatus::Needs | PeerStatus::Error) && s.pin.is_none() {
                 continue;
             }
             let status: Status = s.status.into();
@@ -1230,6 +1230,22 @@ impl From<api::Way> for Way {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_session_pinned_in_a_worktree_in_no_project_stays_listed() {
+        use codealong_peer::client::Device;
+        use codealong_peer::feed::Replica;
+        let mac = Device { key: "m".into(), short: "m".into(), name: "Mac".into(), online: true, since: None, last_seen: None, remote_control: true, app: String::new(), loading: false, linked_back: true };
+        // A worktree in no project on any Mac is off the list unless what's in it needs you, or
+        // is pinned.
+        let mut lane = codealong_peer::model::Lane::new("/scratch", "Elsewhere", "scratch");
+        lane.hidden = true;
+        let pinned = Session { pin: Some(0), ..Session::new(Harness::Claude, "claude", "a") };
+        lane.sessions = vec![pinned, Session::new(Harness::Claude, "claude", "b")];
+        let replica = Replica { lanes: vec![lane], ..Replica::default() };
+        let keys: Vec<String> = all_rows(&[(mac, &replica)]).into_iter().map(|r| r.key).collect();
+        assert_eq!(keys, ["@m:claude:claude:a"]);
+    }
 
     #[test]
     fn an_emblem_is_lit_where_its_mac_says_and_from_the_top_left_past_the_eight() {

@@ -128,9 +128,11 @@ pub(crate) fn pinned_of<'a>(rows: &[&'a SessionRow]) -> Vec<&'a SessionRow> {
     out
 }
 
-/// The list's pinned sessions in `project` (empty for all), which lead every order.
+/// The list's pinned sessions in `project` (empty for all), which lead every order: helpers too,
+/// whom the rest of the list leaves out, since a pin is yours to make.
 pub(crate) fn pinned_sessions(rows: &[SessionRow], project: &str, now: i64) -> Vec<SessionRow> {
-    pinned_of(&listed(rows, project, now).collect::<Vec<_>>()).into_iter().cloned().collect()
+    let these: Vec<&SessionRow> = rows.iter().filter(|r| in_inbox(r, now) && (project.is_empty() || r.project == project)).collect();
+    pinned_of(&these).into_iter().cloned().collect()
 }
 
 /// Sessions by project and worktree, the pinned ones left to lead apart (`pinned_sessions`): the
@@ -278,9 +280,13 @@ mod tests {
         second_old.pinned = Some(1);
         second_old.last_prompt_at = NOW - 9 * 24 * HOUR;
         let plain = in_worktree("d", "App", "app-1", Status::Idle, NOW - 3 * HOUR);
-        let rows = [plain, second_old, first_here, first_there];
+        // A helper pinned, from a search, leads with them.
+        let mut helper = in_worktree("h", "App", "app-1", Status::Idle, NOW - HOUR);
+        helper.helping = true;
+        helper.pinned = Some(2);
+        let rows = [plain, second_old, first_here, first_there, helper];
         let keys = |rows: Vec<SessionRow>| rows.into_iter().map(|r| r.key).collect::<Vec<_>>();
-        assert_eq!(keys(pinned_sessions(&rows, "", NOW)), vec!["b", "a", "c"]);
+        assert_eq!(keys(pinned_sessions(&rows, "", NOW)), vec!["b", "a", "c", "h"]);
         assert_eq!(keys(pinned_sessions(&rows, "Other", NOW)), Vec::<String>::new());
         // By project and Recent leave them to lead apart.
         assert_eq!(keys(recent_sessions(&rows, "", NOW)), vec!["d"]);
