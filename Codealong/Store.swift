@@ -26,6 +26,9 @@ final class Store {
     var notice: String?
     /// How the session you just moved on from went ("Sent to …"), for the next one to say.
     var outcome: String?
+    /// How marking done a session a swipe went on from went, once its Mac answered: the session
+    /// shown then says it, in place of `outcome` (`doneLater`).
+    var lateOutcome: String?
     /// Sessions you replied to or answered here, with the time of the status each had then: one is
     /// left out of what's next until it waits on you anew, since the Mac's feed takes a moment to
     /// show an answer.
@@ -490,6 +493,30 @@ final class Store {
     func done(_ key: String, stop: Bool) async throws -> DoneOutcome {
         let core = try running()
         return try await Task.detached { try core.done(key: key, stop: stop) }.value
+    }
+
+    /// Marks a session done that a swipe went on from, without holding up the swipe. Once its Mac
+    /// answers, the session shown then says how it went; with none shown (you went back to the
+    /// list meanwhile), an alert says it when it didn't go as asked. Work under way holds it, as
+    /// it holds Mark as done.
+    func doneLater(_ key: String, title: String) {
+        Task {
+            let said: String
+            let asked: Bool
+            do {
+                let outcome = try await done(key, stop: false)
+                said = outcome.done ? outcome.message : "\(outcome.message) It wasn’t marked done."
+                asked = outcome.done && !outcome.noted
+            } catch {
+                said = "“\(title)” wasn’t marked done: \(words(error))"
+                asked = false
+            }
+            if showing != nil {
+                lateOutcome = said
+            } else if !asked {
+                notice = said
+            }
+        }
     }
 
     /// Names a session on its Mac, where its harness keeps its name.

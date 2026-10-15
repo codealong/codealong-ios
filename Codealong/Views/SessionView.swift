@@ -4,12 +4,14 @@ import SwiftUI
 /// One session: its conversation, what it waits on you to allow, and a box to reply. It follows the
 /// session as it goes: a change in the Mac's feed brings in what came since.
 ///
-/// It also works through what waits on you, as the Mac's session panel does with ⌘⏎: once you've
-/// replied or answered, the most urgent session still waiting on you is a tap away above the box,
-/// and holding Send sends and goes on at once. The chevron at the top skips to it. One you go on
-/// from has been seen, so a turn that ended leaves Your turn and a reply that asks you something
-/// leaves Needs you; one skipped while it waits on a call to allow comes round again after the
-/// rest.
+/// It also works through what waits on you, as the Mac's session panel does with ⌘⏎: while
+/// another session waits on you, a bar over the box names it and says what going on to it does to
+/// this one, and a swipe or a tap on it goes on; holding Send sends and goes on at once. What going
+/// on does is picked from the bar's menu, for every session after (`SwipeOn`): marking it seen, so
+/// a turn that ended leaves Your turn and a reply that asks you something leaves Needs you, as it
+/// always did, or marking it done, or archiving it. One you replied to here, or one at work, is
+/// left as it is, and one skipped while it waits on a call to allow comes round again after the
+/// rest (`Going`).
 ///
 /// The box says how a message gets there, as its Mac says (typed into its terminal, its
 /// background job, a message from Codealong), once you write: until then it's folded to a line
@@ -26,10 +28,11 @@ import SwiftUI
 /// the end of the conversation as sending, then sent, until the session's record has it, so you
 /// can go on writing the next; messages to one session go in the order you sent them. One that
 /// doesn't go is back in the box, with why. Swiping across the conversation goes along what waits
-/// on you: to the left the next, as the Mac's ⌘] does, and to the right back to the session you
-/// came from. The screen follows the finger, with the session it goes to beside it, drawn from
-/// what the phone keeps (the next is read ahead); let go, it slides the rest of the way, and Next
-/// slides the same way. Dragging the conversation, or tapping it, puts the keyboard away.
+/// on you: to the left the next, as the Mac's ⌘] does, doing what the bar says, and to the right
+/// back to the session you came from. The screen follows the finger, with the session it goes to
+/// beside it, drawn from what the phone keeps (the next is read ahead); let go, it slides the rest
+/// of the way, and Next slides the same way. Dragging the conversation, or tapping it, puts the
+/// keyboard away.
 ///
 /// As on the Mac, it opens at the newest and reads older pages as you scroll up, holding your
 /// place. The prompt behind what's in view, once it's gone off the top, stays pinned there, two
@@ -43,7 +46,9 @@ struct SessionView: View {
     @Environment(Store.self) private var store
     /// The inbox's project: what's next stays in it.
     @AppStorage("project") private var project = ""
-    /// You replied or answered here, so what's next is offered.
+    /// What going on to the next does to this one, as you last picked it over the box.
+    @AppStorage("swipe.on") private var swipeOn = SwipeOn.seen
+    /// You replied or answered here: going on leaves it to the turn you gave it.
     @State private var acted = false
     @Environment(\.dismiss) private var dismiss
     @State private var conversation: Conversation?
@@ -157,7 +162,7 @@ struct SessionView: View {
         .background {
             if let next = after.first {
                 // Unseen, at no size: one that takes no touches takes no keys either.
-                Button("Next") { moveOn(to: next) }
+                Button("Next") { goOn(to: next) }
                     .keyboardShortcut("]", modifiers: .command)
                     .frame(width: 0, height: 0)
                     .opacity(0)
@@ -244,6 +249,8 @@ struct SessionView: View {
         }
         // A message that didn't go is back in the box: say why.
         .onChange(of: store.sendProblems[key]) { _, _ in sayProblem() }
+        // How marking done the session gone on from went, once its Mac says.
+        .onChange(of: store.lateOutcome) { _, _ in takeLateOutcome() }
     }
 
     /// The conversation, with the reply box over its foot.
@@ -372,9 +379,9 @@ struct SessionView: View {
     /// unread, archive.
     @ViewBuilder
     private var sessionMenu: some View {
-        // A swipe across the screen does it too.
+        // A swipe across the screen does it too, and what the bar says goes with it.
         if let next = after.first {
-            Button { moveOn(to: next) } label: {
+            Button { goOn(to: next) } label: {
                 Label("Go to next", systemImage: "arrow.forward")
                 Text(next.title)
             }
@@ -459,8 +466,9 @@ struct SessionView: View {
             if let said {
                 Text(said).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
             }
-            if acted, let next = after.first {
-                NextButton(next: next, more: after.count - 1, showDevice: store.devices.count > 1, showProject: project.isEmpty) { moveOn(to: next) }
+            // Not while you write here: the box needs the room, and what's next waits.
+            if let next = after.first, draft.isEmpty && attached.isEmpty {
+                GoOnBar(next: next, more: after.count - 1, showDevice: store.devices.count > 1, showProject: project.isEmpty, going: going, pick: $swipeOn) { goOn(to: next) }
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
             if let suggestions = row?.suggestions {
@@ -702,6 +710,7 @@ struct SessionView: View {
             said = outcome
             store.outcome = nil
         }
+        takeLateOutcome()
         await refresh()
         // Opened from the feeds saved before its Mac answered (the app was just opened, or a link
         // opened it): what was kept shows meanwhile, and it's read again the moment the Mac is
@@ -1014,7 +1023,7 @@ struct SessionView: View {
         let next = nextBeside, back = backBeside
         ZStack {
             if let next {
-                SessionGlance(key: next, kept: beside[next] ?? Kept(), said: swipe.to?.key == next ? store.outcome : nil)
+                SessionGlance(key: next, kept: beside[next] ?? Kept(), said: swipe.to?.key == next ? store.outcome : nil, from: (key, leaves: [.seen, .done, .archive].contains(going)))
                     .modifier(FollowsSwipe(swipe: swipe, next: true, back: back != nil, at: 1))
             }
             if let back {
@@ -1057,7 +1066,7 @@ struct SessionView: View {
             return
         }
         if distance < 0 {
-            moveOn(to: target, speed: speed)
+            goOn(to: target, speed: speed)
         } else {
             // Back is a step by hand: this one isn't passed over for it. The trail is cut back once
             // it's there, so the session beside it stays put while it slides.
@@ -1241,6 +1250,41 @@ struct SessionView: View {
         withAnimation(.snappy) { acted = true }
     }
 
+    /// What going on to the next does to this one, as the bar over the box says it.
+    private var going: Going { Going.of(swipeOn, row: row, pending: pending, acted: acted) }
+
+    /// Goes on to `next` as a swipe does, doing to this one what the bar says. Marking it done waits
+    /// on its Mac, which the swipe doesn't: how that went is said on the screen shown once it's
+    /// answered (`Store.doneLater`).
+    private func goOn(to next: SessionRow, speed: CGFloat = 0) {
+        guard swipe.to == nil else { return }
+        switch going {
+        case .seen:
+            moveOn(to: next, speed: speed)
+            // Marked seen as it goes, it's settled: it stays out of what's next while its Mac's
+            // feed catches up, and until it waits on you anew.
+            store.dealtWith(key)
+        case .done:
+            store.dealtWith(key)
+            store.doneLater(key, title: title)
+            moveOn(to: next, outcome: "Marking “\(title)” as done…", speed: speed)
+        case .archive:
+            store.dealtWith(key)
+            store.archive(key)
+            moveOn(to: next, outcome: "Archived “\(title)”.", speed: speed)
+        case .on, .working, .later:
+            moveOn(to: next, speed: speed)
+        }
+    }
+
+    /// Says how marking done a session gone on from went, once its Mac has answered, unless this
+    /// screen is sliding away: the one sliding in says it.
+    private func takeLateOutcome() {
+        guard let late = store.lateOutcome, store.showing == key, swipe.to == nil else { return }
+        said = late
+        store.lateOutcome = nil
+    }
+
     /// Shows `next` in this one's place, saying there how this one went once you've acted here.
     /// Left without a reply while it needs you, this one comes round again after the rest.
     private func moveOn(to next: SessionRow, outcome: String? = nil, speed: CGFloat = 0, seen: Bool = true) {
@@ -1262,64 +1306,6 @@ struct SessionView: View {
         } catch {
             said = words(error)
         }
-    }
-}
-
-/// The next session that waits on you, offered once you've replied or answered: its title, where
-/// it is, and how many more wait after it.
-private struct NextButton: View {
-    let next: SessionRow
-    let more: Int
-    let showDevice: Bool
-    /// The inbox shows every project, so it says which it's in.
-    let showProject: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                StatusMark(status: next.status, stalled: next.stalled, waiting: next.waitsInBackground)
-                VStack(alignment: .leading, spacing: 1) {
-                    HStack(spacing: 5) {
-                        if let emblem = next.emblem {
-                            EmblemView(emblem: emblem, size: 15)
-                        }
-                        Text(next.title)
-                            .font(.subheadline.weight(.semibold))
-                            .lineLimit(1)
-                    }
-                    Text(place)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 8)
-                Text("Next")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Color.accentColor)
-                Image(systemName: "chevron.forward")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(Color.accentColor)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .contentShape(.rect)
-        }
-        .buttonStyle(.plain)
-        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22))
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Next: \(next.title)")
-        .accessibilityHint(more > 0 ? "\(more) more wait on you after it" : "The last that waits on you")
-    }
-
-    /// Where it is, and how many wait after it.
-    private var place: String {
-        var parts: [String] = []
-        if showDevice { parts.append(Names.short(next.deviceName)) }
-        if showProject { parts.append(next.project) }
-        if more > 0 { parts.append("\(more) more after it") }
-        if parts.isEmpty { parts.append("The last that waits on you") }
-        return parts.joined(separator: " · ")
     }
 }
 
@@ -2409,7 +2395,13 @@ private struct SessionGlance: View {
     let kept: Kept
     /// How the session gone on from went, as this one's screen will say it.
     let said: String?
+    /// The session a swipe goes on from to this one, and whether going on takes it out of what
+    /// waits on you (marked seen, done or archived) or sends it round after the rest: nil going
+    /// back to one.
+    var from: (key: String, leaves: Bool)?
     @Environment(Store.self) private var store
+    @AppStorage("project") private var project = ""
+    @AppStorage("swipe.on") private var swipeOn = SwipeOn.seen
     @ScaledMetric(relativeTo: .body) private var sendSize: CGFloat = 32
     /// More than a screen of the conversation's end: what's above it is off the top.
     private let shown = 40
@@ -2418,6 +2410,14 @@ private struct SessionGlance: View {
     private var why: String? { store.cannotReach(row) }
     private var rules: ReplyRules {
         ReplyRules(row: row, way: kept.way, choices: row.flatMap { store.choices[$0.device] }, resumePlace: nil)
+    }
+    /// What waits on you after it, as its screen will have it once the swipe has gone on: the
+    /// session gone on from left out, or after the rest.
+    private var after: [SessionRow] {
+        let queue = store.queue(after: key, project: project)
+        guard let from else { return queue }
+        let rest = queue.filter { $0.key != from.key }
+        return from.leaves ? rest : rest + queue.filter { $0.key == from.key }
     }
 
     var body: some View {
@@ -2510,6 +2510,9 @@ private struct SessionGlance: View {
             }
             if let said {
                 Text(said).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if let next = after.first, !open {
+                GoOnBar(next: next, more: after.count - 1, showDevice: store.devices.count > 1, showProject: project.isEmpty, going: Going.of(swipeOn, row: row, pending: pending, acted: false), pick: .constant(swipeOn)) {}
             }
             if let suggestions = row?.suggestions {
                 SuggestedRepliesView(suggestions: suggestions, blocked: canAct && pending?.cannot == nil ? nil : why ?? "It waits on you where it runs: answer that there first") { _ in } edit: { _ in } dismiss: {}
