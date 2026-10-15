@@ -2442,7 +2442,8 @@ private struct SessionGlance: View {
         let draft = store.drafts[key] ?? ""
         let attached = store.attached[key] ?? []
         let words = !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let ready = canAct && pending?.cannot == nil && (words || (!attached.isEmpty && pending == nil))
+        // As the screen's `canSend`: images alone are a reply once each is kept on its Mac.
+        let ready = canAct && pending?.cannot == nil && (words || (!attached.isEmpty && pending == nil)) && !attached.contains { $0.state == .keeping }
         let open = !draft.isEmpty || !attached.isEmpty
         return VStack(spacing: 8) {
             if let pending {
