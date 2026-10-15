@@ -1258,14 +1258,16 @@ struct SessionView: View {
     /// one whose Mac didn't take that comes round again. Marking it done or archiving it waits on
     /// its Mac, which the swipe doesn't: it's out of what's next meanwhile, how it went is said on
     /// the screen shown once its Mac answers, and one that didn't go comes round again
-    /// (`Store.doneLater`, `Store.archiveLater`).
+    /// (`Store.doneLater`, `Store.archiveLater`). Done marks it seen on its Mac, so the slide
+    /// doesn't: one that work under way held stays as it was, rather than leaving Your turn
+    /// though it wasn't done.
     private func goOn(to next: SessionRow, speed: CGFloat = 0) {
         guard swipe.to == nil else { return }
         switch going {
         case .done:
             store.dealtWith(key)
             store.doneLater(key, title: title)
-            moveOn(to: next, outcome: "Marking “\(title)” as done…", speed: speed)
+            moveOn(to: next, outcome: "Marking “\(title)” as done…", speed: speed, seen: false)
         case .archive:
             store.dealtWith(key)
             store.archiveLater(key, title: title)
