@@ -1355,6 +1355,8 @@ mod tests {
         s.asks = true;
         s.status = PeerStatus::Needs;
         assert_eq!(placeholder(&s, Some(&Way::Message), None), "Answer claude2 as a message from Codealong");
+        // Folded to a line, the box says only who it goes to.
+        assert_eq!(reply_to(&s), "Answer claude2");
         // Not running, it goes on where it's picked to, else in the terminal its Mac said.
         let (mut off, ghostty) = (Session::new(Harness::Claude, "claude", "def"), Way::Resume { app: "Ghostty".into() });
         assert_eq!(placeholder(&off, Some(&ghostty), None), "Send to claude: it isn\u{2019}t running, so this resumes it in Ghostty");
@@ -1362,6 +1364,7 @@ mod tests {
         assert_eq!(placeholder(&off, Some(&ghostty), Some((api::Place::Codealong, false))), "Send to claude: it isn\u{2019}t running, so Codealong runs it from now on");
         // A Mac that doesn't say: as its state suggests.
         assert_eq!(placeholder(&off, None, None), "Send to claude: it isn\u{2019}t running, so this resumes it in a terminal");
+        assert_eq!(reply_to(&off), "Send to claude");
         off.hosted = true;
         off.status = PeerStatus::Working;
         assert_eq!(placeholder(&off, None, None), "Send to claude: it takes this after its current turn");
@@ -1868,12 +1871,13 @@ impl Core {
     /// What a session's reply box says before you write: who it goes to and how it gets there
     /// (`way`, as its Mac said); for one that isn't running, where it goes on (`resume_place`,
     /// with `behind` for a terminal behind the Mac's windows).
-    pub fn reply_placeholder(&self, key: String, way: Option<Way>, resume_place: Option<String>, behind: bool) -> String {
-        let Some((device, own)) = split_remote(&key) else { return "Reply".into() };
+    pub fn reply_placeholder(&self, key: String, way: Option<Way>, resume_place: Option<String>, behind: bool) -> ReplyPlaceholder {
+        let unknown = || ReplyPlaceholder { short: "Reply".into(), full: "Reply".into() };
+        let Some((device, own)) = split_remote(&key) else { return unknown() };
         let resuming = resume_place.as_deref().and_then(api::Place::from_word).map(|p| (p, behind));
         self.client.with_feeds(|feeds| {
             let session = feeds.iter().filter(|(d, _)| d.short == device || d.key == device).flat_map(|(_, r)| r.lanes.iter().flat_map(|l| l.sessions.iter())).find(|s| s.key == own);
-            session.map_or_else(|| "Reply".into(), |s| placeholder(s, way.as_ref(), resuming))
+            session.map_or_else(unknown, |s| ReplyPlaceholder { short: reply_to(s), full: placeholder(s, way.as_ref(), resuming) })
         })
     }
 }
@@ -1983,12 +1987,27 @@ fn resume_words(place: api::Place, app: &str, behind: bool) -> String {
     }
 }
 
+/// What a session's reply box says before you write: the whole of it while the box is open, and
+/// while it's folded to a line, only who a message goes to.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct ReplyPlaceholder {
+    /// "Send to claude", or "Answer claude" when its last reply asks you something.
+    pub short: String,
+    /// That, and how a message gets there (`placeholder`).
+    pub full: String,
+}
+
+/// Who a reply goes to, as the reply box's words start.
+fn reply_to(s: &Session) -> String {
+    if s.asks { format!("Answer {}", s.account) } else { format!("Send to {}", s.account) }
+}
+
 /// What a session's reply box says before you write, as the Mac's does (SessionReply.tsx
 /// `replyPlaceholder`): who it goes to, and how it gets there, as its Mac said (`way`), or, from
 /// a Mac that doesn't say, as its state suggests. A session that isn't running goes on where
 /// `resuming` says, else in a terminal.
 fn placeholder(s: &Session, way: Option<&Way>, resuming: Option<(api::Place, bool)>) -> String {
-    let to = if s.asks { format!("Answer {}", s.account) } else { format!("Send to {}", s.account) };
+    let to = reply_to(s);
     let busy = matches!(s.status, PeerStatus::Working | PeerStatus::Needs);
     if s.hosted {
         return if busy { format!("{to}: it takes this after its current turn") } else { to };

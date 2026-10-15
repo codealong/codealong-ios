@@ -498,10 +498,11 @@ final class Store {
         try await Task.detached { try core.rename(key: key, name: name) }.value
     }
 
-    /// What a session's reply box says before you write (the core's words).
-    func replyPlaceholder(_ key: String, way: Way?, resumePlace: String?, behind: Bool) -> String {
+    /// What a session's reply box says before you write, in full and folded to a line (the core's
+    /// words).
+    func replyPlaceholder(_ key: String, way: Way?, resumePlace: String?, behind: Bool) -> ReplyPlaceholder {
         _ = tick
-        return core?.replyPlaceholder(key: key, way: way, resumePlace: resumePlace, behind: behind) ?? "Reply"
+        return core?.replyPlaceholder(key: key, way: way, resumePlace: resumePlace, behind: behind) ?? ReplyPlaceholder(short: "Reply", full: "Reply")
     }
 
     /// What the quick search lists (the core's rules). Reads `tick`, so a view that shows it

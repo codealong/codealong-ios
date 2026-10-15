@@ -12,13 +12,15 @@ import SwiftUI
 /// rest.
 ///
 /// The box says how a message gets there, as its Mac says (typed into its terminal, its
-/// background job, a message from Codealong). While it waits on a call that can be answered here,
-/// what you send denies the call and tells it that instead, as Claude Code's own "No, and tell
-/// Claude what to do differently" does. One that isn't running goes on where you pick, on the
-/// model you pick, where its Mac offers a choice; a running one says its model beside the box, and
-/// switches it where its Mac can. Where its turn can take a message at once, the bolt beside Send
-/// sends it into the turn. `/fork [prompt]` forks it into a copy that goes on in the background on
-/// its Mac, and you stay where you are, as on the Mac.
+/// background job, a message from Codealong), once you write: until then it's folded to a line
+/// saying who a message goes to, and while a turn runs, stop is in send's place, as in Codex's
+/// app. While it waits on a call that can be answered here, what you send denies the call and
+/// tells it that instead, as Claude Code's own "No, and tell Claude what to do differently" does.
+/// One that isn't running goes on where you pick, on the model you pick, where its Mac offers a
+/// choice; a running one says its model beside the box, and switches it where its Mac can. Where
+/// its turn can take a message at once, the bolt beside Send sends it into the turn.
+/// `/fork [prompt]` forks it into a copy that goes on in the background on its Mac, and you stay
+/// where you are, as on the Mac.
 ///
 /// A message goes as the Mac's windows send one: the box clears at once and the message shows at
 /// the end of the conversation as sending, then sent, until the session's record has it, so you
@@ -112,10 +114,6 @@ struct SessionView: View {
     @Environment(\.scenePhase) private var scenePhase
     /// The send button's size, which a line of the reply box matches; it grows with the text size.
     @ScaledMetric(relativeTo: .body) private var sendSize: CGFloat = 32
-    /// Between the send button and the reply box's edge.
-    private let replyInset: CGFloat = 6
-    /// The reply box's words are this much further in than its buttons, clear of its round corners.
-    private let replyTextInset: CGFloat = 10
     /// Reads the page before once you're this close to the top, so it's usually in before you
     /// get there: a page comes from the Mac, which can take a moment.
     private let nearTop: CGFloat = 900
@@ -458,17 +456,6 @@ struct SessionView: View {
             if let lost = row?.connectionLost {
                 LostConnection(words: lost)
             }
-            if canStop {
-                Button(role: .destructive) {
-                    Task { await stop() }
-                } label: {
-                    Label(stopping ? "Stopping…" : "Stop this turn", systemImage: "stop.circle")
-                        .font(.subheadline)
-                }
-                .buttonStyle(.bordered)
-                .disabled(stopping)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-            }
             if let said {
                 Text(said).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -476,10 +463,6 @@ struct SessionView: View {
                 NextButton(next: next, more: after.count - 1, showDevice: store.devices.count > 1, showProject: project.isEmpty) { moveOn(to: next) }
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
-            // The reply box floats over the conversation in glass, as a control, not a bar. Its
-            // field has the box's width to itself, over a row of its buttons: beside them, the
-            // words before you write were squeezed into a column between the photo button and the
-            // model. A line of text is as tall as the send button, which sits in the box's corner.
             if let suggestions = row?.suggestions {
                 SuggestedRepliesView(suggestions: suggestions, blocked: canAct && !waitsElsewhere ? nil : whyNot ?? "It waits on you where it runs: answer that there first") { reply in
                     Task { await send(text: reply) }
@@ -492,8 +475,8 @@ struct SessionView: View {
                     }
                 }
             }
-            // The images going with the reply sit in the box, over what's written.
-            VStack(alignment: .leading, spacing: 2) {
+            ReplyBox(open: replyOpen, size: sendSize, attach: canAttach ? { picking = true } : nil, attachDisabled: sending) {
+                // The images going with the reply sit in the box, over what's written.
                 if canAttach && (!attached.isEmpty || (typing && pasteHasImage)) {
                     AttachedRow(images: attached, paste: typing && pasteHasImage) { id in
                         store.detach(id, from: key)
@@ -506,19 +489,17 @@ struct SessionView: View {
                         attach(data)
                     }
                 }
-                // The words before you write say how a message gets there, which can take more than
-                // a line on a phone: up to two lines of them sit under the field while it's empty,
-                // and the box is as tall as they are.
+            } field: {
                 ZStack(alignment: .leading) {
                     if draft.isEmpty {
-                        Text(placeholder)
+                        Text(placeholder(full: replyOpen))
                             .foregroundStyle(.tertiary)
                             .lineLimit(2)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .allowsHitTesting(false)
                             .accessibilityHidden(true)
                     }
-                    TextField(text: Binding(get: { draft }, set: { draft = $0 }), prompt: Text(""), axis: .vertical) { Text(placeholder) }
+                    TextField(text: Binding(get: { draft }, set: { draft = $0 }), prompt: Text(""), axis: .vertical) { Text(placeholder(full: true)) }
                         .lineLimit(1...6)
                         .focused($typing)
                         .disabled(!canAct || sending)
@@ -529,94 +510,40 @@ struct SessionView: View {
                             return .handled
                         }
                 }
-                .frame(minHeight: sendSize)
-                .padding(.horizontal, replyTextInset)
-                HStack(alignment: .bottom, spacing: 8) {
-                    // Photos go with the reply, kept on its Mac as they're picked.
-                    if canAttach {
-                        Button {
-                            picking = true
-                        } label: {
-                            Image(systemName: "photo.badge.plus")
-                                .font(.system(size: sendSize / 2.1, weight: .medium))
-                                .foregroundStyle(.secondary)
-                                .frame(width: sendSize, height: sendSize)
-                                .contentShape(.circle)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(sending)
-                        .accessibilityLabel("Attach photos")
+            } tools: {
+                // Where one that isn't running goes on is said here too, under its model.
+                if canAct && (resuming || showsModel) {
+                    ModelMenu(rules: rules, resumePlace: $resumePlace, resumeModel: $resumeModel, resumeEffort: $resumeEffort, switching: switching, height: sendSize) { model in
+                        Task { await switchModel(model) }
                     }
-                    Spacer(minLength: 0)
-                    // Where one that isn't running goes on is said here too, under its model.
-                    if canAct && (resuming || showsModel) {
-                        ModelMenu(rules: rules, resumePlace: $resumePlace, resumeModel: $resumeModel, resumeEffort: $resumeEffort, switching: switching, height: sendSize) { model in
-                            Task { await switchModel(model) }
-                        }
-                    }
-                    if canSendNow {
-                        // Into the turn it's taking, at once: Claude Code's send now, Codex's steer.
-                        Button {
-                            Task { await send(now: true) }
-                        } label: {
-                            Image(systemName: "bolt.fill")
-                                .font(.system(size: sendSize / 2.4, weight: .semibold))
-                                .foregroundStyle(Color.accentColor)
-                                .frame(width: sendSize, height: sendSize)
-                                .contentShape(.circle)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(!canSend)
-                        .accessibilityLabel("Send now")
-                        .accessibilityHint("Into the turn it's taking, rather than once the step it's on ends")
-                    }
+                }
+                if canSendNow {
+                    // Into the turn it's taking, at once: Claude Code's send now, Codex's steer.
                     Button {
-                        Task { await send() }
+                        Task { await send(now: true) }
                     } label: {
-                        // Accent while there's something to send, a quiet grey while there isn't.
-                        let ready = canSend || sending
-                        ZStack {
-                            Circle().fill(ready ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.quaternary))
-                            if sending {
-                                ProgressView().controlSize(.small).tint(.white)
-                            } else {
-                                Image(systemName: "arrow.up")
-                                    .font(.system(size: sendSize / 2, weight: .bold))
-                                    .foregroundStyle(ready ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary))
-                            }
-                        }
-                        .frame(width: sendSize, height: sendSize)
-                        // The margin around it takes a tap too.
-                        .contentShape(.circle.inset(by: -replyInset))
+                        SendNowMark(size: sendSize)
                     }
                     .buttonStyle(.plain)
                     .disabled(!canSend)
-                    .accessibilityLabel("Send")
-                    // Held, as Messages offers its send options: send and go straight on.
-                    .contextMenu {
-                        if canSendNow {
-                            Button {
-                                Task { await send(now: true) }
-                            } label: {
-                                Label("Send now", systemImage: "bolt")
-                                Text("Into the turn it's taking")
-                            }
-                            .disabled(!canSend)
-                        }
-                        if let next = after.first {
-                            Button {
-                                Task { await send(thenNext: true) }
-                            } label: {
-                                Label("Send and go to next", systemImage: "arrow.forward")
-                                Text(next.title)
-                            }
-                            .disabled(!canSend)
-                        }
+                    .accessibilityLabel("Send now")
+                    .accessibilityHint("Into the turn it's taking, rather than once the step it's on ends")
+                }
+            } action: {
+                if stopsHere {
+                    Button {
+                        Task { await stop() }
+                    } label: {
+                        StopMark(stopping: stopping, size: sendSize)
+                            .contentShape(.circle.inset(by: -replyInset))
                     }
+                    .buttonStyle(.plain)
+                    .disabled(stopping)
+                    .accessibilityLabel(stopping ? "Stopping" : "Stop this turn")
+                } else {
+                    sendButton
                 }
             }
-            .padding(replyInset)
-            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: sendSize / 2 + replyInset))
         }
         .padding(.horizontal)
         .padding(.bottom, 6)
@@ -646,6 +573,49 @@ struct SessionView: View {
     private func lookAtPasteboard() {
         let board = UIPasteboard.general
         pasteHasImage = board.hasImages && board.changeCount != pastedAt
+    }
+
+    private var sendButton: some View {
+        Button {
+            Task { await send() }
+        } label: {
+            SendMark(ready: canSend || sending, sending: sending, size: sendSize)
+                // The margin around it takes a tap too.
+                .contentShape(.circle.inset(by: -replyInset))
+        }
+        .buttonStyle(.plain)
+        .disabled(!canSend)
+        .accessibilityLabel("Send")
+        // Held, as Messages offers its send options: send and go straight on.
+        .contextMenu {
+            if canSendNow {
+                Button {
+                    Task { await send(now: true) }
+                } label: {
+                    Label("Send now", systemImage: "bolt")
+                    Text("Into the turn it's taking")
+                }
+                .disabled(!canSend)
+            }
+            if let next = after.first {
+                Button {
+                    Task { await send(thenNext: true) }
+                } label: {
+                    Label("Send and go to next", systemImage: "arrow.forward")
+                    Text(next.title)
+                }
+                .disabled(!canSend)
+            }
+        }
+    }
+
+    /// The reply box is open while you write, and while something's written or attached, so it's
+    /// still there to send once the keyboard goes.
+    private var replyOpen: Bool { typing || !draft.isEmpty || !attached.isEmpty }
+
+    /// Stop is in send's place while a turn runs and there's nothing to send.
+    private var stopsHere: Bool {
+        canStop && !sending && draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attached.isEmpty
     }
 
     /// The images attached to the reply, kept with its draft.
@@ -704,9 +674,11 @@ struct SessionView: View {
     private var switchesModel: Bool { rules.switchesModel }
     private var showsModel: Bool { rules.showsModel }
 
-    private var placeholder: String {
+    /// The box's words before you write: in `full`, how a message gets there; folded, who it goes to.
+    private func placeholder(full: Bool) -> String {
         replyWords(why: whyNot, pending: pending, account: row?.account) {
-            store.replyPlaceholder(key, way: way, resumePlace: resuming ? resumeAt?.id : nil, behind: resuming && resumeAt?.behind == true)
+            let words = store.replyPlaceholder(key, way: way, resumePlace: resuming ? resumeAt?.id : nil, behind: resuming && resumeAt?.behind == true)
+            return full ? words.full : words.short
         }
     }
 
@@ -2396,8 +2368,6 @@ private struct SessionGlance: View {
     let said: String?
     @Environment(Store.self) private var store
     @ScaledMetric(relativeTo: .body) private var sendSize: CGFloat = 32
-    private let replyInset: CGFloat = 6
-    private let replyTextInset: CGFloat = 10
     /// More than a screen of the conversation's end: what's above it is off the top.
     private let shown = 40
 
@@ -2470,7 +2440,10 @@ private struct SessionGlance: View {
         let canAct = why == nil
         let pending = kept.pending
         let draft = store.drafts[key] ?? ""
-        let ready = canAct && pending?.cannot == nil && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let attached = store.attached[key] ?? []
+        let words = !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let ready = canAct && pending?.cannot == nil && (words || (!attached.isEmpty && pending == nil))
+        let open = !draft.isEmpty || !attached.isEmpty
         return VStack(spacing: 8) {
             if let pending {
                 if pending.questions.isEmpty || pending.cannot != nil {
@@ -2491,65 +2464,187 @@ private struct SessionGlance: View {
             if let lost = row?.connectionLost {
                 LostConnection(words: lost)
             }
-            if canAct && row?.stoppable == true {
-                Button(role: .destructive) {} label: {
-                    Label("Stop this turn", systemImage: "stop.circle").font(.subheadline)
-                }
-                .buttonStyle(.bordered)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-            }
             if let said {
                 Text(said).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
             }
             if let suggestions = row?.suggestions {
                 SuggestedRepliesView(suggestions: suggestions, blocked: canAct && pending?.cannot == nil ? nil : why ?? "It waits on you where it runs: answer that there first") { _ in } edit: { _ in } dismiss: {}
             }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(draft.isEmpty ? replyWords(why: why, pending: pending, account: row?.account) { store.replyPlaceholder(key, way: kept.way, resumePlace: rules.resuming ? rules.resumeAt?.id : nil, behind: rules.resuming && rules.resumeAt?.behind == true) } : draft)
+            // Folded unless something's written or attached, and buttons as the screen's are,
+            // dimmed as theirs are while there's nothing to send.
+            ReplyBox(open: open, size: sendSize, attach: canAct && pending == nil ? {} : nil) {
+                if canAct && pending == nil && !attached.isEmpty {
+                    AttachedRow(images: attached, paste: false) { _ in } pasted: { _ in }
+                }
+            } field: {
+                let placeholder = replyWords(why: why, pending: pending, account: row?.account) {
+                    let words = store.replyPlaceholder(key, way: kept.way, resumePlace: rules.resuming ? rules.resumeAt?.id : nil, behind: rules.resuming && rules.resumeAt?.behind == true)
+                    return open ? words.full : words.short
+                }
+                Text(draft.isEmpty ? placeholder : draft)
                     .foregroundStyle(draft.isEmpty ? .tertiary : .primary)
                     .lineLimit(draft.isEmpty ? 2 : 6)
-                    .frame(maxWidth: .infinity, minHeight: sendSize, alignment: .leading)
-                    .padding(.horizontal, replyTextInset)
-                // Buttons as the screen's are, dimmed as theirs are while there's nothing to send.
-                HStack(alignment: .bottom, spacing: 8) {
-                    if canAct && pending == nil {
-                        Image(systemName: "photo.badge.plus")
-                            .font(.system(size: sendSize / 2.1, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .frame(width: sendSize, height: sendSize)
-                    }
-                    Spacer(minLength: 0)
-                    if canAct && (rules.resuming || rules.showsModel) {
-                        ModelMenu(rules: rules, resumePlace: .constant(nil), resumeModel: .constant(nil), resumeEffort: .constant(nil), switching: false, height: sendSize) { _ in }
-                    }
-                    if canAct && row?.steerable == true && pending == nil {
-                        Button {} label: {
-                            Image(systemName: "bolt.fill")
-                                .font(.system(size: sendSize / 2.4, weight: .semibold))
-                                .foregroundStyle(Color.accentColor)
-                                .frame(width: sendSize, height: sendSize)
-                        }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } tools: {
+                if canAct && (rules.resuming || rules.showsModel) {
+                    ModelMenu(rules: rules, resumePlace: .constant(nil), resumeModel: .constant(nil), resumeEffort: .constant(nil), switching: false, height: sendSize) { _ in }
+                }
+                if canAct && row?.steerable == true && pending == nil {
+                    Button {} label: { SendNowMark(size: sendSize) }
                         .buttonStyle(.plain)
                         .disabled(!ready)
-                    }
-                    Button {} label: {
-                        ZStack {
-                            Circle().fill(ready ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.quaternary))
-                            Image(systemName: "arrow.up")
-                                .font(.system(size: sendSize / 2, weight: .bold))
-                                .foregroundStyle(ready ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary))
-                        }
-                        .frame(width: sendSize, height: sendSize)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!ready)
+                }
+            } action: {
+                if canAct && row?.stoppable == true && !words && attached.isEmpty {
+                    Button {} label: { StopMark(stopping: false, size: sendSize) }
+                        .buttonStyle(.plain)
+                } else {
+                    Button {} label: { SendMark(ready: ready, size: sendSize) }
+                        .buttonStyle(.plain)
+                        .disabled(!ready)
                 }
             }
-            .padding(replyInset)
-            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: sendSize / 2 + replyInset))
         }
         .padding(.horizontal)
         .padding(.bottom, 6)
+    }
+}
+
+/// Between the reply box's buttons and its edge.
+private let replyInset: CGFloat = 6
+
+/// The reply box, floating over the conversation in glass as a control, not a bar, as Codex's
+/// phone app draws its own. While you aren't writing it's folded to a line: photos, who a message
+/// goes to, and send, or stop while a turn runs. Open, its field has the box's width to itself,
+/// over a row of its buttons: photos on the left; the model, send now and send or stop on the
+/// right. The session's screen and a glance of it both draw it, so a session slid in looks as its
+/// screen will.
+private struct ReplyBox<Above: View, Field: View, Tools: View, Action: View>: View {
+    let open: Bool
+    /// The send button's, which a line of the box matches.
+    let size: CGFloat
+    /// Picks photos to go with the reply; nil where none can go.
+    let attach: (() -> Void)?
+    let attachDisabled: Bool
+    let above: Above
+    let field: Field
+    /// Beside the action while it's open.
+    let tools: Tools
+    /// Send, or stop.
+    let action: Action
+    /// The box's words are this much further in than its buttons, clear of its round corners.
+    private let textInset: CGFloat = 10
+
+    init(open: Bool, size: CGFloat, attach: (() -> Void)?, attachDisabled: Bool = false, @ViewBuilder above: () -> Above, @ViewBuilder field: () -> Field, @ViewBuilder tools: () -> Tools, @ViewBuilder action: () -> Action) {
+        self.open = open
+        self.size = size
+        self.attach = attach
+        self.attachDisabled = attachDisabled
+        self.above = above()
+        self.field = field()
+        self.tools = tools()
+        self.action = action()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            above
+            // The field keeps its place whichever way the box is, so it keeps the keyboard as the
+            // box opens around it.
+            HStack(alignment: .bottom, spacing: 8) {
+                if !open { photos }
+                field
+                    .frame(maxWidth: .infinity, minHeight: size, alignment: .leading)
+                    .padding(.leading, open || attach == nil ? textInset : 0)
+                    .padding(.trailing, open ? textInset : 0)
+                if !open { action }
+            }
+            if open {
+                HStack(alignment: .bottom, spacing: 8) {
+                    photos
+                    Spacer(minLength: 0)
+                    tools
+                    action
+                }
+            }
+        }
+        .padding(replyInset)
+        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: size / 2 + replyInset))
+        .animation(.snappy(duration: 0.25), value: open)
+    }
+
+    @ViewBuilder
+    private var photos: some View {
+        // Photos go with the reply, kept on its Mac as they're picked.
+        if let attach {
+            Button(action: attach) {
+                Image(systemName: "plus")
+                    .font(.system(size: size / 2, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: size, height: size)
+                    .contentShape(.circle)
+            }
+            .buttonStyle(.plain)
+            .disabled(attachDisabled)
+            .accessibilityLabel("Attach photos")
+        }
+    }
+}
+
+/// Send's face: the accent while there's something to send, a quiet grey while there isn't.
+private struct SendMark: View {
+    let ready: Bool
+    var sending = false
+    let size: CGFloat
+
+    var body: some View {
+        ZStack {
+            Circle().fill(ready ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.quaternary))
+            if sending {
+                ProgressView().controlSize(.small).tint(.white)
+            } else {
+                Image(systemName: "arrow.up")
+                    .font(.system(size: size / 2, weight: .bold))
+                    .foregroundStyle(ready ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary))
+            }
+        }
+        .frame(width: size, height: size)
+    }
+}
+
+/// Stop's face, in send's place while a turn runs: a square on the text's color, as Codex's is.
+private struct StopMark: View {
+    let stopping: Bool
+    let size: CGFloat
+    /// Black, or white in dark mode, as a color of its own: the glass draws the text's own color
+    /// (`.primary`) faded into it, a grey that read as a button you can't press.
+    private let ink = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? .white : .black })
+
+    var body: some View {
+        ZStack {
+            Circle().fill(ink)
+            if stopping {
+                ProgressView().controlSize(.small).tint(Color(.systemBackground))
+            } else {
+                Image(systemName: "stop.fill")
+                    .font(.system(size: size / 2.6, weight: .bold))
+                    .foregroundStyle(Color(.systemBackground))
+            }
+        }
+        .frame(width: size, height: size)
+    }
+}
+
+/// Send now's face: into the turn it's taking, at once.
+private struct SendNowMark: View {
+    let size: CGFloat
+
+    var body: some View {
+        Image(systemName: "bolt.fill")
+            .font(.system(size: size / 2.4, weight: .semibold))
+            .foregroundStyle(Color.accentColor)
+            .frame(width: size, height: size)
+            .contentShape(.circle)
     }
 }
 

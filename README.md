@@ -69,7 +69,7 @@ it, and automatic PR reviews) stay out of your lists unless they need you, as on
   image (screenshots and the like) attached, which the agent gets as the Mac's paste does;
 - allow or deny what it wants to run (or deny it and say what to do instead), and answer its
   questions;
-- stop its turn;
+- stop its turn, with the square that takes send's place while it runs;
 - switch a running session's model;
 - resume one that isn't running, where and on what model you pick;
 - fork it, or mark it done (closing it where its Mac can).
