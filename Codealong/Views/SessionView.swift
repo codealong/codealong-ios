@@ -249,8 +249,8 @@ struct SessionView: View {
         }
         // A message that didn't go is back in the box: say why.
         .onChange(of: store.sendProblems[key]) { _, _ in sayProblem() }
-        // How marking done the session gone on from went, once its Mac says.
-        .onChange(of: store.lateOutcome) { _, _ in takeLateOutcome() }
+        // How what a swipe did to the session gone on from went, once its Mac says.
+        .onChange(of: store.lateOutcomes) { _, _ in takeLateOutcome() }
     }
 
     /// The conversation, with the reply box over its foot.
@@ -1023,7 +1023,7 @@ struct SessionView: View {
         let next = nextBeside, back = backBeside
         ZStack {
             if let next {
-                SessionGlance(key: next, kept: beside[next] ?? Kept(), said: swipe.to?.key == next ? store.outcome : nil, from: (key, leaves: [.seen, .done, .archive].contains(going)))
+                SessionGlance(key: next, kept: beside[next] ?? Kept(), said: swipe.to?.key == next ? store.outcome : nil, from: (key, leaves: [.done, .archive].contains(going)))
                     .modifier(FollowsSwipe(swipe: swipe, next: true, back: back != nil, at: 1))
             }
             if let back {
@@ -1253,36 +1253,34 @@ struct SessionView: View {
     /// What going on to the next does to this one, as the bar over the box says it.
     private var going: Going { Going.of(swipeOn, row: row, pending: pending, acted: acted) }
 
-    /// Goes on to `next` as a swipe does, doing to this one what the bar says. Marking it done waits
-    /// on its Mac, which the swipe doesn't: how that went is said on the screen shown once it's
-    /// answered (`Store.doneLater`).
+    /// Goes on to `next` as a swipe does, doing to this one what the bar says. Marked seen as it
+    /// slides, as it always was (`slide`), it's passed over until its Mac's feed has it seen, so
+    /// one whose Mac didn't take that comes round again. Marking it done or archiving it waits on
+    /// its Mac, which the swipe doesn't: it's out of what's next meanwhile, how it went is said on
+    /// the screen shown once its Mac answers, and one that didn't go comes round again
+    /// (`Store.doneLater`, `Store.archiveLater`).
     private func goOn(to next: SessionRow, speed: CGFloat = 0) {
         guard swipe.to == nil else { return }
         switch going {
-        case .seen:
-            moveOn(to: next, speed: speed)
-            // Marked seen as it goes, it's settled: it stays out of what's next while its Mac's
-            // feed catches up, and until it waits on you anew.
-            store.dealtWith(key)
         case .done:
             store.dealtWith(key)
             store.doneLater(key, title: title)
             moveOn(to: next, outcome: "Marking “\(title)” as done…", speed: speed)
         case .archive:
             store.dealtWith(key)
-            store.archive(key)
+            store.archiveLater(key, title: title)
             moveOn(to: next, outcome: "Archived “\(title)”.", speed: speed)
-        case .on, .working, .later:
+        case .seen, .on, .working, .later:
             moveOn(to: next, speed: speed)
         }
     }
 
-    /// Says how marking done a session gone on from went, once its Mac has answered, unless this
-    /// screen is sliding away: the one sliding in says it.
+    /// Says how what a swipe did to the sessions gone on from went, once their Macs have answered,
+    /// unless this screen is sliding away: the one sliding in says it.
     private func takeLateOutcome() {
-        guard let late = store.lateOutcome, store.showing == key, swipe.to == nil else { return }
-        said = late
-        store.lateOutcome = nil
+        guard !store.lateOutcomes.isEmpty, store.showing == key, swipe.to == nil else { return }
+        said = store.lateOutcomes.joined(separator: "\n")
+        store.lateOutcomes = []
     }
 
     /// Shows `next` in this one's place, saying there how this one went once you've acted here.
@@ -2396,8 +2394,8 @@ private struct SessionGlance: View {
     /// How the session gone on from went, as this one's screen will say it.
     let said: String?
     /// The session a swipe goes on from to this one, and whether going on takes it out of what
-    /// waits on you (marked seen, done or archived) or sends it round after the rest: nil going
-    /// back to one.
+    /// waits on you (marked done or archived) or sends it round after the rest (marked seen, it
+    /// stays there until its Mac's feed has it seen): nil going back to one.
     var from: (key: String, leaves: Bool)?
     @Environment(Store.self) private var store
     @AppStorage("project") private var project = ""

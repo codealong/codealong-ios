@@ -26,9 +26,10 @@ final class Store {
     var notice: String?
     /// How the session you just moved on from went ("Sent to …"), for the next one to say.
     var outcome: String?
-    /// How marking done a session a swipe went on from went, once its Mac answered: the session
-    /// shown then says it, in place of `outcome` (`doneLater`).
-    var lateOutcome: String?
+    /// How what a swipe did to the sessions it went on from went, once their Macs answered, oldest
+    /// first: the session shown then says them all, in place of `outcome` (`doneLater`,
+    /// `archiveLater`). Several can come in during one slide, and none is lost.
+    var lateOutcomes: [String] = []
     /// Sessions you replied to or answered here, with the time of the status each had then: one is
     /// left out of what's next until it waits on you anew, since the Mac's feed takes a moment to
     /// show an answer.
@@ -496,27 +497,50 @@ final class Store {
     }
 
     /// Marks a session done that a swipe went on from, without holding up the swipe. Once its Mac
-    /// answers, the session shown then says how it went; with none shown (you went back to the
-    /// list meanwhile), an alert says it when it didn't go as asked. Work under way holds it, as
-    /// it holds Mark as done.
+    /// answers, the session shown then says how it went (`tellLater`). Work under way holds it, as
+    /// it holds Mark as done, and one held or not reached comes round again.
     func doneLater(_ key: String, title: String) {
         Task {
-            let said: String
-            let asked: Bool
             do {
                 let outcome = try await done(key, stop: false)
-                said = outcome.done ? outcome.message : "\(outcome.message) It wasn’t marked done."
-                asked = outcome.done && !outcome.noted
+                if !outcome.done { comeRound(key) }
+                tellLater(outcome.done ? outcome.message : "\(outcome.message) It wasn’t marked done.", asked: outcome.done && !outcome.noted)
             } catch {
-                said = "“\(title)” wasn’t marked done: \(words(error))"
-                asked = false
-            }
-            if showing != nil {
-                lateOutcome = said
-            } else if !asked {
-                notice = said
+                comeRound(key)
+                tellLater("“\(title)” wasn’t marked done: \(words(error))", asked: false)
             }
         }
+    }
+
+    /// Archives a session a swipe went on from, without holding up the swipe: one its Mac didn't
+    /// archive comes round again, saying why.
+    func archiveLater(_ key: String, title: String) {
+        guard let core else { return }
+        Task {
+            do {
+                try await Task.detached { try core.archive(key: key, archived: true) }.value
+            } catch {
+                comeRound(key)
+                tellLater("“\(title)” wasn’t archived: \(words(error))", asked: false)
+            }
+        }
+    }
+
+    /// Says how what a swipe did went: on the session shown then, or with none shown (you went back
+    /// to the list meanwhile), in an alert when it didn't go as asked.
+    private func tellLater(_ said: String, asked: Bool) {
+        if showing != nil {
+            lateOutcomes.append(said)
+        } else if !asked {
+            notice = [notice, said].compactMap { $0 }.joined(separator: "\n\n")
+        }
+    }
+
+    /// A session a swipe went on from was to leave what waits on you and didn't: it comes round
+    /// again after the rest, as one gone on from without a reply does.
+    private func comeRound(_ key: String) {
+        handled[key] = nil
+        passedOver(key)
     }
 
     /// Names a session on its Mac, where its harness keeps its name.
