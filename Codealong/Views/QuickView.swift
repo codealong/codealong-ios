@@ -332,6 +332,8 @@ struct QuickView: View {
                                 .contentShape(.rect)
                         }
                         .tint(.primary)
+                        // One at a time: a second tap while photos go to the Mac would send twice.
+                        .disabled(acting && s.kind != .open)
                     }
                 } header: {
                     GroupHeading(title: "Suggested", count: suggested.count)
@@ -787,15 +789,18 @@ struct QuickView: View {
         case .send:
             // It goes as a reply in the session's screen goes: shown there at once, back in its
             // box if it doesn't go.
-            guard let row = s.session else { return }
+            guard let row = s.session, !acting else { return }
+            // What's typed as it's tapped: the box stays open while the photos go to the Mac.
+            let asked = query
             // The photos attached go with it, kept on its Mac first.
             acting = true
             problem = nil
             let images = await keptPhotos(on: row.device)
             acting = false
             guard let images else { return }
-            store.post(row.key, title: row.title, text: ImagePrep.prompt(images: images, text: query), how: .send(now: false))
-            text = ""
+            store.post(row.key, title: row.title, text: ImagePrep.prompt(images: images, text: asked), how: .send(now: false))
+            // Words written meanwhile didn't go, so they stay.
+            if query == asked { text = "" }
             photos = []
             store.dealtWith(row.key)
             path.append(row.key)
@@ -808,8 +813,13 @@ struct QuickView: View {
     /// Starts a session with what's typed: in the worktree chosen below, or where a suggestion says.
     private func start(in over: Worktree? = nil, newWorktree over2: Bool? = nil) async {
         let worktree = over ?? composer.worktree(store: store, project: startProject)
-        guard let worktree, let account = composer.account, let place = composer.place else { return }
+        guard !acting, let worktree, let account = composer.account, let place = composer.place else { return }
         let newTree = composer.takesNewWorktree && !worktree.chat && (over2 ?? composer.newWorktree)
+        // What starts is what's written and chosen as it's tapped: the box and the menu stay open
+        // while the photos go to the Mac.
+        let asked = query
+        let (model, effort) = composer.takesModel ? (composer.model, composer.effort) : (nil, nil)
+        let shots = store.improving.map { $0.shot.map { [$0] } ?? [] }
         // The picture is still on its way to the Mac: the prompt would go without it.
         if store.improving?.keeping == true {
             problem = "The picture of the screen is still on its way to the Mac. Try again in a moment."
@@ -821,15 +831,16 @@ struct QuickView: View {
             acting = false
             return
         }
-        let typed = ImagePrep.prompt(images: images, text: query)
+        let typed = ImagePrep.prompt(images: images, text: asked)
         // Improving Codealong: the picture of the screen goes after what you wrote, as the Mac's
         // panel writes it (the core's rule).
-        let prompt = store.improving.map { improvePrompt(text: typed, shots: $0.shot.map { [$0] } ?? []) } ?? typed
+        let prompt = shots.map { improvePrompt(text: typed, shots: $0) } ?? typed
         do {
-            let begun = try await store.startSession(device: worktree.device, worktree: worktree.id, account: account, place: place, prompt: prompt, model: composer.takesModel ? composer.model : nil, effort: composer.takesModel ? composer.effort : nil, newWorktree: newTree)
+            let begun = try await store.startSession(device: worktree.device, worktree: worktree.id, account: account, place: place, prompt: prompt, model: model, effort: effort, newWorktree: newTree)
             acting = false
             started += 1
-            text = ""
+            // Words written meanwhile didn't go, so they stay.
+            if query == asked { text = "" }
             photos = []
             typing = false
             store.improving = nil
