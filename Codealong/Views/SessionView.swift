@@ -1410,7 +1410,9 @@ private struct ApprovalCard: View {
 /// ticked once answered: all at once, a few long ones filled the screen. Pick a choice, several
 /// where a question takes more, or write your own answer. A choice for a question that takes one
 /// goes on to the next without an answer, and the button says Next until none is left; your picks
-/// go back as its answer, as the Mac's panel sends them. Decline stops the turn.
+/// go back as its answer, as the Mac's panel sends them. Decline stops the turn. It starts folded
+/// to a line of what it asks, so the conversation it came with can be read above it: open, a long
+/// question and its choices covered most of the screen. A tap opens it, and folds it again.
 private struct QuestionsCard: View {
     let pending: Pending
     let account: String
@@ -1424,6 +1426,7 @@ private struct QuestionsCard: View {
     @State private var own: [String: String] = [:]
     /// The question showing.
     @State private var at = 0
+    @State private var open = false
 
     var body: some View {
         let questions = pending.questions
@@ -1431,56 +1434,96 @@ private struct QuestionsCard: View {
         let q = questions[shown]
         let next = nextQuestion(after: shown)
         VStack(alignment: .leading, spacing: 12) {
-            Label {
-                Text("Asks you").font(.subheadline.weight(.medium))
-            } icon: {
-                Image(systemName: "questionmark.bubble.fill").foregroundStyle(.orange)
-            }
-            if pending.unwritten {
-                // What it wrote with them isn't in the conversation above yet.
-                Text("What \(account) wrote with this question shows in the conversation once it’s answered\(hosted ? "" : "; where it runs on its Mac has it now").")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            if questions.count > 1 {
-                steps(showing: shown)
-            }
-            // As tall as the question is, up to a point, and it scrolls past that.
-            UpTo(most: 320) {
-                ScrollView {
-                    question(q, alone: questions.count == 1)
-                        .id(q.question)
-                }
-                .scrollBounceBehavior(.basedOnSize)
-            }
-            if canAct {
-                HStack {
-                    Button(answering == .deny ? "Declining…" : "Decline", role: .destructive, action: decline)
-                        .buttonStyle(.bordered)
-                    Spacer()
-                    if let next {
-                        Button("Next") { go(next) }
-                            .buttonStyle(.borderedProminent)
-                    } else {
-                        Button(answering == .allow ? "Answering…" : "Answer") { answer(answers) }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(answers.isEmpty)
+            Button {
+                withAnimation(.snappy) { open.toggle() }
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: "questionmark.bubble.fill").foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Asks you").font(.subheadline.weight(.medium))
+                        if !open {
+                            Text(gist).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                        }
                     }
+                    Spacer(minLength: 8)
+                    Image(systemName: "chevron.up")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(open ? 180 : 0))
                 }
-                .disabled(answering != nil)
-                Text("\(q.multiSelect ? "Pick one or more." : "Pick one, or write your own.") Decline stops the turn, or write below to say something else.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            } else if let why {
-                Text(why).font(.footnote).foregroundStyle(.secondary)
+                .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(open ? "Asks you" : "Asks you: \(String(gist.characters))")
+            .accessibilityHint(open ? "Folds it away, to read the conversation" : "Opens it, to answer")
+            if open {
+                card(q, shown: shown, next: next)
             }
         }
         .modifier(WaitingCard())
-        // Another set of questions starts at its first, with nothing picked.
+        // Another set of questions starts folded, at its first, with nothing picked.
         .onChange(of: pending.id) { _, _ in
+            open = false
             at = 0
             picks = [:]
             own = [:]
+        }
+    }
+
+    /// What it asks, on the line it folds to: the question, or with several, how many and their
+    /// headers when they all have one (as its line in the conversation names them).
+    private var gist: AttributedString {
+        let questions = pending.questions
+        guard questions.count > 1 else { return Clock.text(questions[0].question, now: .now) }
+        let headers = questions.compactMap(\.header)
+        if headers.count == questions.count {
+            return AttributedString("\(questions.count) questions: " + headers.joined(separator: ", "))
+        }
+        return AttributedString("\(questions.count) questions, the first: ") + Clock.text(questions[0].question, now: .now)
+    }
+
+    /// The card opened: the question showing, its choices, and the answers to give.
+    @ViewBuilder
+    private func card(_ q: Question, shown: Int, next: Int?) -> some View {
+        let questions = pending.questions
+        if pending.unwritten {
+            // What it wrote with them isn't in the conversation above yet.
+            Text("What \(account) wrote with this question shows in the conversation once it’s answered\(hosted ? "" : "; where it runs on its Mac has it now").")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        if questions.count > 1 {
+            steps(showing: shown)
+        }
+        // As tall as the question is, up to a point, and it scrolls past that.
+        UpTo(most: 320) {
+            ScrollView {
+                question(q, alone: questions.count == 1)
+                    .id(q.question)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+        }
+        if canAct {
+            HStack {
+                Button(answering == .deny ? "Declining…" : "Decline", role: .destructive, action: decline)
+                    .buttonStyle(.bordered)
+                Spacer()
+                if let next {
+                    Button("Next") { go(next) }
+                        .buttonStyle(.borderedProminent)
+                } else {
+                    Button(answering == .allow ? "Answering…" : "Answer") { answer(answers) }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(answers.isEmpty)
+                }
+            }
+            .disabled(answering != nil)
+            Text("\(q.multiSelect ? "Pick one or more." : "Pick one, or write your own.") Decline stops the turn, or write below to say something else.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        } else if let why {
+            Text(why).font(.footnote).foregroundStyle(.secondary)
         }
     }
 
