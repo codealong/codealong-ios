@@ -561,16 +561,16 @@ private struct ReviewBoxView: View {
     var body: some View {
         let box = reviewBox(pr: pr, draft: draft, reviews: reviews)
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                StateChip(state: pr.state)
-                ChecksLine(passed: pr.passed, failed: pr.failing, pending: pr.pending)
-                if let yours = box.yours {
-                    TimelineView(.periodic(from: .now, by: 30)) { context in
-                        Text(Clock.text(yours, now: context.date))
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
+            // On one line where it fits; with less room (a larger text size), how you reviewed it
+            // goes under the state, wrapping rather than losing its time.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    standing
+                    yours(box).fixedSize()
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    standing
+                    yours(box)
                 }
             }
             .padding(.horizontal, 10)
@@ -608,6 +608,27 @@ private struct ReviewBoxView: View {
         .padding(.bottom, 6)
         .animation(.snappy, value: failed)
         .sensoryFeedback(.success, trigger: sent)
+    }
+
+    /// The PR's state and checks, as the top of the page has them.
+    private var standing: some View {
+        HStack(spacing: 8) {
+            StateChip(state: pr.state)
+            ChecksLine(passed: pr.passed, failed: pr.failing, pending: pr.pending)
+        }
+        .fixedSize()
+    }
+
+    /// How you last reviewed it, and when.
+    @ViewBuilder
+    private func yours(_ box: ReviewBox) -> some View {
+        if let yours = box.yours {
+            TimelineView(.periodic(from: .now, by: 30)) { context in
+                Text(Clock.text(yours, now: context.date))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     /// Request changes and Comment, then Approve at the far end, filled. Where only a comment goes,
