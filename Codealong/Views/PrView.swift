@@ -69,7 +69,7 @@ struct PrView: View {
                 // rather than reading through the box's glass.
                 .scrollEdgeEffectStyle(.hard, for: .bottom)
                 .safeAreaBar(edge: .bottom) {
-                    ReviewBoxView(pr: pr, draft: detail?.draft, read: detail != nil, whyNot: whyNot ?? (pr.slug.isEmpty ? "Its Mac can't review this PR: its repo has no GitHub name there." : nil), said: said) { words in
+                    ReviewBoxView(pr: pr, draft: detail?.draft, reviews: detail?.reviews ?? [], read: detail != nil, whyNot: whyNot ?? (pr.slug.isEmpty ? "Its Mac can't review this PR: its repo has no GitHub name there." : nil), said: said) { words in
                         said = words
                         Task { await load() }
                     }
@@ -367,7 +367,7 @@ private struct ReviewsSection: View {
                 ForEach(Array(reviews.enumerated()), id: \.offset) { _, r in
                     HStack(spacing: 8) {
                         Image(systemName: icon(r.state)).foregroundStyle(color(r.state))
-                        Text(r.author).font(.subheadline.weight(.medium))
+                        Text(r.mine ? "You" : r.author).font(.subheadline.weight(.medium))
                         Text(word(r.state)).font(.subheadline).foregroundStyle(.secondary)
                         Spacer(minLength: 0)
                         if let at = r.at {
@@ -533,10 +533,12 @@ private struct DiffView: View {
 /// that's closed, takes a comment (the core's `review_box`). A verdict submits your draft review
 /// when there's one, which the page shows first, so they wait until the page has read the PR. It
 /// floats over the page in glass, as a session's reply box does, and what's written is kept with
-/// the PR while you look at others.
+/// the PR while you look at others. Over it, where the PR stands and how you last reviewed it, as
+/// the top of the page says, so a verdict isn't given twice or with failing checks unseen.
 private struct ReviewBoxView: View {
     let pr: PrRow
     let draft: PrDraft?
+    let reviews: [PrReview]
     /// The page has read the PR, and so knows whether you have a draft review of it.
     let read: Bool
     /// Why nothing can be sent from here, if it can't.
@@ -557,8 +559,21 @@ private struct ReviewBoxView: View {
     }
 
     var body: some View {
-        let box = reviewBox(pr: pr, draft: draft)
+        let box = reviewBox(pr: pr, draft: draft, reviews: reviews)
         VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                StateChip(state: pr.state)
+                ChecksLine(passed: pr.passed, failed: pr.failing, pending: pr.pending)
+                if let yours = box.yours {
+                    TimelineView(.periodic(from: .now, by: 30)) { context in
+                        Text(Clock.text(yours, now: context.date))
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+            .padding(.horizontal, 10)
             if let line = failed ?? (sending == nil ? nil : "Sending to GitHub…") ?? whyNot ?? said ?? box.note {
                 Text(line)
                     .font(.footnote)

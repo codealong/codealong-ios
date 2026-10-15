@@ -60,6 +60,9 @@ pub struct PrReview {
     /// `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED` or `DISMISSED`.
     pub state: String,
     pub at: Option<i64>,
+    /// Given by you, as the Mac's `gh` is signed in. A Mac before 2026-10-12 doesn't say, so none
+    /// is yours there.
+    pub mine: bool,
 }
 
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
@@ -216,7 +219,7 @@ impl Core {
             body: readable(&d.body),
             mergeable: d.mergeable,
             commits: d.commits,
-            reviews: d.reviews.into_iter().map(|r| PrReview { author: r.author, state: r.state, at: r.at }).collect(),
+            reviews: d.reviews.into_iter().map(|r| PrReview { author: r.author, state: r.state, at: r.at, mine: r.mine }).collect(),
             requested: d.requested,
             comments: d.comments.into_iter().map(|c| PrComment { id: c.id, author: c.author, body: readable(&c.body), at: c.at, url: c.url, path: c.path, resolved: c.resolved, mine: c.mine }).collect(),
             files: d.files.into_iter().map(|f| PrFile { path: f.path, status: f.status, additions: f.additions, deletions: f.deletions, patch: f.patch }).collect(),

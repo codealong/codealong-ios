@@ -13,7 +13,8 @@ enum Clock {
             let token = rest[rest.index(after: open)..<close]
             if let ms = token.split(separator: ":").last.flatMap({ Int64($0) }) {
                 if token.hasPrefix("ago:") {
-                    out += ago(ms, now: now) + " ago"
+                    let past = ago(ms, now: now)
+                    out += past == "now" ? "just now" : past + " ago"
                 } else if token.hasPrefix("for:") {
                     out += "for " + span(ms, now: now)
                 } else if token.hasPrefix("in:") {

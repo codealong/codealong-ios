@@ -3,9 +3,10 @@
 //! Comment or Approve. Any open PR but your own takes all three; your own, or one that's closed,
 //! takes a comment. A comment or a request for changes needs something to say, which your draft
 //! review on GitHub can hold, and any verdict on a PR you have a draft of submits it, comments and
-//! all. It has no Ask side, as the Mac's has: no device can ask a Mac's agent about a PR.
+//! all. It has no Ask side, as the Mac's has: no device can ask a Mac's agent about a PR. Over it,
+//! with the PR's state, it says how you last reviewed it, so a verdict isn't given twice.
 
-use crate::prs::{PrDraft, PrVerdict};
+use crate::prs::{PrDraft, PrReview, PrVerdict};
 use crate::PrRow;
 
 /// What the box offers for a PR.
@@ -19,6 +20,9 @@ pub struct ReviewBox {
     /// What sending does that the buttons don't say: only a comment goes, or your draft review
     /// goes with it.
     pub note: Option<String>,
+    /// Your standing review of it, and when: "You approved it {ago:<ms>}". None when you haven't
+    /// reviewed it, or its Mac doesn't say which review is yours.
+    pub yours: Option<String>,
 }
 
 fn is_open(state: &str) -> bool {
@@ -30,9 +34,27 @@ fn comments(n: u64) -> String {
     format!("{n} {}", if n == 1 { "comment" } else { "comments" })
 }
 
-/// The box for `pr`, with your draft review of it as its page read it.
+/// Your standing review among `reviews` (each reviewer's last approval or change request, else
+/// comment), in words.
+fn yours(reviews: &[PrReview]) -> Option<String> {
+    let r = reviews.iter().find(|r| r.mine)?;
+    let did = match r.state.as_str() {
+        "APPROVED" => "You approved it",
+        "CHANGES_REQUESTED" => "You asked for changes",
+        "COMMENTED" => "You commented",
+        // When it was dismissed isn't known, only when it was given.
+        "DISMISSED" => return Some("Your review was dismissed".to_string()),
+        _ => return None,
+    };
+    Some(match r.at {
+        Some(at) => format!("{did} {{ago:{at}}}"),
+        None => did.to_string(),
+    })
+}
+
+/// The box for `pr`, with your draft review of it and its reviews as its page read them.
 #[uniffi::export]
-pub fn review_box(pr: PrRow, draft: Option<PrDraft>) -> ReviewBox {
+pub fn review_box(pr: PrRow, draft: Option<PrDraft>, reviews: Vec<PrReview>) -> ReviewBox {
     let open = is_open(&pr.state);
     let reviewable = open && !pr.mine;
     let hint = if draft.is_some() {
@@ -57,7 +79,7 @@ pub fn review_box(pr: PrRow, draft: Option<PrDraft>) -> ReviewBox {
         (Some(why), Some(with)) => Some(format!("{why} {with}")),
         (why, with) => why.map(str::to_string).or(with),
     };
-    ReviewBox { reviewable, hint, note }
+    ReviewBox { reviewable, hint, note, yours: yours(&reviews) }
 }
 
 /// Whether `verdict` has something to say (`saysSomething`): what's written, or a draft with text
@@ -103,7 +125,7 @@ mod tests {
     #[test]
     fn an_open_pr_not_yours_takes_every_verdict() {
         for state in ["open", "draft", "approved", "changes"] {
-            let b = review_box(pr(state, false), None);
+            let b = review_box(pr(state, false), None, vec![]);
             assert!(b.reviewable, "{state}");
             assert_eq!(b.hint, "Your review, if it says anything");
             assert_eq!(b.note, None);
@@ -112,12 +134,12 @@ mod tests {
 
     #[test]
     fn your_own_or_a_closed_one_takes_a_comment() {
-        let mine = review_box(pr("open", true), None);
+        let mine = review_box(pr("open", true), None, vec![]);
         assert!(!mine.reviewable);
         assert_eq!(mine.hint, "Comment on #7");
         assert_eq!(mine.note.as_deref(), Some("GitHub doesn’t let you approve your own PR: you can comment."));
         for state in ["merged", "closed"] {
-            let b = review_box(pr(state, false), None);
+            let b = review_box(pr(state, false), None, vec![]);
             assert!(!b.reviewable);
             assert_eq!(b.note.as_deref(), Some("It’s closed: a comment still goes to the PR."));
         }
@@ -125,12 +147,28 @@ mod tests {
 
     #[test]
     fn a_draft_goes_with_whatever_is_sent() {
-        let b = review_box(pr("open", false), Some(draft("Hold it.", 3)));
+        let b = review_box(pr("open", false), Some(draft("Hold it.", 3)), vec![]);
         assert_eq!(b.hint, "Your words, before your draft review’s (optional)");
         assert_eq!(b.note.as_deref(), Some("Sending submits your draft review too, with its 3 comments."));
-        assert_eq!(review_box(pr("open", false), Some(draft("x", 0))).note.as_deref(), Some("Sending submits your draft review too."));
-        let mine = review_box(pr("open", true), Some(draft("", 1)));
+        assert_eq!(review_box(pr("open", false), Some(draft("x", 0)), vec![]).note.as_deref(), Some("Sending submits your draft review too."));
+        let mine = review_box(pr("open", true), Some(draft("", 1)), vec![]);
         assert_eq!(mine.note.as_deref(), Some("GitHub doesn’t let you approve your own PR: you can comment. Sending submits your draft review too, with its 1 comment."));
+    }
+
+    fn review(author: &str, state: &str, at: Option<i64>, mine: bool) -> PrReview {
+        PrReview { author: author.into(), state: state.into(), at, mine }
+    }
+
+    #[test]
+    fn your_own_review_is_said_with_when() {
+        let yours = |reviews: Vec<PrReview>| review_box(pr("approved", false), None, reviews).yours;
+        assert_eq!(yours(vec![review("ann", "APPROVED", Some(5), false), review("me", "APPROVED", Some(9), true)]).as_deref(), Some("You approved it {ago:9}"));
+        assert_eq!(yours(vec![review("me", "CHANGES_REQUESTED", Some(9), true)]).as_deref(), Some("You asked for changes {ago:9}"));
+        assert_eq!(yours(vec![review("me", "COMMENTED", None, true)]).as_deref(), Some("You commented"));
+        assert_eq!(yours(vec![review("me", "DISMISSED", Some(9), true)]).as_deref(), Some("Your review was dismissed"));
+        // Someone else's approval isn't yours, and a Mac that doesn't say whose is whose says none.
+        assert_eq!(yours(vec![review("ann", "APPROVED", Some(5), false)]), None);
+        assert_eq!(yours(vec![]), None);
     }
 
     #[test]
