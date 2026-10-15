@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftUI
 
 /// The app's first screen, as the Mac's quick panel is: an input at the top, and below it what
@@ -7,7 +8,7 @@ import SwiftUI
 /// PRs, and the pills narrow the list to one project. Typed words find sessions (by what was said
 /// in them too) and PRs, a Mac suggests where what's typed goes, and the row at the bottom starts
 /// a new session with it as the prompt, on the Mac, in the worktree, on the account and where the
-/// chips under it say. The core has the rules.
+/// chips under it say, with the photos attached under the input. The core has the rules.
 struct QuickView: View {
     @Environment(Store.self) private var store
     @Environment(\.openURL) private var openURL
@@ -34,6 +35,14 @@ struct QuickView: View {
     @State private var routeProblem: String?
 
     @State private var composer = Composer()
+    /// Photos for the prompt, held here until it starts: then they're kept on its Mac, and go
+    /// before what's written, as a reply's do.
+    @State private var photos: [AttachedImage] = []
+    /// The photo picker is open, and what was picked in it.
+    @State private var picking = false
+    @State private var picked: [PhotosPickerItem] = []
+    /// Photos picked and still being read from the library: a start waits for them.
+    @State private var loadingPhotos = 0
     @State private var problem: String?
     @State private var acting = false
     /// Starts that went, for the haptic.
@@ -168,21 +177,44 @@ struct QuickView: View {
                 .tint(macsNeedAttention ? .orange : nil)
                 .accessibilityLabel("Macs")
             }
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                TextField(store.improving == nil ? "Find a session, or describe new work…" : "Describe how to improve Codealong…", text: $text, axis: .vertical)
-                    .font(.title3)
-                    .lineLimit(1...6)
-                    .focused($typing)
-                    .submitLabel(.return)
-                if !text.isEmpty {
-                    Button {
-                        text = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
+            // Its top is the field's: a field of several lines reports its baseline below its words.
+            HStack(alignment: .top, spacing: 8) {
+                // Photos go with what starts from here, as the reply box's + adds them to a reply.
+                if !store.devices.isEmpty {
+                    Button { picking = true } label: {
+                        // A line of the field's font, so it sits on the field's first line.
+                        Text(Image(systemName: "plus"))
+                            .font(.title3.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .contentShape(.rect.inset(by: -8))
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Clear")
+                    .disabled(acting)
+                    .accessibilityLabel("Attach photos")
+                    .accessibilityHint("They go with the session you start")
                 }
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    TextField(store.improving == nil ? "Find a session, or describe new work…" : "Describe how to improve Codealong…", text: $text, axis: .vertical)
+                        .font(.title3)
+                        .lineLimit(1...6)
+                        .focused($typing)
+                        .submitLabel(.return)
+                    if !text.isEmpty {
+                        Button {
+                            text = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Clear")
+                    }
+                }
+            }
+            if !photos.isEmpty {
+                AttachedRow(images: photos) { id in
+                    withAnimation(.snappy) { photos.removeAll { $0.id == id } }
+                }
+                .disabled(acting)
             }
             if let improving = store.improving {
                 ImproveStrip(improving: improving)
@@ -192,6 +224,24 @@ struct QuickView: View {
         .padding(.horizontal, 16)
         .padding(.top, 8)
         .padding(.bottom, 12)
+        .photosPicker(isPresented: $picking, selection: $picked, maxSelectionCount: 6, matching: .images)
+        .onChange(of: picked) { _, items in
+            guard !items.isEmpty else { return }
+            picked = []
+            loadingPhotos += items.count
+            // One after another, so they're in the prompt as they were picked.
+            Task {
+                for item in items {
+                    let data = try? await item.loadTransferable(type: Data.self)
+                    loadingPhotos -= 1
+                    if let image = data.flatMap(AttachedImage.held) {
+                        withAnimation(.snappy) { photos.append(image) }
+                    } else {
+                        problem = data == nil ? "That photo couldn't be read from your library." : "That isn't an image."
+                    }
+                }
+            }
+        }
     }
 
     /// Sessions or PRs, and how Sessions are ordered.
@@ -738,8 +788,15 @@ struct QuickView: View {
             // It goes as a reply in the session's screen goes: shown there at once, back in its
             // box if it doesn't go.
             guard let row = s.session else { return }
-            store.post(row.key, title: row.title, text: query, how: .send(now: false))
+            // The photos attached go with it, kept on its Mac first.
+            acting = true
+            problem = nil
+            let images = await keptPhotos(on: row.device)
+            acting = false
+            guard let images else { return }
+            store.post(row.key, title: row.title, text: ImagePrep.prompt(images: images, text: query), how: .send(now: false))
             text = ""
+            photos = []
             store.dealtWith(row.key)
             path.append(row.key)
         case .start:
@@ -760,14 +817,20 @@ struct QuickView: View {
         }
         acting = true
         problem = nil
+        guard let images = await keptPhotos(on: worktree.device) else {
+            acting = false
+            return
+        }
+        let typed = ImagePrep.prompt(images: images, text: query)
         // Improving Codealong: the picture of the screen goes after what you wrote, as the Mac's
         // panel writes it (the core's rule).
-        let prompt = store.improving.map { improvePrompt(text: query, shots: $0.shot.map { [$0] } ?? []) } ?? query
+        let prompt = store.improving.map { improvePrompt(text: typed, shots: $0.shot.map { [$0] } ?? []) } ?? typed
         do {
             let begun = try await store.startSession(device: worktree.device, worktree: worktree.id, account: account, place: place, prompt: prompt, model: composer.takesModel ? composer.model : nil, effort: composer.takesModel ? composer.effort : nil, newWorktree: newTree)
             acting = false
             started += 1
             text = ""
+            photos = []
             typing = false
             store.improving = nil
             // It opens once its Mac lists it; a start whose id the Mac doesn't know yet says what's next.
@@ -786,6 +849,22 @@ struct QuickView: View {
         } catch {
             acting = false
             problem = words(error)
+        }
+    }
+
+    /// The photos attached, kept on `mac` for the prompt, in order; nil, saying why, when they
+    /// can't be.
+    private func keptPhotos(on mac: String) async -> [String]? {
+        if loadingPhotos > 0 {
+            problem = "A photo is still being read from your library. Try again in a moment."
+            return nil
+        }
+        do {
+            return try await store.keep(photos, on: mac)
+        } catch {
+            let name = store.devices.first { $0.key == mac }.map { Names.short($0.name) } ?? "the Mac"
+            problem = "The photos couldn’t be kept on \(name): \(words(error))"
+            return nil
         }
     }
 

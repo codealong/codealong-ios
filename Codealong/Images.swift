@@ -5,12 +5,16 @@ import UIKit
 /// An image you attached to a reply, kept on the session's Mac as soon as it's picked, so it's
 /// ready when you send (`Store.attach`): the reply refers to it as a paste into the Mac's box
 /// does (`![image](images/<hash>.jpg)`), and the Mac turns that into the agent's way to the file.
+/// One for a new session's prompt is held here until it starts (`Store.keep`), since the Mac it
+/// starts on can change until then.
 struct AttachedImage: Identifiable, Equatable {
     let id = UUID()
     let thumb: UIImage
     var state: State
 
     enum State: Equatable {
+        /// On the phone, as it's sent, until the session it goes with starts.
+        case held(jpeg: Data)
         case keeping
         /// How the reply refers to it.
         case kept(reference: String)
@@ -18,6 +22,12 @@ struct AttachedImage: Identifiable, Equatable {
 
     var reference: String? {
         if case .kept(let reference) = state { reference } else { nil }
+    }
+
+    /// An image held for a new session's prompt; nil for bytes that aren't one.
+    static func held(_ data: Data) -> AttachedImage? {
+        guard let prepared = ImagePrep.jpeg(data) else { return nil }
+        return AttachedImage(thumb: ImagePrep.thumb(prepared.image), state: .held(jpeg: prepared.data))
     }
 }
 
@@ -43,6 +53,17 @@ enum ImagePrep {
         }
         guard let jpeg = drawn.jpegData(compressionQuality: 0.8) else { return nil }
         return (jpeg, drawn)
+    }
+
+    /// What shows an attached image over the box it goes with.
+    static func thumb(_ image: UIImage) -> UIImage {
+        image.preparingThumbnail(of: CGSize(width: 168, height: 168)) ?? image
+    }
+
+    /// A prompt with images: each on a line of its own before what's written, as the Mac's box
+    /// writes them.
+    static func prompt(images: [String], text: String) -> String {
+        (images + [text]).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.joined(separator: "\n")
     }
 
     /// Where a reference says its Mac keeps the image: `images/<hash>.<ext>`.
@@ -212,5 +233,64 @@ private struct ImageViewer: View {
                 .toolbarBackground(.black, for: .navigationBar)
         }
         .preferredColorScheme(.dark)
+    }
+}
+
+/// The images attached to a reply, over its box, or to a new session's prompt, under the input:
+/// each with a way to take it off, a spinner while it's kept on its Mac, and the system's Paste
+/// button while what you copied is an image (it pastes without iOS asking, being one you tap).
+struct AttachedRow: View {
+    let images: [AttachedImage]
+    var paste = false
+    let remove: (UUID) -> Void
+    var pasted: (Data) -> Void = { _ in }
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 10) {
+                ForEach(images) { image in
+                    Image(uiImage: image.thumb)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 56, height: 56)
+                        .clipShape(.rect(cornerRadius: 10))
+                        .accessibilityLabel(image.state == .keeping ? "Image, sending to its Mac" : "Image")
+                        .overlay {
+                            if image.state == .keeping {
+                                RoundedRectangle(cornerRadius: 10).fill(.black.opacity(0.35))
+                                ProgressView().tint(.white)
+                            }
+                        }
+                        .overlay(alignment: .topTrailing) {
+                            Button {
+                                remove(image.id)
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 20))
+                                    .symbolRenderingMode(.palette)
+                                    .foregroundStyle(.white, .black.opacity(0.65))
+                            }
+                            .buttonStyle(.plain)
+                            .offset(x: 7, y: -7)
+                            .accessibilityLabel("Take this image off")
+                        }
+                }
+                if paste {
+                    PasteButton(supportedContentTypes: [.image]) { providers in
+                        for provider in providers {
+                            _ = provider.loadDataRepresentation(for: .image) { data, _ in
+                                guard let data else { return }
+                                Task { @MainActor in pasted(data) }
+                            }
+                        }
+                    }
+                    .labelStyle(.titleAndIcon)
+                    .buttonBorderShape(.capsule)
+                }
+            }
+            .padding(.top, 8)
+            .padding(.trailing, 8)
+        }
+        .scrollIndicators(.hidden)
     }
 }

@@ -969,7 +969,7 @@ struct SessionView: View {
             clear()
             if !images.isEmpty { store.attached[key] = nil }
             said = nil
-            store.post(key, title: title, text: (images + [text]).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.joined(separator: "\n"), how: how)
+            store.post(key, title: title, text: ImagePrep.prompt(images: images, text: text), how: how)
             store.dealtWith(key)
             if thenNext, let next = after.first {
                 moveOn(to: next, outcome: "Sending to “\(title)”…")
@@ -2869,64 +2869,5 @@ private struct UpToWide: Layout {
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         subviews.first?.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
-    }
-}
-
-/// The images attached to a reply, over its box: each with a way to take it off, a spinner while
-/// it's kept on its Mac, and the system's Paste button while what you copied is an image (it
-/// pastes without iOS asking, being one you tap).
-private struct AttachedRow: View {
-    let images: [AttachedImage]
-    let paste: Bool
-    let remove: (UUID) -> Void
-    let pasted: (Data) -> Void
-
-    var body: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 10) {
-                ForEach(images) { image in
-                    Image(uiImage: image.thumb)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(width: 56, height: 56)
-                        .clipShape(.rect(cornerRadius: 10))
-                        .accessibilityLabel(image.state == .keeping ? "Image, sending to its Mac" : "Image")
-                        .overlay {
-                            if image.state == .keeping {
-                                RoundedRectangle(cornerRadius: 10).fill(.black.opacity(0.35))
-                                ProgressView().tint(.white)
-                            }
-                        }
-                        .overlay(alignment: .topTrailing) {
-                            Button {
-                                remove(image.id)
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .font(.system(size: 20))
-                                    .symbolRenderingMode(.palette)
-                                    .foregroundStyle(.white, .black.opacity(0.65))
-                            }
-                            .buttonStyle(.plain)
-                            .offset(x: 7, y: -7)
-                            .accessibilityLabel("Take this image off")
-                        }
-                }
-                if paste {
-                    PasteButton(supportedContentTypes: [.image]) { providers in
-                        for provider in providers {
-                            _ = provider.loadDataRepresentation(for: .image) { data, _ in
-                                guard let data else { return }
-                                Task { @MainActor in pasted(data) }
-                            }
-                        }
-                    }
-                    .labelStyle(.titleAndIcon)
-                    .buttonBorderShape(.capsule)
-                }
-            }
-            .padding(.top, 8)
-            .padding(.trailing, 8)
-        }
-        .scrollIndicators(.hidden)
     }
 }

@@ -616,15 +616,12 @@ final class Store {
     /// and it's taken off.
     func attach(_ data: Data, to key: String, mac: String, failed: @escaping (String) -> Void) {
         guard let prepared = ImagePrep.jpeg(data) else { return failed("That isn't an image.") }
-        let image = AttachedImage(thumb: prepared.image.preparingThumbnail(of: CGSize(width: 168, height: 168)) ?? prepared.image, state: .keeping)
+        let image = AttachedImage(thumb: ImagePrep.thumb(prepared.image), state: .keeping)
         attached[key, default: []].append(image)
         let bytes = prepared.data
         Task {
             do {
-                let core = try running()
-                let reference = try await Task.detached { try core.keepImage(device: mac, name: "image.jpg", bytes: bytes) }.value
-                // Kept here too, so the prompt shows it at once.
-                if let path = ImagePrep.path(of: reference) { images.put(bytes, at: path) }
+                let reference = try await keep(bytes, on: mac)
                 if let at = attached[key]?.firstIndex(where: { $0.id == image.id }) {
                     attached[key]?[at].state = .kept(reference: reference)
                 }
@@ -638,6 +635,26 @@ final class Store {
     func detach(_ id: UUID, from key: String) {
         attached[key]?.removeAll { $0.id == id }
         if attached[key]?.isEmpty == true { attached[key] = nil }
+    }
+
+    /// Keeps the images held for a new session's prompt on the Mac it starts on, answering how
+    /// the prompt refers to each, in order.
+    func keep(_ held: [AttachedImage], on mac: String) async throws -> [String] {
+        var references: [String] = []
+        for image in held {
+            guard case .held(let jpeg) = image.state else { continue }
+            references.append(try await keep(jpeg, on: mac))
+        }
+        return references
+    }
+
+    /// Keeps a JPEG on `mac` for a prompt, answering how the prompt refers to it.
+    private func keep(_ jpeg: Data, on mac: String) async throws -> String {
+        let core = try running()
+        let reference = try await Task.detached { try core.keepImage(device: mac, name: "image.jpg", bytes: jpeg) }.value
+        // Kept here too, so the prompt shows it at once.
+        if let path = ImagePrep.path(of: reference) { images.put(jpeg, at: path) }
+        return reference
     }
 
     /// An image a prompt on `mac` refers to, read from there once and kept.
