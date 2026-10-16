@@ -41,7 +41,7 @@ struct QuickView: View {
     /// The photo picker is open, and what was picked in it.
     @State private var picking = false
     @State private var picked: [PhotosPickerItem] = []
-    /// Photos picked and still being read from the library: a start waits for them.
+    /// Photos picked or pasted and still being read: a start waits for them.
     @State private var loadingPhotos = 0
     @State private var problem: String?
     @State private var acting = false
@@ -204,7 +204,9 @@ struct QuickView: View {
                                 .accessibilityHidden(true)
                         }
                         // A copied image pasted here goes with the session, as a photo picked with + does.
-                        WritingField(text: $text, focused: $typing, label: placeholder, style: .title3, pasted: store.devices.isEmpty || acting ? nil : { hold($0) })
+                        WritingField(text: $text, focused: $typing, label: placeholder, style: .title3, pasted: store.devices.isEmpty || acting ? nil : { data in
+                            if let data { hold(data) } else { problem = "The image you copied couldn't be read." }
+                        }, reading: $loadingPhotos)
                     }
                     if !text.isEmpty {
                         Button {
@@ -879,7 +881,7 @@ struct QuickView: View {
     /// can't be.
     private func keptPhotos(on mac: String) async -> [String]? {
         if loadingPhotos > 0 {
-            problem = "A photo is still being read from your library. Try again in a moment."
+            problem = "A photo is still being read. Try again in a moment."
             return nil
         }
         do {

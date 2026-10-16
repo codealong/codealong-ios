@@ -110,7 +110,7 @@ struct SessionView: View {
     /// The photo picker is open, and what was picked in it.
     @State private var picking = false
     @State private var picked: [PhotosPickerItem] = []
-    /// Photos picked and still being read from the library: the reply waits for them.
+    /// Photos picked or pasted and still being read: the reply waits for them.
     @State private var loadingPhotos = 0
     /// The send button's size, which a line of the reply box matches; it grows with the text size.
     @ScaledMetric(relativeTo: .body) private var sendSize: CGFloat = 32
@@ -496,7 +496,9 @@ struct SessionView: View {
                             .accessibilityHidden(true)
                     }
                     // A copied image pasted here goes with the reply, as a photo picked with + does.
-                    WritingField(text: Binding(get: { draft }, set: { draft = $0 }), focused: $typing, label: placeholder(full: true), editable: canAct && !sending, pasted: canAttach ? { attach($0) } : nil) {
+                    WritingField(text: Binding(get: { draft }, set: { draft = $0 }), focused: $typing, label: placeholder(full: true), editable: canAct && !sending, pasted: canAttach ? { data in
+                        if let data { attach(data) } else { said = "The image you copied couldn't be read." }
+                    } : nil, reading: $loadingPhotos) {
                         // ⌘⏎ on a keyboard sends and goes on, as on the Mac.
                         guard canSend else { return }
                         Task { await send(thenNext: true) }

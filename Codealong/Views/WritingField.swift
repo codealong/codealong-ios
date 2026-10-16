@@ -15,8 +15,12 @@ struct WritingField: View {
     var style: UIFont.TextStyle = .body
     var lines = 6
     var editable = true
-    /// Takes each image pasted, in order; nil where none can go, when Paste takes only words.
-    var pasted: ((Data) -> Void)?
+    /// Takes each image pasted, in order, or nil for one that couldn't be read; nil where none
+    /// can go, when Paste takes only words.
+    var pasted: ((Data?) -> Void)?
+    /// Images pasted and still being read, counted in with the caller's photos so what's sent
+    /// waits for them: one copied on a Mac comes over the network.
+    var reading: Binding<Int> = .constant(0)
     /// ⌘⏎ on a keyboard.
     var commandReturn: (() -> Void)?
     @Environment(\.dynamicTypeSize) private var size
@@ -64,6 +68,7 @@ private struct Words: UIViewRepresentable {
         }
         view.accessibilityLabel = field.label
         view.pasted = field.pasted
+        view.reading = field.reading
         view.commandReturn = field.commandReturn
         if view.text != field.text { view.text = field.text }
         view.wantsFocus = field.focused
@@ -103,7 +108,8 @@ private struct Words: UIViewRepresentable {
     }
 
     final class FieldView: UITextView {
-        var pasted: ((Data) -> Void)?
+        var pasted: ((Data?) -> Void)?
+        var reading: Binding<Int> = .constant(0)
         var commandReturn: (() -> Void)?
         /// Whether it should have the keyboard, kept for when it's in a window to take it.
         var wantsFocus = false
@@ -138,9 +144,13 @@ private struct Words: UIViewRepresentable {
         override func paste(_ sender: Any?) {
             guard pastesImages, let pasted else { return super.paste(sender) }
             let images = UIPasteboard.general.itemProviders.filter { $0.hasItemConformingToTypeIdentifier(UTType.image.identifier) }
+            let reading = reading
+            reading.wrappedValue += images.count
             Task { @MainActor in
                 for image in images {
-                    if let data = await Self.data(of: image) { pasted(data) }
+                    let data = await Self.data(of: image)
+                    reading.wrappedValue -= 1
+                    pasted(data)
                 }
             }
         }
