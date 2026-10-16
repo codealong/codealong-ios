@@ -98,7 +98,7 @@ that Mac; reading and snoozing a review don't.
 **Start new work.** Type a prompt in the same box and start it with the capsule at the bottom,
 which says where it starts: its menu picks the Mac, worktree, account, model, effort and place,
 in an existing worktree, a new one, or a chat in no project. The + beside the box attaches
-photos, which go with the prompt as they go with a reply. As you type, it finds sessions by what was said in them, and the Mac you pick suggests
+photos, and an image pasted into it attaches too; they go with the prompt as they go with a reply. As you type, it finds sessions by what was said in them, and the Mac you pick suggests
 where the prompt belongs when it has Jev's suggestions on, and says when a session may already be
 doing it.
 

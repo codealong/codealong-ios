@@ -24,7 +24,7 @@ struct QuickView: View {
     @State private var showingDone = false
 
     @State private var text = ""
-    @FocusState private var typing: Bool
+    @State private var typing = false
     /// What the Macs' text search found for what's typed, and whether one is still reading.
     @State private var said: [SaidHit] = []
     @State private var saidBuilding = false
@@ -194,11 +194,18 @@ struct QuickView: View {
                     .accessibilityHint("They go with the session you start")
                 }
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    TextField(store.improving == nil ? "Find a session, or describe new work…" : "Describe how to improve Codealong…", text: $text, axis: .vertical)
-                        .font(.title3)
-                        .lineLimit(1...6)
-                        .focused($typing)
-                        .submitLabel(.return)
+                    let placeholder = store.improving == nil ? "Find a session, or describe new work…" : "Describe how to improve Codealong…"
+                    ZStack(alignment: .topLeading) {
+                        if text.isEmpty {
+                            Text(placeholder)
+                                .font(.title3)
+                                .foregroundStyle(.tertiary)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                        // A copied image pasted here goes with the session, as a photo picked with + does.
+                        WritingField(text: $text, focused: $typing, label: placeholder, style: .title3, pasted: store.devices.isEmpty || acting ? nil : { hold($0) })
+                    }
                     if !text.isEmpty {
                         Button {
                             text = ""
@@ -234,13 +241,18 @@ struct QuickView: View {
                 for item in items {
                     let data = try? await item.loadTransferable(type: Data.self)
                     loadingPhotos -= 1
-                    if let image = data.flatMap(AttachedImage.held) {
-                        withAnimation(.snappy) { photos.append(image) }
-                    } else {
-                        problem = data == nil ? "That photo couldn't be read from your library." : "That isn't an image."
-                    }
+                    if let data { hold(data) } else { problem = "That photo couldn't be read from your library." }
                 }
             }
+        }
+    }
+
+    /// Holds a photo for the prompt, picked or pasted.
+    private func hold(_ data: Data) {
+        if let image = AttachedImage.held(data) {
+            withAnimation(.snappy) { photos.append(image) }
+        } else {
+            problem = "That isn't an image."
         }
     }
 

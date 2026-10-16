@@ -106,17 +106,12 @@ struct SessionView: View {
     @State private var markedUnread = false
     @State private var renaming = false
     @State private var newName = ""
-    @FocusState private var typing: Bool
+    @State private var typing = false
     /// The photo picker is open, and what was picked in it.
     @State private var picking = false
     @State private var picked: [PhotosPickerItem] = []
-    /// What you copied is an image, which the Paste chip attaches, and not one pasted already.
-    @State private var pasteHasImage = false
-    /// The pasteboard as it was when its image was pasted (`changeCount`).
-    @State private var pastedAt: Int?
     /// Photos picked and still being read from the library: the reply waits for them.
     @State private var loadingPhotos = 0
-    @Environment(\.scenePhase) private var scenePhase
     /// The send button's size, which a line of the reply box matches; it grows with the text size.
     @ScaledMetric(relativeTo: .body) private var sendSize: CGFloat = 32
     /// Reads the page before once you're this close to the top, so it's usually in before you
@@ -485,16 +480,9 @@ struct SessionView: View {
             }
             ReplyBox(open: replyOpen, size: sendSize, attach: canAttach ? { picking = true } : nil, attachDisabled: sending) {
                 // The images going with the reply sit in the box, over what's written.
-                if canAttach && (!attached.isEmpty || (typing && pasteHasImage)) {
-                    AttachedRow(images: attached, paste: typing && pasteHasImage) { id in
+                if canAttach && !attached.isEmpty {
+                    AttachedRow(images: attached) { id in
                         store.detach(id, from: key)
-                        // Taken off, what's copied can be pasted again.
-                        pastedAt = nil
-                        lookAtPasteboard()
-                    } pasted: { data in
-                        pastedAt = UIPasteboard.general.changeCount
-                        pasteHasImage = false
-                        attach(data)
                     }
                 }
             } field: {
@@ -507,16 +495,12 @@ struct SessionView: View {
                             .allowsHitTesting(false)
                             .accessibilityHidden(true)
                     }
-                    TextField(text: Binding(get: { draft }, set: { draft = $0 }), prompt: Text(""), axis: .vertical) { Text(placeholder(full: true)) }
-                        .lineLimit(1...6)
-                        .focused($typing)
-                        .disabled(!canAct || sending)
+                    // A copied image pasted here goes with the reply, as a photo picked with + does.
+                    WritingField(text: Binding(get: { draft }, set: { draft = $0 }), focused: $typing, label: placeholder(full: true), editable: canAct && !sending, pasted: canAttach ? { attach($0) } : nil) {
                         // ⌘⏎ on a keyboard sends and goes on, as on the Mac.
-                        .onKeyPress(.return, phases: .down) { press in
-                            guard press.modifiers.contains(.command), canSend else { return .ignored }
-                            Task { await send(thenNext: true) }
-                            return .handled
-                        }
+                        guard canSend else { return }
+                        Task { await send(thenNext: true) }
+                    }
                 }
             } tools: {
                 // Where one that isn't running goes on is said here too, under its model.
@@ -568,19 +552,6 @@ struct SessionView: View {
                 }
             }
         }
-        // Whether what's copied is an image: asking that doesn't read it, so iOS doesn't ask you.
-        .onChange(of: typing, initial: true) { _, _ in lookAtPasteboard() }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active { lookAtPasteboard() }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)) { _ in
-            lookAtPasteboard()
-        }
-    }
-
-    private func lookAtPasteboard() {
-        let board = UIPasteboard.general
-        pasteHasImage = board.hasImages && board.changeCount != pastedAt
     }
 
     private var sendButton: some View {
@@ -634,12 +605,7 @@ struct SessionView: View {
 
     private func attach(_ data: Data) {
         guard let mac = row?.device else { return }
-        store.attach(data, to: key, mac: mac) { why in
-            said = why
-            // One that didn't go can be pasted again.
-            pastedAt = nil
-            lookAtPasteboard()
-        }
+        store.attach(data, to: key, mac: mac) { why in said = why }
     }
 
     /// Only a Mac with remote control on takes a reply or an answer from here.
@@ -2521,7 +2487,7 @@ private struct SessionGlance: View {
             // dimmed as theirs are while there's nothing to send.
             ReplyBox(open: open, size: sendSize, attach: canAct && pending == nil ? {} : nil) {
                 if canAct && pending == nil && !attached.isEmpty {
-                    AttachedRow(images: attached, paste: false) { _ in } pasted: { _ in }
+                    AttachedRow(images: attached) { _ in }
                 }
             } field: {
                 let placeholder = replyWords(why: why, pending: pending, account: row?.account) {

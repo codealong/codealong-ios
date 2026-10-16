@@ -237,13 +237,10 @@ private struct ImageViewer: View {
 }
 
 /// The images attached to a reply, over its box, or to a new session's prompt, under the input:
-/// each with a way to take it off, a spinner while it's kept on its Mac, and the system's Paste
-/// button while what you copied is an image (it pastes without iOS asking, being one you tap).
+/// each with a way to take it off, and a spinner while it's kept on its Mac.
 struct AttachedRow: View {
     let images: [AttachedImage]
-    var paste = false
     let remove: (UUID) -> Void
-    var pasted: (Data) -> Void = { _ in }
 
     var body: some View {
         ScrollView(.horizontal) {
@@ -274,18 +271,6 @@ struct AttachedRow: View {
                             .offset(x: 7, y: -7)
                             .accessibilityLabel("Take this image off")
                         }
-                }
-                if paste {
-                    PasteButton(supportedContentTypes: [.image]) { providers in
-                        for provider in providers {
-                            _ = provider.loadDataRepresentation(for: .image) { data, _ in
-                                guard let data else { return }
-                                Task { @MainActor in pasted(data) }
-                            }
-                        }
-                    }
-                    .labelStyle(.titleAndIcon)
-                    .buttonBorderShape(.capsule)
                 }
             }
             .padding(.top, 8)
