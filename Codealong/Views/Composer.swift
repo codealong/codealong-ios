@@ -59,6 +59,16 @@ struct Composer {
         return store.startWorktree(device, project: project)
     }
 
+    /// Starting from the capsule does what `s` does: it starts in the same worktree, in a new one
+    /// of its own or not as the capsule would, with the same account. The capsule is that start,
+    /// so it isn't listed over it too.
+    @MainActor func startsAs(_ s: Suggestion, store: Store, project: String) -> Bool {
+        guard s.kind == .start, let w = s.worktree, let here = worktree(store: store, project: project), w.id == here.id, w.device == here.device else { return false }
+        // As a start makes it: only an account that makes worktrees does, and never for a chat.
+        let tree = takesNewWorktree && !w.chat
+        return (tree && s.newWorktree) == (tree && newWorktree)
+    }
+
     /// What starting does, in a sentence, as the Mac's panel says it (start.ts `startDoes`).
     func happens(in w: Worktree, newWorktree tree: Bool) -> String {
         let on = [modelLabel, effortLabel.map { "\($0) effort" }].compactMap { $0 }.joined(separator: ", ")

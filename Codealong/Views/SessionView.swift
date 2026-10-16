@@ -308,9 +308,9 @@ struct SessionView: View {
             // The top of what's in view, below the bars, in the conversation's coordinates. Its
             // height goes with it: a page too short to scroll is near the top without moving.
             .onScrollGeometryChange(for: ScrollSpot.Place.self) { geo in
-                .init(offset: geo.contentOffset.y, inset: geo.contentInsets.top, height: geo.contentSize.height, atEnd: geo.atEnd)
+                .init(offset: geo.contentOffset.y, inset: geo.contentInsets.top, bottom: geo.contentInsets.bottom, height: geo.contentSize.height, atEnd: geo.atEnd)
             } action: { was, place in
-                scrolled(from: was, to: place)
+                scrolled(from: was, to: place, proxy: proxy)
             }
             // A page that went in above while it scrolled goes in once it's still.
             .onScrollPhaseChange { _, phase in
@@ -347,8 +347,12 @@ struct SessionView: View {
                 }
                 .animation(.snappy, value: pinned)
             }
+            // A bar, as a PR's review box is, with a hard edge: the conversation goes under it
+            // rather than reading through what's over the box (how the last one went, which has
+            // no glass of its own, was written over its words).
+            .scrollEdgeEffectStyle(.hard, for: .bottom)
+            .safeAreaBar(edge: .bottom) { bottom }
         }
-        .safeAreaInset(edge: .bottom) { bottom }
     }
 
     /// The session's menu: stop, rename, fork, where it came from, done, snooze, quiet, seen or
@@ -722,7 +726,7 @@ struct SessionView: View {
     }
 
     /// The scroll view moved, or what's in it changed size.
-    private func scrolled(from was: ScrollSpot.Place, to place: ScrollSpot.Place) {
+    private func scrolled(from was: ScrollSpot.Place, to place: ScrollSpot.Place, proxy: ScrollViewProxy) {
         scroll.top = place.top
         // The bars' inset arriving as the screen comes in (after a first layout without it, when
         // the conversation was kept from before) moves the scroll view to its top, though its
@@ -735,6 +739,14 @@ struct SessionView: View {
         if scroll.backToEnd {
             guard place.atEnd else { return }
             scroll.backToEnd = false
+        }
+        // What's over the box grew while the newest was in view (how the last one went, said once
+        // its Mac answered; a card; the keyboard): the newest stays in view rather than going under
+        // it. However little it grew: at the end is within a few lines of it, and a line said
+        // would hide the conversation's last. By the mark at its end, as new items keep it there:
+        // the position already says the end, so asking it for the end again changed nothing.
+        if was.atEnd && place.bottom > was.bottom + 0.5 && scroll.hold == .none {
+            withAnimation(.snappy) { proxy.scrollTo("end", anchor: .bottom) }
         }
         // A page went in above: what's in view moves down with it, so it holds still. At the end,
         // or in a conversation shorter than the screen, the scroll view has done it already. By the
@@ -1701,6 +1713,8 @@ private struct SuggestedRepliesView: View {
     struct Place: Equatable {
         var offset: CGFloat
         var inset: CGFloat
+        /// What's over the foot: the box and what's above it, and the keyboard.
+        var bottom: CGFloat = 0
         var height: CGFloat
         var atEnd = false
         var top: CGFloat { offset + inset }

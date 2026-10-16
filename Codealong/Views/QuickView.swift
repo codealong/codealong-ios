@@ -80,7 +80,7 @@ struct QuickView: View {
                             // keyboard with it, rather than in the list it covers. While the next
                             // answer is worked out, the last one's stay (its suggestions dimmed),
                             // so the bar doesn't jump with each key.
-                            StartBar(composer: $composer, project: startProject, prompt: query, suggestions: route?.suggestions ?? [], stale: routedFor != query, duplicate: route?.duplicate, problem: problem, acting: acting, room: listHeight) {
+                            StartBar(composer: $composer, project: startProject, prompt: query, suggestions: suggestions(route), stale: routedFor != query, duplicate: route?.duplicate, problem: problem, acting: acting, room: listHeight) {
                                 // Nothing typed yet: the box is where the prompt goes.
                                 if query.isEmpty {
                                     typing = true
@@ -351,7 +351,7 @@ struct QuickView: View {
     @ViewBuilder
     private var list: some View {
         let content = listed
-        let suggested = routedFor == query ? route?.suggestions ?? [] : []
+        let suggested = routedFor == query ? suggestions(route) : []
         List {
             if !store.devices.isEmpty {
                 pillsRow
@@ -389,7 +389,10 @@ struct QuickView: View {
         }
         .listStyle(.plain)
         .contentMargins(.top, 4, for: .scrollContent)
-        .scrollDismissesKeyboard(.interactively)
+        // Dragging the list puts the keyboard away, so what it covers can be reached. (Interactively,
+        // it went only once the drag reached the keyboard, past the start bar, which a drag on the
+        // little of the list left over it rarely did.)
+        .scrollDismissesKeyboard(.immediately)
         .overlay { emptyState(content) }
         // Rows that come, go or move as the Macs report animate there, as a pick of yours does.
         .animation(.snappy, value: content.ids)
@@ -799,6 +802,12 @@ struct QuickView: View {
             routeProblem = words(error)
         }
         routing = false
+    }
+
+    /// A Mac's suggestions for what's typed, but the start the capsule under them makes already:
+    /// listed over it, the same start was there twice.
+    private func suggestions(_ route: RouteAnswer?) -> [Suggestion] {
+        (route?.suggestions ?? []).filter { !composer.startsAs($0, store: store, project: startProject) }
     }
 
     /// The first two sessions that wait on you, in the inbox's order and its project.
