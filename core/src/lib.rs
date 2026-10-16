@@ -482,11 +482,12 @@ impl Core {
 
     /// The sound due for what came to wait on you since the last time this was asked, if any,
     /// of the kinds `on` (`sounds`): asked each time `Listener::changed` says something's new,
-    /// sounds on or not, so what came while they were off isn't news later.
+    /// sounds on or not, so what came while they were off isn't news later. With none on, as
+    /// while the app is behind another, nothing comes due, so nothing holds back the next sound.
     pub fn sound(&self, on: Vec<Sound>) -> Option<Sound> {
         let now = now_ms();
         self.client.with_feeds(|feeds| {
-            let devices: Vec<codealong_peer::client::Device> = feeds.iter().map(|(d, _)| d.clone()).collect();
+            let devices: Vec<(codealong_peer::client::Device, i64)> = feeds.iter().map(|(d, r)| (d.clone(), r.generated_at)).collect();
             let rows = all_rows(feeds);
             self.chimer.lock().unwrap_or_else(|e| e.into_inner()).due(&devices, &rows, now, &on)
         })

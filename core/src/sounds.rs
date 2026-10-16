@@ -76,29 +76,32 @@ pub(crate) struct Chimer {
     /// key, with when that connection opened: a Mac that reconnects starts afresh.
     was: HashMap<String, (i64, Waiting)>,
     /// When each session went back to work, as far as the looks show: the later of when its turn
-    /// says it began and the first look that had it running again. Codex keeps a turn's start
+    /// says it began and the first feed that had it running again. Codex keeps a turn's start
     /// through a call you allow in it, which would have it working since long before your answer.
+    /// By its Mac's clock, as its status times are: the phone's could be seconds off it.
     working_since: HashMap<String, i64>,
-    /// Sessions sorted here lately (marked unread, woken, and so on), and when.
+    /// Sessions sorted here lately (marked unread, woken, and so on), and when, by the phone's
+    /// clock.
     sorted: HashMap<String, i64>,
-    /// When the last sound was due.
+    /// When the last sound was due, by the phone's clock.
     last_at: Option<i64>,
 }
 
 impl Chimer {
-    /// The sound due at `now`, if any: the most urgent kind that came and is in `on`. A kind
-    /// that's off leaves the way clear for the rest.
-    pub fn due(&mut self, devices: &[Device], rows: &[SessionRow], now: i64, on: &[Sound]) -> Option<Sound> {
+    /// The sound due at `now` (the phone's clock), if any: the most urgent kind that came and is
+    /// in `on`. A kind that's off leaves the way clear for the rest. Each Mac comes with when it
+    /// made its last feed, by its own clock.
+    pub fn due(&mut self, devices: &[(Device, i64)], rows: &[SessionRow], now: i64, on: &[Sound]) -> Option<Sound> {
         let mut came = Vec::new();
         let mut was = HashMap::new();
-        for d in devices.iter().filter(|d| heard(d)) {
+        for (d, fed_at) in devices.iter().filter(|(d, _)| heard(d)) {
             let mine: Vec<&SessionRow> = rows.iter().filter(|r| r.device == d.key && !r.unattended).collect();
             let opened = d.since.unwrap_or_default();
             let before = self.was.remove(&d.key).filter(|(at, _)| *at == opened).map(|(_, w)| w);
             if let Some(before) = &before {
                 came.extend(self.came(before, &mine, now));
             }
-            self.remember_work(before.as_ref(), &mine, now);
+            self.remember_work(before.as_ref(), &mine, *fed_at);
             was.insert(d.key.clone(), (opened, Waiting::of(&mine)));
         }
         self.was = was;
@@ -141,15 +144,16 @@ impl Chimer {
         out
     }
 
-    /// Notes when each of a Mac's running sessions went back to work, at `now`, given what was
-    /// running at its last look (none when this look is its first).
-    fn remember_work(&mut self, was: Option<&Waiting>, rows: &[&SessionRow], now: i64) {
+    /// Notes when each of a Mac's running sessions went back to work, given when the Mac made the
+    /// feed this look reads (`fed_at`) and what was running at its last look (none when this
+    /// look is its first).
+    fn remember_work(&mut self, was: Option<&Waiting>, rows: &[&SessionRow], fed_at: i64) {
         for r in rows.iter().filter(|r| r.status == Status::Working) {
             let start = match (was, self.working_since.get(&r.key)) {
                 // Still running: since it went back, or a later turn's start a look didn't catch.
                 (Some(w), Some(&at)) if w.working.contains(&r.key) => at.max(since(r)),
                 // Back at work since the last look.
-                (Some(_), _) => since(r).max(now),
+                (Some(_), _) => since(r).max(fed_at),
                 // Running when the Mac's feed came, as its turn says.
                 (None, _) => since(r),
             };
@@ -186,8 +190,9 @@ mod tests {
         SessionRow { device: "m".into(), ..row(key, status, since, None, since) }
     }
 
+    /// A look at `at`, the Mac's feed made then too.
     fn due(c: &mut Chimer, at: i64, rows: Vec<SessionRow>) -> Option<Sound> {
-        c.due(&[mac("m")], &rows, at, &BOTH)
+        c.due(&[(mac("m"), at)], &rows, at, &BOTH)
     }
 
     /// The chimer after a first look at `rows` an hour before `NOW`, which never sounds.
@@ -213,22 +218,22 @@ mod tests {
         // What the phone saved, before the Mac answers: not connected, then connected and not
         // yet heard from, then heard from but still on its first scan.
         let away = Device { online: false, since: None, ..mac("m") };
-        assert_eq!(c.due(&[away], &rows(Status::Working), NOW, &BOTH), None);
+        assert_eq!(c.due(&[(away, NOW)], &rows(Status::Working), NOW, &BOTH), None);
         let connected = Device { since: Some(NOW), last_seen: Some(NOW - 3_600_000), ..mac("m") };
-        assert_eq!(c.due(&[connected], &rows(Status::Working), NOW + 100, &BOTH), None);
+        assert_eq!(c.due(&[(connected, NOW)], &rows(Status::Working), NOW + 100, &BOTH), None);
         let scanning = Device { since: Some(NOW), last_seen: Some(NOW + 200), loading: true, ..mac("m") };
-        assert_eq!(c.due(&[scanning.clone()], &rows(Status::Needs), NOW + 200, &BOTH), None);
+        assert_eq!(c.due(&[(scanning.clone(), NOW)], &rows(Status::Needs), NOW + 200, &BOTH), None);
         // Its first feed brings what came while the app was away: no sound.
         let heard = Device { loading: false, last_seen: Some(NOW + 300), ..scanning };
-        assert_eq!(c.due(&[heard.clone()], &rows(Status::Needs), NOW + 300, &BOTH), None);
+        assert_eq!(c.due(&[(heard.clone(), NOW)], &rows(Status::Needs), NOW + 300, &BOTH), None);
         // After it, what comes sounds.
         let mut more = rows(Status::Needs);
         more.push(session("b", Status::Needs, NOW + 60_000));
-        assert_eq!(c.due(&[heard.clone()], &more, NOW + 60_000, &BOTH), Some(Sound::NeedsYou));
+        assert_eq!(c.due(&[(heard.clone(), NOW)], &more, NOW + 60_000, &BOTH), Some(Sound::NeedsYou));
         // A Mac that reconnects starts afresh.
         let again = Device { since: Some(NOW + 70_000), last_seen: Some(NOW + 70_000), ..heard };
         more.push(session("c", Status::Needs, NOW + 70_000));
-        assert_eq!(c.due(&[again], &more, NOW + 90_000, &BOTH), None);
+        assert_eq!(c.due(&[(again, NOW)], &more, NOW + 90_000, &BOTH), None);
     }
 
     #[test]
@@ -271,6 +276,20 @@ mod tests {
     }
 
     #[test]
+    fn a_turn_just_started_is_timed_by_its_macs_clock() {
+        // The Mac's clock is 5 seconds behind the phone's, and its feeds take a moment to come:
+        // a turn of a second is still one you're watching.
+        let skew = 5_000;
+        let mut c = after(vec![session("a", Status::Needs, NOW - 3_600_000)]);
+        assert_eq!(c.due(&[(mac("m"), NOW - 1_000)], &[session("a", Status::Working, NOW - 1_000)], NOW - 1_000 + skew + 500, &BOTH), None);
+        assert_eq!(c.due(&[(mac("m"), NOW)], &[session("a", Status::Unread, NOW)], NOW + skew + 500, &BOTH), None);
+        // Seen running first a while into its turn, it counts from the feed that showed it.
+        let mut c = after(vec![session("a", Status::Needs, NOW - 3_600_000)]);
+        assert_eq!(c.due(&[(mac("m"), NOW - 60_000)], &[session("a", Status::Working, NOW - 90_000)], NOW - 60_000 + skew, &BOTH), None);
+        assert_eq!(c.due(&[(mac("m"), NOW)], &[session("a", Status::Unread, NOW)], NOW + skew, &BOTH), Some(Sound::YourTurn));
+    }
+
+    #[test]
     fn a_session_sorted_here_makes_no_sound_for_a_while() {
         // Marked unread here, it's Your turn again: you did that.
         let mut c = after(vec![session("a", Status::Idle, NOW - 3_600_000)]);
@@ -300,13 +319,17 @@ mod tests {
         let needs_only = [Sound::NeedsYou];
         let mut c = after(vec![session("a", Status::Working, NOW - 3_600_000), session("b", Status::Working, NOW - 3_600_000)]);
         let rows = vec![session("a", Status::Unread, NOW), session("b", Status::Working, NOW - 3_600_000)];
-        assert_eq!(c.due(&[mac("m")], &rows, NOW, &needs_only), None);
+        assert_eq!(c.due(&[(mac("m"), NOW)], &rows, NOW, &needs_only), None);
         // The turn that made no sound doesn't hold back the one that comes to need you.
         let rows = vec![session("a", Status::Unread, NOW), session("b", Status::Needs, NOW + 1_000)];
-        assert_eq!(c.due(&[mac("m")], &rows, NOW + 1_000, &needs_only), Some(Sound::NeedsYou));
-        // With both off, nothing.
-        let mut c = after(vec![session("a", Status::Working, NOW - 3_600_000)]);
-        assert_eq!(c.due(&[mac("m")], &[session("a", Status::Needs, NOW)], NOW, &[]), None);
+        assert_eq!(c.due(&[(mac("m"), NOW)], &rows, NOW + 1_000, &needs_only), Some(Sound::NeedsYou));
+        // With both off, as while the app is behind another, nothing, and nothing held back
+        // for when it's in front again.
+        let mut c = after(vec![session("a", Status::Working, NOW - 3_600_000), session("b", Status::Working, NOW - 3_600_000)]);
+        let rows = vec![session("a", Status::Needs, NOW), session("b", Status::Working, NOW - 3_600_000)];
+        assert_eq!(c.due(&[(mac("m"), NOW)], &rows, NOW, &[]), None);
+        let rows = vec![session("a", Status::Needs, NOW), session("b", Status::Needs, NOW + 1_000)];
+        assert_eq!(c.due(&[(mac("m"), NOW + 1_000)], &rows, NOW + 1_000, &BOTH), Some(Sound::NeedsYou));
     }
 
     #[test]
@@ -324,10 +347,10 @@ mod tests {
         // A session on another Mac is that Mac's: its first feed is no news, here or there.
         let mut c = Chimer::default();
         let other = |r: SessionRow| SessionRow { device: "n".into(), ..r };
-        assert_eq!(c.due(&[mac("m")], &[session("a", Status::Working, NOW - 3_600_000)], NOW - 60_000, &BOTH), None);
+        assert_eq!(c.due(&[(mac("m"), NOW)], &[session("a", Status::Working, NOW - 3_600_000)], NOW - 60_000, &BOTH), None);
         let rows = vec![session("a", Status::Working, NOW - 3_600_000), other(session("b", Status::Needs, NOW - 60_000))];
-        assert_eq!(c.due(&[mac("m"), mac("n")], &rows, NOW, &BOTH), None);
+        assert_eq!(c.due(&[(mac("m"), NOW), (mac("n"), NOW)], &rows, NOW, &BOTH), None);
         let rows = vec![session("a", Status::Working, NOW - 3_600_000), other(session("b", Status::Needs, NOW - 60_000)), other(session("c", Status::Unread, NOW + 1_000))];
-        assert_eq!(c.due(&[mac("m"), mac("n")], &rows, NOW + 1_000, &BOTH), Some(Sound::YourTurn));
+        assert_eq!(c.due(&[(mac("m"), NOW), (mac("n"), NOW)], &rows, NOW + 1_000, &BOTH), Some(Sound::YourTurn));
     }
 }

@@ -104,8 +104,9 @@ final class Store {
         if snap.prs != prs { prs = snap.prs }
         if snap.projects != projects { projects = snap.projects }
         if snap.prProjects != prProjects { prProjects = snap.prProjects }
-        // Asked at every change, whether it will play or not, so what came meanwhile isn't news later.
-        if let sound = core.sound(on: Sounds.on), inFront { Sounds.play(sound) }
+        // Asked at every change, so what came meanwhile isn't news later; behind another app with
+        // none on, so a sound that wouldn't play doesn't hold back the next one.
+        if let sound = core.sound(on: inFront ? Sounds.on : []) { Sounds.play(sound) }
     }
 
     func start() {
