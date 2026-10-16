@@ -202,7 +202,7 @@ impl Core {
     /// The PRs waiting on your review in every project, pinned or not, the longest wait first: as
     /// the Mac's queue goes through them, between the sessions that need you and Your turn.
     pub fn review_queue(&self) -> Vec<PrRow> {
-        self.client.with_feeds(|feeds| waiting_reviews(&crate::quick::all_prs(feeds)))
+        self.client.with_feeds(|feeds| waiting_reviews(&crate::quick::all_prs(feeds, &self.you(feeds))))
     }
 
     /// The list's sessions by project and worktree, in `project` (empty for all).

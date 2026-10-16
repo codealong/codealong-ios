@@ -72,8 +72,16 @@ impl Github {
     pub(crate) fn read(&mut self, feeds: &Feeds) -> You {
         let mut learned = false;
         for (d, replica) in feeds {
-            if let Some(login) = signed_in_as(replica).filter(|l| self.saved.signed_in.get(&d.key).map(String::as_str) != Some(*l)) {
-                self.saved.signed_in.insert(d.key.clone(), login.to_string());
+            let kept = self.saved.signed_in.get(&d.key);
+            if let Some(login) = signed_in_as(replica) {
+                if kept.map(String::as_str) != Some(login) {
+                    self.saved.signed_in.insert(d.key.clone(), login.to_string());
+                    learned = true;
+                }
+            } else if kept.is_some_and(|k| replica.prs.iter().any(|p| !p.mine && p.author.as_deref().is_some_and(|a| a.eq_ignore_ascii_case(k)))) {
+                // A PR of the account it was signed in as that it doesn't call its own: it's
+                // signed in as another now, which it hasn't opened a PR as yet.
+                self.saved.signed_in.remove(&d.key);
                 learned = true;
             }
         }
@@ -115,7 +123,7 @@ impl You {
         let mut opened: HashMap<String, usize> = HashMap::new();
         for (_, replica) in feeds {
             for p in &replica.prs {
-                if let Some(author) = p.author.as_deref().filter(|_| seen.insert(crate::quick::pr_key(&p.url, &p.key).to_lowercase())) {
+                if let Some(author) = p.author.as_deref().filter(|_| crate::quick::first_seen(&mut seen, &crate::quick::pr_key(&p.url, &p.key), &p.key)) {
                     *opened.entry(author.to_lowercase()).or_default() += 1;
                 }
             }
@@ -219,6 +227,12 @@ mod tests {
         let you = again.read(&[(mac("Laptop"), &quiet), (mac("Mini"), &mini)]);
         assert_eq!(logins(&you), [("ann-bot", false), ("ann", true)]);
         assert!(!you.opened(Some("ann-bot")));
+        // The laptop is signed in as another account now, with no PR of its own yet: Ann's PR it
+        // doesn't call its own says so, and it's no longer taken for hers.
+        let switched = list(vec![card(1, "ann", false)]);
+        let you = again.read(&[(mac("Laptop"), &switched), (mac("Mini"), &mini)]);
+        assert_eq!(logins(&you), [("ann-bot", true)]);
+        assert!(!you.signs_in("Laptop"));
         // A Mac never seen with a PR of its own says nothing of its account.
         assert!(kept("never").read(&[(mac("Quiet"), &quiet)]).accounts.is_empty());
     }

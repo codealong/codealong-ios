@@ -350,6 +350,15 @@ pub(crate) fn pr_key(url: &str, theirs: &str) -> String {
     named().unwrap_or_else(|| theirs.to_string())
 }
 
+/// Whether a PR, by its `key` and its Mac's own for it (`theirs`), is new to `seen`, which keeps
+/// both from now on: a Mac whose feed is from before its repo was renamed has the old URL, where
+/// another Mac may still name the repo the old way.
+pub(crate) fn first_seen(seen: &mut std::collections::HashSet<String>, key: &str, theirs: &str) -> bool {
+    let (key, theirs) = (key.to_lowercase(), theirs.to_lowercase());
+    let new_theirs = theirs == key || seen.insert(theirs);
+    seen.insert(key) && new_theirs
+}
+
 /// Every worktree's PR on the linked Macs, once each, those `you` opened as yours.
 pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
     let worktrees = all_worktrees(feeds);
@@ -364,7 +373,7 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
     for (d, replica) in macs {
         for p in &replica.prs {
             let key = pr_key(&p.url, &p.key);
-            if !seen.insert(key.to_lowercase()) {
+            if !first_seen(&mut seen, &key, &p.key) {
                 continue;
             }
             out.push(PrRow {
@@ -407,8 +416,9 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
         for l in &replica.lanes {
             let Some(pr) = &l.pr else { continue };
             // Two worktrees of one repo can be on the same PR's branch.
-            let key = pr_key(&pr.url, &format!("{}#{}", l.repo_slug.as_deref().unwrap_or(&l.repo), pr.number));
-            if !seen.insert(key.to_lowercase()) {
+            let theirs = format!("{}#{}", l.repo_slug.as_deref().unwrap_or(&l.repo), pr.number);
+            let key = pr_key(&pr.url, &theirs);
+            if !first_seen(&mut seen, &key, &theirs) {
                 continue;
             }
             let Some(w) = worktrees.iter().find(|w| w.device == d.key && w.id == l.id) else { continue };
@@ -834,6 +844,21 @@ pub(crate) mod tests {
         // the repo, and keeps its key.
         assert_eq!(seen(&["ann-bot".into()])[0], row(1, false, false, "mini", "old/app"));
         assert_eq!(seen(&["ann-bot".into(), "ann".into()])[2], row(3, true, true, "mini", "old/app"));
+    }
+
+    #[test]
+    fn a_pr_from_before_its_repo_was_renamed_is_listed_once() {
+        use codealong_peer::client::Device;
+        use codealong_peer::feed::Replica;
+        let mac = |key: &str, online: bool| Device { key: key.into(), short: key.into(), name: key.into(), online, since: None, last_seen: None, remote_control: true, app: String::new(), loading: false, linked_back: true };
+        let card = |url: &str| serde_json::from_value::<codealong_peer::pr::PrCard>(serde_json::json!({"key": "old/app#1", "repo": "old/app", "project": "App", "number": 1, "title": "T", "url": url, "state": "open", "author": "ann", "head": "b"})).unwrap();
+        // Both Macs' checkouts name the repo the old way; the one asleep was last heard before
+        // the rename, with the old URL.
+        let awake = Replica { prs: vec![card("https://github.com/new/app/pull/1")], ..Replica::default() };
+        let asleep = Replica { prs: vec![card("https://github.com/old/app/pull/1")], ..Replica::default() };
+        let feeds = vec![(mac("asleep", false), &asleep), (mac("awake", true), &awake)];
+        let prs = all_prs(&feeds, &crate::github::You::default());
+        assert_eq!(prs.iter().map(|p| (p.key.as_str(), p.device.as_str())).collect::<Vec<_>>(), [("new/app#1", "awake")]);
     }
 
     #[test]
