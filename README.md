@@ -57,16 +57,18 @@ what they printed, and the questions an agent asked with what you picked. Scroll
 further back, with the prompt you're reading the answer to pinned at the top. A session running
 inside Codealong on your Mac streams its reply as it's written.
 
-**Work through what's waiting.** While another session waits on you, a bar over the reply box names
-it and says what going on to it does to the one you're reading: marks it seen, marks it done, or
-archives it, as you pick from the bar's menu, which keeps your pick. Swipe left (or tap *Next*) to
-go on and do it, and right to go back to the one you came from. One you replied to, one still
-working, and one waiting on you to allow something are left as they are, and holding *Send* sends
-and goes straight on. The next one is read ahead, so it shows at once. Replies an agent suggested
-for a session (a supervisor going over what waits on you, with `codealong session suggest`) show
-above its box: tap one to send it, or hold it to change it first. Helper sessions (ones an agent
-started to help it, and automatic PR reviews) stay out of your lists unless they need you, as on
-the Mac.
+**Work through what's waiting.** Sessions that need you, PRs waiting on your review and finished
+turns come one after another, in the Mac's order. While something else waits on you, a bar over the
+reply box names it and says what going on to it does to the session you're reading: marks it seen,
+marks it done, or archives it, as you pick from the bar's menu, which keeps your pick. Swipe left
+(or tap *Next*) to go on and do it, and right to go back to the one you came from. One you replied
+to, one still working, and one waiting on you to allow something are left as they are, and holding
+*Send* sends and goes straight on. A PR's page has the same bar over its review box: going on from
+a review you haven't given brings it round again later, or snoozes it, as you pick there. The next
+one is read ahead, so it shows at once. Replies an agent suggested for a session (a supervisor
+going over what waits on you, with `codealong session suggest`) show above its box: tap one to send
+it, or hold it to change it first. Helper sessions (ones an agent started to help it, and automatic
+PR reviews) stay out of your lists unless they need you, as on the Mac.
 
 **Act on a session**, on any Mac that has remote control turned on:
 

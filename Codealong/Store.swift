@@ -10,6 +10,13 @@ final class Store {
     private(set) var sessions: [SessionRow] = []
     /// Every PR the Macs list, once each.
     private(set) var prs: [PrRow] = []
+    /// The PRs waiting on your review, in every project, in the order what waits on you goes
+    /// through them (`reviewsWaiting`): read once as the PRs change, not each time the queue is.
+    private var reviews: [PrRow] = []
+    /// What was last read of each PR's page, by its key: a page opens with it, and one a swipe
+    /// slides in is drawn from it.
+    private(set) var prDetails: [String: PrDetail] = [:]
+    @ObservationIgnored private var prReadAt: [String: Date] = [:]
     private(set) var projects: [String] = []
     /// The projects of the PRs page's PRs, for its pills.
     private(set) var prProjects: [String] = []
@@ -36,8 +43,8 @@ final class Store {
     private var handled: [String: Int64] = [:]
     /// Sessions you went on from without replying, in the order you left them.
     private var passed: [String] = []
-    /// The sessions you went on from to the one shown, the latest last: swiping back goes to them
-    /// in turn. Back at the list it starts again.
+    /// The sessions and PRs you went on from to the one shown, by their keys in the list's path,
+    /// the latest last: swiping back goes to them in turn. Back at the list it starts again.
     var trail: [String] = []
     /// What you've written to each session and not sent, by key: kept as you go from one to
     /// another, and where a message that didn't go comes back. A PR's review is here too, under
@@ -51,14 +58,16 @@ final class Store {
     /// once, as the Mac's windows show theirs (ahead.ts), until its record has them.
     private(set) var outgoing: [String: [Outgoing]] = [:]
     /// The session a swipe just slid in, and what the swipe showed of it: its screen opens with
-    /// that, so nothing changes as it takes the swipe's place.
+    /// that, so nothing changes as it takes the swipe's place. A PR's page opens with what was
+    /// last read of it (`prDetails`).
     @ObservationIgnored var slidIn: (key: String, opening: Opening)?
     /// What each Mac can start, by device, as it last said: a session's screen has its account's
     /// models and places from its first frame.
     private(set) var choices: [String: StartChoices] = [:]
     /// Why a session's last message didn't go, for its screen to say once.
     var sendProblems: [String: String] = [:]
-    /// The session shown now, if one is: a message that fails elsewhere is said in an alert.
+    /// The session shown now, if one is, or a PR's page (its key after `PrView.prefix`): a message
+    /// that fails elsewhere is said in an alert.
     var showing: String?
     /// Sessions whose messages are going now: one at a time each, so they arrive in order.
     @ObservationIgnored private var pumping: Set<String> = []
@@ -101,7 +110,10 @@ final class Store {
         tick &+= 1
         if snap.devices != devices { devices = snap.devices }
         if snap.sessions != sessions { sessions = snap.sessions }
-        if snap.prs != prs { prs = snap.prs }
+        if snap.prs != prs {
+            prs = snap.prs
+            reviews = reviewsWaiting()
+        }
         if snap.projects != projects { projects = snap.projects }
         if snap.prProjects != prProjects { prProjects = snap.prProjects }
         // Asked at every change, so what came meanwhile isn't news later; behind another app with
@@ -230,31 +242,60 @@ final class Store {
         }
     }
 
-    /// What waits on you besides the session `key`, the next first: Needs you, then Your turn, in
-    /// the inbox's order, the Mac's session panel's, so next is always the most urgent one left.
-    /// Ones you went on from without replying come round again after the rest, and ones you've
-    /// dealt with stay out until they wait on you anew. `project` narrows it as the inbox is.
-    func queue(after key: String, project: String) -> [SessionRow] {
+    /// What waits on you besides `key` (a page's key in the list's path: a session's, or a PR's
+    /// after `PrView.prefix`), the next first, in the order the Mac's windows go through it
+    /// (queue.ts `WAITS`): sessions that need you, then PRs waiting on your review, then Your turn,
+    /// so next is always the most urgent one left. Sessions are in the inbox's order and PRs the
+    /// longest wait first, as the PRs page lists them. Ones you went on from without dealing with
+    /// them come round again after the rest, and ones you've dealt with stay out until they wait
+    /// on you anew. `project` narrows it as the inbox is.
+    func queue(after key: String, project: String) -> [Waiting] {
         if let fixed = testQueue {
             // Those after it in the list, as a real queue has gone past the ones before.
             let rest = fixed.firstIndex(of: key).map { fixed[($0 + 1)...] } ?? fixed[...]
-            return rest.compactMap { k in sessions.first { $0.key == k } }
+            return rest.compactMap { waiting($0) }
         }
+        let fresh = { (k: String, since: Int64) in self.handled[k].map { since > $0 } ?? true }
         // A helper or a headless run that doesn't need you isn't waiting on you, as it's out of
         // the lists: a pin keeps one listed (in Pinned), and a Mac from before the helpers' rule
         // calls its turns Your turn.
-        let waiting = sessions.filter { row in
+        let rows = sessions.filter { row in
             guard row.key != key, !row.unattended, row.section == .needsYou || row.section == .yourTurn, project.isEmpty || row.project == project else { return false }
-            guard let at = handled[row.key] else { return true }
-            return (row.statusSince ?? row.lastActivity) > at
+            return fresh(row.key, row.statusSince ?? row.lastActivity)
         }
-        return waiting.filter { !passed.contains($0.key) } + passed.compactMap { key in waiting.first { $0.key == key } }
+        // A review asked for again (a new `requestedAt`) waits on you anew.
+        let asked = reviews.filter { pr in
+            let k = PrView.prefix + pr.key
+            return k != key && (project.isEmpty || pr.project == project) && fresh(k, pr.requestedAt ?? pr.updatedAt)
+        }
+        let all = rows.filter { $0.section == .needsYou }.map(Waiting.session) + asked.map(Waiting.pr) + rows.filter { $0.section == .yourTurn }.map(Waiting.session)
+        return all.filter { !passed.contains($0.key) } + passed.compactMap { key in all.first { $0.key == key } }
     }
 
-    /// You replied to or answered `key`.
+    /// The PRs waiting on your review, the longest wait first, as the PRs page lists them (the
+    /// core's rules), and then any pinned: the page lists those under Pinned. Only ones its Mac
+    /// can read can be opened here.
+    private func reviewsWaiting() -> [PrRow] {
+        let sections = core?.prList(project: "") ?? []
+        let reviews = sections.first { $0.group == .reviews }?.rows ?? []
+        let pinned = sections.first { $0.group == .pinned }?.rows.filter(\.waits) ?? []
+        return (reviews + pinned).filter { !$0.slug.isEmpty }
+    }
+
+    /// What waits on you by its key in the list's path, while it's listed.
+    func waiting(_ key: String) -> Waiting? {
+        if key.hasPrefix(PrView.prefix) { return pr(String(key.dropFirst(PrView.prefix.count))).map(Waiting.pr) }
+        return sessions.first { $0.key == key }.map(Waiting.session)
+    }
+
+    /// You replied to or answered `key`, a session; or reviewed it, a PR (its key after
+    /// `PrView.prefix`), which GitHub takes as the review asked of you.
     func dealtWith(_ key: String) {
-        guard let row = sessions.first(where: { $0.key == key }) else { return }
-        handled[key] = row.statusSince ?? row.lastActivity
+        switch waiting(key) {
+        case .session(let row): handled[key] = row.statusSince ?? row.lastActivity
+        case .pr(let pr): handled[key] = pr.requestedAt ?? pr.updatedAt
+        case nil: return
+        }
         passed.removeAll { $0 == key }
     }
 
@@ -376,11 +417,11 @@ final class Store {
         return (data, image)
     }
 
-    /// The session you went on from to `key`, the latest that's still listed: where swiping back
-    /// goes.
-    func previous(of key: String) -> SessionRow? {
+    /// The session or PR you went on from to `key`, the latest that's still listed: where swiping
+    /// back goes.
+    func previous(of key: String) -> Waiting? {
         for k in trail.reversed() where k != key {
-            if let row = sessions.first(where: { $0.key == k }) { return row }
+            if let w = waiting(k) { return w }
         }
         return nil
     }
@@ -396,10 +437,33 @@ final class Store {
     }
 
     /// A PR's description, reviews, comments, changed files and your draft review of it, as its
-    /// Mac's `gh` reads them.
+    /// Mac's `gh` reads them; kept, so its page opens with it at once next time (`prDetails`).
     func prDetail(_ pr: PrRow) async throws -> PrDetail {
         let core = try running()
-        return try await Task.detached { try core.prDetail(device: pr.device, repo: pr.slug, number: pr.number) }.value
+        let read = try await Task.detached { try core.prDetail(device: pr.device, repo: pr.slug, number: pr.number) }.value
+        prDetails[pr.key] = read
+        prReadAt[pr.key] = .now
+        return read
+    }
+
+    /// Reads a PR's page ahead of its being opened, unless it was read lately: the next that waits
+    /// on you slides in as it is. Its page reads it again as it opens.
+    func readAhead(_ pr: PrRow) async {
+        if let at = prReadAt[pr.key], Date.now.timeIntervalSince(at) < 30 { return }
+        _ = try? await prDetail(pr)
+    }
+
+    /// Snoozes your review of a PR a swipe went on from, without holding up the swipe: one its Mac
+    /// didn't snooze comes round again, saying why.
+    func snoozeLater(_ pr: PrRow, until: Date) {
+        Task {
+            do {
+                try await prSnooze(pr, until: until)
+            } catch {
+                comeRound(PrView.prefix + pr.key)
+                tellLater("Your review of #\(pr.number) wasn’t snoozed: \(words(error))", asked: false)
+            }
+        }
     }
 
     /// What a PR's merge box offers you, as its Mac's `gh` reads it.
@@ -755,6 +819,36 @@ struct Outgoing: Identifiable, Equatable {
     static let confirm: TimeInterval = 20
     /// One goes after this, whatever the record says.
     static let longest: TimeInterval = 10 * 60
+}
+
+/// Something that waits on you, as a swipe goes along it: a session, or a PR waiting on your
+/// review.
+enum Waiting: Equatable {
+    case session(SessionRow)
+    case pr(PrRow)
+
+    /// Its page's key in the list's path: a session's key, or a PR's after `PrView.prefix`.
+    var key: String {
+        switch self {
+        case .session(let row): row.key
+        case .pr(let pr): PrView.prefix + pr.key
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .session(let row): row.title
+        case .pr(let pr): pr.title
+        }
+    }
+
+    /// When it last changed: what's read of it ahead is read again then.
+    var stamp: Int64 {
+        switch self {
+        case .session(let row): row.lastActivity
+        case .pr(let pr): pr.updatedAt
+        }
+    }
 }
 
 /// Hands the core's change notices to the store; the core calls it on a thread of its own.

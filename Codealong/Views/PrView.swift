@@ -6,13 +6,28 @@ import SwiftUI
 /// its foot reviews it, as the Mac's does. The phone has no GitHub of its own: its Mac's `gh` reads
 /// all of it and does what you ask, as you, so reviewing and merging need remote control on that
 /// Mac.
+///
+/// It goes along what waits on you as a session's screen does, PRs waiting on your review among
+/// the sessions, in the Mac's order (`Store.queue`): a bar over the review box names what's next
+/// and says what going on to it does to this PR, and a swipe across the page, or a tap on the bar,
+/// goes on; a swipe the other way goes back to what you came from. Going on from one waiting on
+/// your review skips it, so it comes round again after the rest, as the Mac's ⌘E does, or snoozes
+/// your review of it, as you pick from the bar's menu (`ReviewSwipeOn`). One you reviewed here
+/// goes on as it is.
 struct PrView: View {
     /// What a PR's place in the list's path starts with, before its key.
-    static let prefix = "pr:"
+    nonisolated static let prefix = "pr:"
     /// `owner/name#number`.
     let key: String
+    /// Shows another page in this one's place.
+    var go: (String) -> Void = { _ in }
     @Environment(Store.self) private var store
     @Environment(\.openURL) private var openURL
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The inbox's project: what's next stays in it.
+    @AppStorage("project") private var project = ""
+    /// What going on to the next does to this PR, as you last picked it over the box.
+    @AppStorage("swipe.review") private var reviewOn = ReviewSwipeOn.later
     @State private var detail: PrDetail?
     @State private var problem: String?
     @State private var loading = false
@@ -21,75 +36,117 @@ struct PrView: View {
     @State private var merging = false
     /// How the last thing done here went.
     @State private var said: String?
+    /// You reviewed or merged it here: going on leaves it as it is.
+    @State private var acted = false
+    /// A swipe across the page, while it goes, and what's beside it.
+    @State private var swipe = Swipe()
+
+    /// Opens with what was last read of it, so one a swipe slid in shows as it was drawn.
+    init(key: String, kept: PrDetail? = nil, go: @escaping (String) -> Void = { _ in }) {
+        self.key = key
+        self.go = go
+        _detail = State(initialValue: kept)
+    }
 
     private var pr: PrRow? { store.pr(key) }
-    private var mac: DeviceRow? { store.devices.first { $0.key == pr?.device } }
+    /// Its key in the list's path, which what waits on you goes by.
+    private var page: String { Self.prefix + key }
+    /// The session or PR you went on from to this one: swiping back goes there.
+    private var before: Waiting? { store.previous(of: page) }
+    /// What waits on you after this one, sessions and PRs; the first is next.
+    private var after: [Waiting] { store.queue(after: page, project: project) }
+    /// What going on to the next does to this one, as the bar over the box says it.
+    private var going: Going { Going.of(reviewOn, pr: pr, acted: acted) }
+    /// Its Mac is connected.
+    private var macOnline: Bool { store.devices.first { $0.key == pr?.device }?.online == true }
+    /// Your review as you've written it and not sent.
+    private var drafted: Bool { !(store.drafts[page] ?? "").isEmpty }
 
     /// Why it can't be reviewed or merged from here, if it can't.
-    private var whyNot: String? {
-        guard let mac else { return "Its Mac isn't linked any more" }
+    static func whyNot(_ pr: PrRow, store: Store) -> String? {
+        guard let mac = store.devices.first(where: { $0.key == pr.device }) else { return "Its Mac isn't linked any more" }
         if !mac.online { return "\(mac.name) isn't connected" }
         if !mac.remoteControl { return "Remote control is off on \(mac.name)" }
         return nil
     }
 
     var body: some View {
-        Group {
-            if let pr {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
-                        PrHeader(pr: pr, canMerge: whyNot == nil && !pr.slug.isEmpty) { merging = true }
-                        // A read again that failed, over what was read before.
-                        if detail != nil, let problem {
-                            Label("Couldn’t read it again: \(problem)", systemImage: "exclamationmark.triangle")
-                                .font(.footnote)
-                                .foregroundStyle(.red)
-                        }
-                        if let detail {
-                            if let draft = detail.draft {
-                                DraftSection(draft: draft)
-                            }
-                            DescriptionSection(body: detail.body)
-                            ReviewsSection(reviews: detail.reviews, requested: detail.requested)
-                            if !detail.comments.isEmpty {
-                                CommentsSection(comments: detail.comments)
-                            }
-                            FilesSection(files: detail.files, more: detail.moreFiles, changed: pr.changedFiles)
-                        } else if let problem {
-                            Text(problem).font(.footnote).foregroundStyle(.red)
-                        } else {
-                            ProgressView().frame(maxWidth: .infinity).padding(.top, 30)
-                        }
-                    }
-                    .padding()
-                }
-                .refreshable { await load() }
-                .scrollDismissesKeyboard(.interactively)
-                // A bar, as the list's start bar is, with a hard edge: the page goes under it
-                // rather than reading through the box's glass.
-                .scrollEdgeEffectStyle(.hard, for: .bottom)
-                .safeAreaBar(edge: .bottom) {
-                    ReviewBoxView(pr: pr, draft: detail?.draft, reviews: detail?.reviews ?? [], read: detail != nil, whyNot: whyNot ?? (pr.slug.isEmpty ? "Its Mac can't review this PR: its repo has no GitHub name there." : nil), said: said) { words in
-                        said = words
-                        Task { await load() }
-                    }
-                }
-                .navigationTitle("#" + String(pr.number))
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar { menu(pr) }
-                .sheet(isPresented: $merging) {
-                    MergeSheet(pr: pr) { words in
-                        said = words
-                        Task { await load() }
-                    }
-                }
-            } else {
-                ContentUnavailableView("No longer listed", systemImage: "arrow.triangle.pull", description: Text("Its Mac doesn't list this PR now."))
+        Paged(swipe: swipe, key: page, next: after.first, back: before, leaves: false, ready: detail != nil || problem != nil) {
+            content
+        }
+        // What's next is in the menu and a swipe away; on a keyboard, ⌘] as on the Mac.
+        .background {
+            if let next = after.first {
+                // Unseen, at no size: one that takes no touches takes no keys either.
+                Button("Next") { goOn(to: next) }
+                    .keyboardShortcut("]", modifiers: .command)
+                    .frame(width: 0, height: 0)
+                    .opacity(0)
+                    .accessibilityHidden(true)
             }
         }
+        .navigationTitle(pr.map { "#" + String($0.number) } ?? "PR")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar { menu }
         // Again once its Mac connects (one opened before, as from a link, read nothing), when the
         // PR changes, and when another Mac is the one asked.
-        .task(id: "\(key) \(mac?.online == true) \(pr?.updatedAt ?? 0) \(pr?.device ?? "")") { await load() }
+        .task(id: "\(key) \(macOnline) \(pr?.updatedAt ?? 0) \(pr?.device ?? "")") { await load() }
+        .onAppear {
+            store.showing = page
+            // Gone on to from another: say how that one went.
+            if let outcome = store.outcome {
+                said = outcome
+                store.outcome = nil
+            }
+            takeLateOutcome()
+        }
+        .onDisappear {
+            if store.showing == page { store.showing = nil }
+        }
+        .onChange(of: store.lateOutcomes) { _, _ in takeLateOutcome() }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if let pr {
+            let whyNot = Self.whyNot(pr, store: store)
+            ScrollView {
+                PrContent(pr: pr, detail: detail, problem: problem, canMerge: whyNot == nil && !pr.slug.isEmpty) { merging = true }
+                    .padding()
+            }
+            .refreshable { await load() }
+            .scrollDismissesKeyboard(.interactively)
+            .gesture(QueueSwipe(back: before != nil, moved: { swipe.moved($0) }, ended: swiped))
+            // A bar, as the list's start bar is, with a hard edge: the page goes under it
+            // rather than reading through the box's glass.
+            .scrollEdgeEffectStyle(.hard, for: .bottom)
+            .safeAreaBar(edge: .bottom) {
+                VStack(spacing: 8) {
+                    // Not while you write your review: the box needs the room, and what's next waits.
+                    if let next = after.first, !drafted {
+                        GoOnBar(next: next, more: after.count - 1, showDevice: store.devices.count > 1, showProject: project.isEmpty, going: going, picked: reviewOn.label, choices: { ReviewSwipeOn.picker($reviewOn) }) { goOn(to: next) }
+                            .padding(.horizontal)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                    ReviewBoxView(pr: pr, draft: detail?.draft, reviews: detail?.reviews ?? [], read: detail != nil, whyNot: whyNot ?? (pr.slug.isEmpty ? "Its Mac can't review this PR: its repo has no GitHub name there." : nil), said: said) { words in
+                        said = words
+                        // A review submitted is the one asked of you, whatever its verdict.
+                        acted = true
+                        store.dealtWith(page)
+                        Task { await load() }
+                    }
+                }
+            }
+            .sheet(isPresented: $merging) {
+                MergeSheet(pr: pr) { words in
+                    said = words
+                    acted = true
+                    Task { await load() }
+                }
+            }
+        } else {
+            ContentUnavailableView("No longer listed", systemImage: "arrow.triangle.pull", description: Text("Its Mac doesn't list this PR now."))
+        }
     }
 
     private func load() async {
@@ -113,16 +170,27 @@ struct PrView: View {
     }
 
     @ToolbarContentBuilder
-    private func menu(_ pr: PrRow) -> some ToolbarContent {
+    private var menu: some ToolbarContent {
+        ToolbarItem(placement: .principal) {
+            TitleBlock(key: swipe.to?.key ?? page)
+        }
         ToolbarItem(placement: .topBarTrailing) {
             ImproveButton()
         }
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
-                if let url = URL(string: pr.url) {
+                // A swipe across the page does it too, and what the bar says goes with it.
+                if let next = after.first {
+                    Button { goOn(to: next) } label: {
+                        Label("Go to next", systemImage: "arrow.forward")
+                        Text(next.title)
+                    }
+                    Divider()
+                }
+                if let pr, let url = URL(string: pr.url) {
                     Button("Open on GitHub", systemImage: "safari") { openURL(url) }
                 }
-                if pr.reviewRequested || pr.snoozedUntil != nil {
+                if let pr, pr.reviewRequested || pr.snoozedUntil != nil {
                     Menu("Snooze review", systemImage: "moon.zzz") {
                         ForEach(Snooze.choices()) { c in
                             Button(c.label) { Task { await snooze(pr, until: c.until) } }
@@ -131,7 +199,7 @@ struct PrView: View {
                             Button("Wake now", systemImage: "sun.max") { Task { await snooze(pr, until: nil) } }
                         }
                     }
-                    .disabled(mac?.online != true)
+                    .disabled(!macOnline)
                 }
             } label: {
                 Image(systemName: "ellipsis.circle")
@@ -145,6 +213,139 @@ struct PrView: View {
             said = until.map { "Your review is snoozed until \(Snooze.words($0))." } ?? "Your review waits on you again."
         } catch {
             said = words(error)
+        }
+    }
+
+    /// A swipe let go: far or fast enough toward what's that way, it slides there; otherwise the
+    /// page settles back.
+    private func swiped(_ distance: CGFloat, _ speed: CGFloat) {
+        let target = distance < 0 ? after.first : distance > 0 ? before : nil
+        guard swipe.letGo(distance, speed, toward: target != nil), let target else { return }
+        if distance < 0 {
+            goOn(to: target, speed: speed)
+        } else {
+            // Back is a step by hand: this one isn't passed over for it.
+            store.outcome = acted ? said : nil
+            slide(to: target.key, back: true, speed: speed) { store.back(to: target.key) }
+        }
+    }
+
+    /// Goes on to `next` as a swipe does, doing to this PR what the bar says. Snoozing waits on its
+    /// Mac, which the swipe doesn't: it's out of what's next meanwhile, and one its Mac didn't
+    /// snooze comes round again, saying why (`Store.snoozeLater`).
+    private func goOn(to next: Waiting, speed: CGFloat = 0) {
+        guard swipe.to == nil else { return }
+        if case .snooze = going, let pr, let snooze = reviewOn.snooze() {
+            store.dealtWith(page)
+            store.snoozeLater(pr, until: snooze.until)
+            moveOn(to: next, outcome: "Snoozed your review of #\(pr.number) until \(Snooze.words(snooze.until)).", speed: speed)
+        } else {
+            moveOn(to: next, speed: speed)
+        }
+    }
+
+    /// Shows `next` in this one's place, saying there how this one went once you've acted here.
+    /// Left without a review while it waits on one, this one comes round again after the rest.
+    private func moveOn(to next: Waiting, outcome: String? = nil, speed: CGFloat = 0) {
+        guard swipe.to == nil else { return }
+        if !acted && outcome == nil { store.passedOver(page) }
+        if next.key != page { store.trail.append(page) }
+        store.outcome = outcome ?? (acted ? said : nil)
+        slide(to: next.key, back: false, speed: speed)
+    }
+
+    /// Slides this page away and `target`'s in after it, then does `then` and shows `target` in its
+    /// place, starting as it was drawn sliding in.
+    private func slide(to target: String, back: Bool, speed: CGFloat = 0, then: @escaping () -> Void = {}) {
+        if !target.hasPrefix(Self.prefix) {
+            store.slidIn = (target, Opening(kept: swipe.kept[target] ?? Kept(), said: store.outcome))
+        }
+        swipe.slide(to: target, back: back, speed: speed, reduceMotion: reduceMotion, go: go, then: then)
+    }
+
+    /// Says how what a swipe did to what was gone on from went, once its Mac has answered, unless
+    /// this page is sliding away: the one sliding in says it.
+    private func takeLateOutcome() {
+        guard !store.lateOutcomes.isEmpty, store.showing == page, swipe.to == nil else { return }
+        said = store.lateOutcomes.joined(separator: "\n")
+        store.lateOutcomes = []
+    }
+}
+
+/// What a PR's page shows over its review box, from what was read of it: where it stands, then
+/// what was read, or why it couldn't be. The page and the glance a swipe brings in draw it alike.
+private struct PrContent: View {
+    let pr: PrRow
+    let detail: PrDetail?
+    let problem: String?
+    let canMerge: Bool
+    let merge: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            PrHeader(pr: pr, canMerge: canMerge, merge: merge)
+            // A read again that failed, over what was read before.
+            if detail != nil, let problem {
+                Label("Couldn’t read it again: \(problem)", systemImage: "exclamationmark.triangle")
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+            }
+            if let detail {
+                if let draft = detail.draft {
+                    DraftSection(draft: draft)
+                }
+                DescriptionSection(body: detail.body)
+                ReviewsSection(reviews: detail.reviews, requested: detail.requested)
+                if !detail.comments.isEmpty {
+                    CommentsSection(comments: detail.comments)
+                }
+                FilesSection(files: detail.files, more: detail.moreFiles, changed: pr.changedFiles)
+            } else if let problem {
+                Text(problem).font(.footnote).foregroundStyle(.red)
+            } else {
+                ProgressView().frame(maxWidth: .infinity).padding(.top, 30)
+            }
+        }
+    }
+}
+
+/// A PR beside the page shown, as a swipe brings it in: its page as it first draws it, from what
+/// was last read of it, at its top, with its review box and the bar over it.
+struct PrGlance: View {
+    let key: String
+    /// How the page gone on from went, as this one will say it.
+    let said: String?
+    /// The page a swipe goes on from to this one, and whether that leaves what waits on you: nil
+    /// going back to one.
+    var from: (key: String, leaves: Bool)?
+    @Environment(Store.self) private var store
+    @AppStorage("project") private var project = ""
+    @AppStorage("swipe.review") private var reviewOn = ReviewSwipeOn.later
+
+    var body: some View {
+        if let pr = store.pr(key) {
+            let whyNot = PrView.whyNot(pr, store: store)
+            let detail = store.prDetails[key]
+            // Its top under the bar, what doesn't fit going off the foot: laid over a screen's worth
+            // of nothing, so it's a screen high however long the page is.
+            Color.clear.overlay(alignment: .top) {
+                PrContent(pr: pr, detail: detail, problem: nil, canMerge: whyNot == nil) {}
+                    .padding()
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .clipped()
+            .safeAreaInset(edge: .bottom) {
+                VStack(spacing: 8) {
+                    let after = waitingAfter(PrView.prefix + key, from: from, store: store, project: project)
+                    if let next = after.first, (store.drafts[PrView.prefix + key] ?? "").isEmpty {
+                        GoOnBar(next: next, more: after.count - 1, showDevice: store.devices.count > 1, showProject: project.isEmpty, going: Going.of(reviewOn, pr: pr, acted: false), picked: reviewOn.label, choices: { EmptyView() }) {}
+                            .padding(.horizontal)
+                    }
+                    ReviewBoxView(pr: pr, draft: detail?.draft, reviews: detail?.reviews ?? [], read: detail != nil, whyNot: whyNot, said: said) { _ in }
+                }
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
         }
     }
 }

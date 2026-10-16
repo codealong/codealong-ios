@@ -4,9 +4,11 @@ import SwiftUI
 /// One session: its conversation, what it waits on you to allow, and a box to reply. It follows the
 /// session as it goes: a change in the Mac's feed brings in what came since.
 ///
-/// It also works through what waits on you, as the Mac's session panel does with ⌘⏎: while
-/// another session waits on you, a bar over the box names it and says what going on to it does to
-/// this one, and a swipe or a tap on it goes on; holding Send sends and goes on at once. What going
+/// It also works through what waits on you, as the Mac's session panel does with ⌘⏎, PRs waiting
+/// on your review among the sessions, in the Mac's order (`Store.queue`): while something else
+/// waits on you, a bar over the box names it and says what going on to it does to this one, and a
+/// swipe or a tap on it goes on, to a PR's page as to a session's screen; holding Send sends and
+/// goes on at once. What going
 /// on does is picked from the bar's menu, for every session after (`SwipeOn`): marking it seen, so
 /// a turn that ended leaves Your turn and a reply that asks you something leaves Needs you, as it
 /// always did, or marking it done, or archiving it. One you replied to here, or one at work, is
@@ -28,8 +30,8 @@ import SwiftUI
 /// the end of the conversation as sending, then sent, until the session's record has it, so you
 /// can go on writing the next; messages to one session go in the order you sent them. One that
 /// doesn't go is back in the box, with why. Swiping across the conversation goes along what waits
-/// on you: to the left the next, as the Mac's ⌘] does, doing what the bar says, and to the right
-/// back to the session you came from. The screen follows the finger, with the session it goes to
+/// on you (`Paged`): to the left the next, as the Mac's ⌘] does, doing what the bar says, and to
+/// the right back to what you came from. The screen follows the finger, with what it goes to
 /// beside it, drawn from what the phone keeps (the next is read ahead); let go, it slides the rest
 /// of the way, and Next slides the same way. Dragging the conversation, or tapping it, puts the
 /// keyboard away.
@@ -78,10 +80,9 @@ struct SessionView: View {
     @State private var answered: String?
     @State private var problem: String?
     @State private var loading = true
-    /// A swipe across the screen, while it goes.
+    /// A swipe across the screen, while it goes, and what's beside it.
     @State private var swipe = Swipe()
-    /// What the phone keeps of the sessions a swipe goes to, by key, read once this one's open.
-    @State private var beside: [String: Kept] = [:]
+    /// It's read what it shows: what a swipe goes to is read after.
     @State private var opened = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var sending = false
@@ -139,20 +140,16 @@ struct SessionView: View {
         get { store.drafts[key] ?? "" }
         nonmutating set { store.drafts[key] = newValue.isEmpty ? nil : newValue }
     }
-    /// The session you went on from to this one: swiping back goes there.
-    private var before: SessionRow? { store.previous(of: key) }
-    /// What waits on you after this one; the first is next.
-    private var after: [SessionRow] { store.queue(after: key, project: project) }
+    /// The session or PR you went on from to this one: swiping back goes there.
+    private var before: Waiting? { store.previous(of: key) }
+    /// What waits on you after this one, sessions and PRs; the first is next.
+    private var after: [Waiting] { store.queue(after: key, project: project) }
 
     var body: some View {
-        // The screen follows a swipe, and the session it goes to comes in beside it. Side by side
-        // in a stack, so the one beside it sits in the same safe area and lines up with it.
-        ZStack {
-            besideViews
-            page.modifier(FollowsSwipe(swipe: swipe, next: nextBeside != nil, back: backBeside != nil))
-                .environment(\.imageMac, row?.device)
+        // The screen follows a swipe, and what it goes to comes in beside it.
+        Paged(swipe: swipe, key: key, next: after.first, back: before, leaves: [.done, .archive].contains(going), ready: opened) {
+            page.environment(\.imageMac, row?.device)
         }
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { swipe.width = $0 }
         // What's next is in the menu and a swipe away; on a keyboard, ⌘] as on the Mac.
         .background {
             if let next = after.first {
@@ -168,20 +165,7 @@ struct SessionView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                // Sliding to another, it names that one: its screen takes a moment to draw once
-                // the slide is over.
-                let titled = swipe.to.flatMap { to in store.sessions.first { $0.key == to.key } } ?? row
-                VStack(spacing: 0) {
-                    HStack(spacing: 6) {
-                        if let emblem = titled?.emblem {
-                            EmblemView(emblem: emblem, size: 18)
-                        }
-                        Text(titled?.title ?? "Session").font(.headline).lineLimit(1)
-                    }
-                    if let titled {
-                        Text("\(Names.short(titled.deviceName)) · \(titled.project)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                }
+                TitleBlock(key: swipe.to?.key ?? key)
             }
             ToolbarItem(placement: .topBarTrailing) {
                 ImproveButton()
@@ -208,9 +192,6 @@ struct SessionView: View {
         .onChange(of: row?.lastActivity) { _, _ in Task { await refresh() } }
         // A message its Mac took: read for it at once.
         .task(id: awaitingRecord) { await followSent() }
-        // Once it's open, the sessions a swipe goes to, read ahead so they slide in as they are:
-        // again as what's next changes (one answered elsewhere, a new one waiting) or moves.
-        .task(id: besideReads) { await readBeside() }
         // Opened from the feeds saved before its Mac connected, or back after it went away: read
         // what it couldn't.
         .onChange(of: online) { _, now in
@@ -318,7 +299,7 @@ struct SessionView: View {
             .scrollDismissesKeyboard(.immediately)
             .accessibilityIdentifier("conversation")
             .simultaneousGesture(TapGesture().onEnded { typing = false })
-            .gesture(QueueSwipe(back: before != nil, moved: swiping, ended: swiped))
+            .gesture(QueueSwipe(back: before != nil, moved: { swipe.moved($0) }, ended: swiped))
             .onScrollGeometryChange(for: Bool.self) { geo in
                 geo.atEnd
             } action: { _, now in
@@ -463,7 +444,7 @@ struct SessionView: View {
             }
             // Not while you write here: the box needs the room, and what's next waits.
             if let next = after.first, draft.isEmpty && attached.isEmpty {
-                GoOnBar(next: next, more: after.count - 1, showDevice: store.devices.count > 1, showProject: project.isEmpty, going: going, pick: $swipeOn) { goOn(to: next) }
+                GoOnBar(next: next, more: after.count - 1, showDevice: store.devices.count > 1, showProject: project.isEmpty, going: going, picked: swipeOn.label, choices: { SwipeOn.picker($swipeOn) }) { goOn(to: next) }
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
             if let suggestions = row?.suggestions {
@@ -973,71 +954,16 @@ struct SessionView: View {
         }
     }
 
-    /// The sessions a swipe goes to: the next to the left, the one you came from to the right; once
-    /// it's sliding, the one it slides to on its side. The other stays as it was: one going away as
-    /// the slide began moved the screen's own slide onto the one coming in.
-    private var nextBeside: String? { swipe.to.flatMap { $0.back ? nil : $0.key } ?? after.first?.key }
-    private var backBeside: String? { swipe.to.flatMap { $0.back ? $0.key : nil } ?? before?.key }
-
-    /// What `readBeside` reads for: the sessions beside this one, and when the next last moved.
-    private var besideReads: String {
-        guard opened else { return "" }
-        return "\(after.first.map { "\($0.key)@\($0.lastActivity)" } ?? "")|\(before?.key ?? "")"
-    }
-
-    /// The sessions beside this one, a screen to either side, where a swipe brings them in from.
-    @ViewBuilder
-    private var besideViews: some View {
-        let next = nextBeside, back = backBeside
-        ZStack {
-            if let next {
-                SessionGlance(key: next, kept: beside[next] ?? Kept(), said: swipe.to?.key == next ? store.outcome : nil, from: (key, leaves: [.done, .archive].contains(going)))
-                    .modifier(FollowsSwipe(swipe: swipe, next: true, back: back != nil, at: 1))
-            }
-            if let back {
-                SessionGlance(key: back, kept: beside[back] ?? Kept(), said: swipe.to?.key == back ? store.outcome : nil)
-                    .modifier(FollowsSwipe(swipe: swipe, next: next != nil, back: true, at: -1))
-            }
-        }
-    }
-
-    /// Reads what the phone keeps of the sessions beside this one: the next from its Mac first,
-    /// when it hasn't been lately, so it slides in as it is.
-    private func readBeside() async {
-        guard opened else { return }
-        var read: [String: Kept] = [:]
-        if let back = before?.key { read[back] = await store.kept(back, read: false) }
-        if let next = after.first?.key { read[next] = await store.kept(next, read: true) }
-        // Not while it slides: the one sliding in stays as it was drawn.
-        guard swipe.to == nil, !Task.isCancelled else { return }
-        beside = read
-    }
-
-    /// The finger moved, this far from where the swipe began.
-    private func swiping(_ distance: CGFloat) {
-        guard swipe.to == nil else { return }
-        swipe.showing = true
-        swipe.distance = distance
-    }
-
-    /// A swipe let go: far or fast enough toward a session, it slides there; otherwise the screen
-    /// settles back. A flick back the way it came settles it, however far it went.
+    /// A swipe let go: far or fast enough toward what's that way, it slides there; otherwise the
+    /// screen settles back.
     private func swiped(_ distance: CGFloat, _ speed: CGFloat) {
-        guard swipe.to == nil else { return }
         let target = distance < 0 ? after.first : distance > 0 ? before : nil
-        let away = abs(speed) > 300 && (speed < 0) != (distance < 0)
-        let far = !away && (abs(distance) >= swipe.width * 0.3 || (abs(distance) > 30 && abs(speed) > 500))
-        guard far, let target else {
-            withAnimation(swipe.motion(to: 0, speed: speed)) { swipe.distance = 0 } completion: { [swipe] in
-                if swipe.distance == 0 && swipe.to == nil { swipe.showing = false }
-            }
-            return
-        }
+        guard swipe.letGo(distance, speed, toward: target != nil), let target else { return }
         if distance < 0 {
             goOn(to: target, speed: speed)
         } else {
             // Back is a step by hand: this one isn't passed over for it. The trail is cut back once
-            // it's there, so the session beside it stays put while it slides.
+            // it's there, so what's beside it stays put while it slides.
             store.outcome = acted ? said : nil
             slide(to: target.key, back: true, speed: speed) { store.back(to: target.key) }
         }
@@ -1051,27 +977,11 @@ struct SessionView: View {
         // too, but only once its Mac has answered, which a quick swipe goes on before; one that
         // asks you something stays as it is while it's open, so going back to the list leaves it.
         if seen && row?.seenable == true && !markedUnread { store.markSeen(key) }
-        store.slidIn = (target, Opening(kept: beside[target] ?? Kept(), said: store.outcome))
-        // Gone on to by a button with Reduce Motion on, it's shown in this one's place at once.
-        guard swipe.width > 0, !reduceMotion || swipe.distance != 0 else {
-            then()
-            go(target)
-            return
+        // A PR's page opens with what was last read of it.
+        if !target.hasPrefix(PrView.prefix) {
+            store.slidIn = (target, Opening(kept: swipe.kept[target] ?? Kept(), said: store.outcome))
         }
-        let end = back ? swipe.width : -swipe.width
-        // All in one change: drawn between a change to where it slides and the slide itself, the
-        // screen stayed where the finger left it while the session beside it slid over it.
-        withAnimation(swipe.motion(to: end, speed: speed)) {
-            swipe.to = Slide(key: target, back: back)
-            swipe.showing = true
-            swipe.distance = end
-        } completion: {
-            then()
-            // Already where it slid to: it takes the slide's place without moving again.
-            var still = Transaction()
-            still.disablesAnimations = true
-            withTransaction(still) { go(target) }
-        }
+        swipe.slide(to: target, back: back, speed: speed, reduceMotion: reduceMotion, go: go, then: then)
         typing = false
     }
 
@@ -1229,7 +1139,7 @@ struct SessionView: View {
     /// (`Store.doneLater`, `Store.archiveLater`). Done marks it seen on its Mac, so the slide
     /// doesn't: one that work under way held stays as it was, rather than leaving Your turn
     /// though it wasn't done.
-    private func goOn(to next: SessionRow, speed: CGFloat = 0) {
+    private func goOn(to next: Waiting, speed: CGFloat = 0) {
         guard swipe.to == nil else { return }
         switch going {
         case .done:
@@ -1240,7 +1150,7 @@ struct SessionView: View {
             store.dealtWith(key)
             store.archiveLater(key, title: title)
             moveOn(to: next, outcome: "Archived “\(title)”.", speed: speed)
-        case .seen, .on, .working, .later:
+        case .seen, .on, .working, .later, .snooze:
             moveOn(to: next, speed: speed)
         }
     }
@@ -1255,7 +1165,7 @@ struct SessionView: View {
 
     /// Shows `next` in this one's place, saying there how this one went once you've acted here.
     /// Left without a reply while it needs you, this one comes round again after the rest.
-    private func moveOn(to next: SessionRow, outcome: String? = nil, speed: CGFloat = 0, seen: Bool = true) {
+    private func moveOn(to next: Waiting, outcome: String? = nil, speed: CGFloat = 0, seen: Bool = true) {
         guard swipe.to == nil else { return }
         if !acted && outcome == nil { store.passedOver(key) }
         if next.key != key { store.trail.append(key) }
@@ -2296,76 +2206,17 @@ struct Opening {
     let said: String?
 }
 
-/// A swipe across a session's screen, kept apart from what's drawn: it changes every frame, and
-/// only where the screen and the sessions beside it sit should redraw, not the conversation.
-@MainActor @Observable private final class Swipe {
-    /// How far it's gone, negative to the left.
-    var distance: CGFloat = 0
-    /// The sessions beside this one are drawn: a swipe is under way, or settling back. Otherwise
-    /// they're left out, so iOS's own slide to and from the list doesn't show them.
-    var showing = false
-    /// How wide the screen is: sliding to another goes this far.
-    var width: CGFloat = 0
-    /// The session it slides to, once let go far enough or gone on to by a button.
-    var to: Slide?
-
-    /// Where the screen sits for the swipe: with the finger toward a session beside it; where
-    /// there's none, held back more the further it goes, as a scroll view is past its end.
-    func offset(next: Bool, back: Bool) -> CGFloat {
-        if to != nil || (distance < 0 ? next : back) { return distance }
-        guard width > 0 else { return 0 }
-        let held = (1 - 1 / (abs(distance) * 0.55 / width + 1)) * width
-        return distance < 0 ? -held : held
-    }
-
-    /// A curve to `end` that carries on at the speed the finger let go at and eases to a stop,
-    /// ending as it looks to end: the session's own screen takes the slide's place then, where a
-    /// spring said it was done a quarter of a second after it stopped moving.
-    func motion(to end: CGFloat, speed: CGFloat) -> Animation {
-        let left = end - distance
-        guard abs(left) >= 1 else { return .easeOut(duration: 0.1) }
-        // Quicker for a flick, never slower than a third of a second.
-        let duration = min(max(abs(left) / max(abs(speed), 1) * 2, 0.18), 0.3)
-        // How steeply it starts: the finger's speed toward the end, as a share of the move over
-        // its duration; let go still, or from a button, it starts briskly anyway.
-        let slope = max(max(speed / left, 0) * duration, 1.6)
-        return .timingCurve(0.25, min(0.25 * slope, 1), 0.3, 1, duration: duration)
-    }
-}
-
-/// Where a swipe let go goes: the next, or back to the session you came from.
-private struct Slide: Equatable {
-    let key: String
-    let back: Bool
-}
-
-/// Puts a screen where a swipe has it: the session's own at 0, the ones beside it a screen to the
-/// right (1) or the left (-1), drawn only while a swipe shows them.
-private struct FollowsSwipe: ViewModifier {
-    let swipe: Swipe
-    /// There's a session that way to go to.
-    let next: Bool
-    let back: Bool
-    var at: CGFloat = 0
-
-    func body(content: Content) -> some View {
-        content
-            .offset(x: swipe.offset(next: next, back: back) + at * swipe.width)
-            .opacity(at == 0 || swipe.showing ? 1 : 0)
-    }
-}
-
 /// A session beside the one shown, as a swipe brings it in: what the phone keeps of its
 /// conversation, at its newest, and its reply box as its own screen first draws it. Drawn as that
 /// screen draws them, so the screen takes its place without a change.
-private struct SessionGlance: View {
+struct SessionGlance: View {
     let key: String
     let kept: Kept
     /// How the session gone on from went, as this one's screen will say it.
     let said: String?
-    /// The session a swipe goes on from to this one, and whether going on takes it out of what
-    /// waits on you (marked done or archived) or sends it round after the rest (marked seen, it
-    /// stays there until its Mac's feed has it seen): nil going back to one.
+    /// The page a swipe goes on from to this one, and whether going on takes it out of what waits
+    /// on you (marked done or archived) or sends it round after the rest (marked seen, it stays
+    /// there until its Mac's feed has it seen): nil going back to one.
     var from: (key: String, leaves: Bool)?
     @Environment(Store.self) private var store
     @AppStorage("project") private var project = ""
@@ -2379,14 +2230,8 @@ private struct SessionGlance: View {
     private var rules: ReplyRules {
         ReplyRules(row: row, way: kept.way, choices: row.flatMap { store.choices[$0.device] }, resumePlace: nil)
     }
-    /// What waits on you after it, as its screen will have it once the swipe has gone on: the
-    /// session gone on from left out, or after the rest.
-    private var after: [SessionRow] {
-        let queue = store.queue(after: key, project: project)
-        guard let from else { return queue }
-        let rest = queue.filter { $0.key != from.key }
-        return from.leaves ? rest : rest + queue.filter { $0.key == from.key }
-    }
+    /// What waits on you after it, as its screen will have it once the swipe has gone on.
+    private var after: [Waiting] { waitingAfter(key, from: from, store: store, project: project) }
 
     var body: some View {
         glance.environment(\.imageMac, row?.device)
@@ -2480,7 +2325,7 @@ private struct SessionGlance: View {
                 Text(said).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
             }
             if let next = after.first, !open {
-                GoOnBar(next: next, more: after.count - 1, showDevice: store.devices.count > 1, showProject: project.isEmpty, going: Going.of(swipeOn, row: row, pending: pending, acted: false), pick: .constant(swipeOn)) {}
+                GoOnBar(next: next, more: after.count - 1, showDevice: store.devices.count > 1, showProject: project.isEmpty, going: Going.of(swipeOn, row: row, pending: pending, acted: false), picked: swipeOn.label, choices: { EmptyView() }) {}
             }
             if let suggestions = row?.suggestions {
                 SuggestedRepliesView(suggestions: suggestions, blocked: canAct && pending?.cannot == nil ? nil : why ?? "It waits on you where it runs: answer that there first") { _ in } edit: { _ in } dismiss: {}

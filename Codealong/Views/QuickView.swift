@@ -144,10 +144,12 @@ struct QuickView: View {
     @ViewBuilder
     private func destination(_ key: String) -> some View {
         // A view of its own per session: going from one to another by a link keeps nothing. Next
-        // puts the next session in this one's place, so Back is still this list. One a swipe slid
-        // in starts as the swipe drew it. A PR's is `pr:` and its key.
+        // puts what's next, a session or a PR, in this one's place, so Back is still this list.
+        // A session a swipe slid in starts as the swipe drew it, and a PR's page with what was
+        // last read of it. A PR's is `pr:` and its key.
         if key.hasPrefix(PrView.prefix) {
-            PrView(key: String(key.dropFirst(PrView.prefix.count))).id(key)
+            let pr = String(key.dropFirst(PrView.prefix.count))
+            PrView(key: pr, kept: store.prDetails[pr], go: { next in path = [next] }).id(key)
         } else {
             SessionView(key: key, opening: store.slidIn.flatMap { $0.key == key ? $0.opening : nil }, go: { next in path = [next] }).id(key)
         }

@@ -23,6 +23,11 @@ enum Snooze {
         ]
     }
 
+    /// A choice as a phrase to go after a verb: "for 1 hour", "until tomorrow 9 AM".
+    static func phrase(_ choice: Choice) -> String {
+        choice.label.prefix(1).lowercased() + choice.label.dropFirst()
+    }
+
     /// When a snooze ends, as a clock says it (snooze.ts `untilWords`): `3:40 PM` today,
     /// `tomorrow 9 AM`, `Fri 9 AM` within the week, `Oct 3, 9 AM` beyond.
     static func words(_ at: Date, now: Date = .now) -> String {
