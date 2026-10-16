@@ -2,7 +2,8 @@ import SwiftUI
 
 /// What going on to the next session that waits on you does to the one you go on from: a swipe
 /// across the conversation, Next over the box, Go to next in the menu and ⌘] all do it. You pick it
-/// over the reply box, and it's kept for every session after.
+/// over the reply box for the session you're on: each starts at Mark as seen, what going on did
+/// before there was a choice, so marking one done doesn't carry over to the next.
 enum SwipeOn: String, CaseIterable, Identifiable {
     case seen, done, archive
 
@@ -36,9 +37,10 @@ enum SwipeOn: String, CaseIterable, Identifiable {
     }
 }
 
-/// What going on from a PR waiting on your review does to it, picked over its review box and kept
-/// for every PR after: it comes round again after the rest, as the Mac's ⌘E skips it, or your
-/// review of it is snoozed, as its Snooze review does, for a time the menus offer (`Snooze`).
+/// What going on from a PR waiting on your review does to it, picked over its review box for the
+/// PR you're on, each starting at the first: it comes round again after the rest, as the Mac's ⌘E
+/// skips it, or your review of it is snoozed, as its Snooze review does, for a time the menus
+/// offer (`Snooze`).
 enum ReviewSwipeOn: String, CaseIterable, Identifiable {
     case later, quarter, hour, hours, morning
 
@@ -148,7 +150,7 @@ enum Going: Equatable {
 
 /// Over a session's reply box or a PR's review box while something else waits on you: what going
 /// on to it does to this one, and what it goes to. The first line says what a swipe does here, and
-/// its menu picks what going on does from then on (`SwipeOn`, `ReviewSwipeOn`); under it, the
+/// its menu picks what going on does to this one (`SwipeOn`, `ReviewSwipeOn`); under it, the
 /// next session or PR, which a tap goes on to as the swipe does.
 struct GoOnBar<Choices: View>: View {
     let next: Waiting

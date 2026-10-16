@@ -8,10 +8,9 @@ import SwiftUI
 /// on your review among the sessions, in the Mac's order (`Store.queue`): while something else
 /// waits on you, a bar over the box names it and says what going on to it does to this one, and a
 /// swipe or a tap on it goes on, to a PR's page as to a session's screen; holding Send sends and
-/// goes on at once. What going
-/// on does is picked from the bar's menu, for every session after (`SwipeOn`): marking it seen, so
-/// a turn that ended leaves Your turn and a reply that asks you something leaves Needs you, as it
-/// always did, or marking it done, or archiving it. One you replied to here, or one at work, is
+/// goes on at once. Going on marks it seen, so a turn that ended leaves Your turn and a reply that
+/// asks you something leaves Needs you, as it always did, unless the bar's menu picks marking it
+/// done or archiving it instead, for this session only (`SwipeOn`). One you replied to here, or one at work, is
 /// left as it is, and one skipped while it waits on a call to allow comes round again after the
 /// rest (`Going`).
 ///
@@ -48,8 +47,9 @@ struct SessionView: View {
     @Environment(Store.self) private var store
     /// The inbox's project: what's next stays in it.
     @AppStorage("project") private var project = ""
-    /// What going on to the next does to this one, as you last picked it over the box.
-    @AppStorage("swipe.on") private var swipeOn = SwipeOn.seen
+    /// What going on to the next does to this one, as picked over the box: for this session only,
+    /// so each starts at marking it seen.
+    @State private var swipeOn = SwipeOn.seen
     /// You replied or answered here: going on leaves it to the turn you gave it.
     @State private var acted = false
     @Environment(\.dismiss) private var dismiss
@@ -2220,7 +2220,6 @@ struct SessionGlance: View {
     var from: (key: String, leaves: Bool)?
     @Environment(Store.self) private var store
     @AppStorage("project") private var project = ""
-    @AppStorage("swipe.on") private var swipeOn = SwipeOn.seen
     @ScaledMetric(relativeTo: .body) private var sendSize: CGFloat = 32
     /// More than a screen of the conversation's end: what's above it is off the top.
     private let shown = 40
@@ -2325,7 +2324,7 @@ struct SessionGlance: View {
                 Text(said).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
             }
             if let next = after.first, !open {
-                GoOnBar(next: next, more: after.count - 1, showDevice: store.devices.count > 1, showProject: project.isEmpty, going: Going.of(swipeOn, row: row, pending: pending, acted: false), picked: swipeOn.label, choices: { EmptyView() }) {}
+                GoOnBar(next: next, more: after.count - 1, showDevice: store.devices.count > 1, showProject: project.isEmpty, going: Going.of(.seen, row: row, pending: pending, acted: false), picked: SwipeOn.seen.label, choices: { EmptyView() }) {}
             }
             if let suggestions = row?.suggestions {
                 SuggestedRepliesView(suggestions: suggestions, blocked: canAct && pending?.cannot == nil ? nil : why ?? "It waits on you where it runs: answer that there first") { _ in } edit: { _ in } dismiss: {}

@@ -12,7 +12,7 @@ import SwiftUI
 /// and says what going on to it does to this PR, and a swipe across the page, or a tap on the bar,
 /// goes on; a swipe the other way goes back to what you came from. Going on from one waiting on
 /// your review skips it, so it comes round again after the rest, as the Mac's ⌘E does, or snoozes
-/// your review of it, as you pick from the bar's menu (`ReviewSwipeOn`). One you reviewed here
+/// your review of it, as the bar's menu picks for this PR (`ReviewSwipeOn`). One you reviewed here
 /// goes on as it is.
 struct PrView: View {
     /// What a PR's place in the list's path starts with, before its key.
@@ -26,8 +26,9 @@ struct PrView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The inbox's project: what's next stays in it.
     @AppStorage("project") private var project = ""
-    /// What going on to the next does to this PR, as you last picked it over the box.
-    @AppStorage("swipe.review") private var reviewOn = ReviewSwipeOn.later
+    /// What going on to the next does to this PR, as picked over the box: for this PR only, so
+    /// each starts at coming back to it later.
+    @State private var reviewOn = ReviewSwipeOn.later
     @State private var detail: PrDetail?
     @State private var problem: String?
     @State private var loading = false
@@ -321,7 +322,6 @@ struct PrGlance: View {
     var from: (key: String, leaves: Bool)?
     @Environment(Store.self) private var store
     @AppStorage("project") private var project = ""
-    @AppStorage("swipe.review") private var reviewOn = ReviewSwipeOn.later
 
     var body: some View {
         if let pr = store.pr(key) {
@@ -339,7 +339,7 @@ struct PrGlance: View {
                 VStack(spacing: 8) {
                     let after = waitingAfter(PrView.prefix + key, from: from, store: store, project: project)
                     if let next = after.first, (store.drafts[PrView.prefix + key] ?? "").isEmpty {
-                        GoOnBar(next: next, more: after.count - 1, showDevice: store.devices.count > 1, showProject: project.isEmpty, going: Going.of(reviewOn, pr: pr, acted: false), picked: reviewOn.label, choices: { EmptyView() }) {}
+                        GoOnBar(next: next, more: after.count - 1, showDevice: store.devices.count > 1, showProject: project.isEmpty, going: Going.of(.later, pr: pr, acted: false), picked: ReviewSwipeOn.later.label, choices: { EmptyView() }) {}
                             .padding(.horizontal)
                     }
                     ReviewBoxView(pr: pr, draft: detail?.draft, reviews: detail?.reviews ?? [], read: detail != nil, whyNot: whyNot, said: said) { _ in }
