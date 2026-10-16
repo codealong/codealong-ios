@@ -1129,7 +1129,7 @@ struct SessionView: View {
     }
 
     /// What going on to the next does to this one, as the bar over the box says it.
-    private var going: Going { Going.of(swipeOn, row: row, pending: pending, acted: acted) }
+    private var going: Going { Going.of(swipeOn, row: row, pending: pending, acted: acted || !(store.outgoing[key] ?? []).isEmpty) }
 
     /// Goes on to `next` as a swipe does, doing to this one what the bar says. Marked seen as it
     /// slides, as it always was (`slide`), it's passed over until its Mac's feed has it seen, so
@@ -2330,7 +2330,7 @@ struct SessionGlance: View {
                 Text(said).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
             }
             if let next = after.first, !open {
-                GoOnBar(next: next, more: after.count - 1, showDevice: store.devices.count > 1, showProject: project.isEmpty, going: Going.of(.seen, row: row, pending: pending, acted: false), picked: SwipeOn.seen.label, choices: { EmptyView() }) {}
+                GoOnBar(next: next, more: after.count - 1, showDevice: store.devices.count > 1, showProject: project.isEmpty, going: Going.of(.seen, row: row, pending: pending, acted: !(store.outgoing[key] ?? []).isEmpty), picked: SwipeOn.seen.label, choices: { EmptyView() }) {}
             }
             if let suggestions = row?.suggestions {
                 SuggestedRepliesView(suggestions: suggestions, blocked: canAct && pending?.cannot == nil ? nil : why ?? "It waits on you where it runs: answer that there first") { _ in } edit: { _ in } dismiss: {}

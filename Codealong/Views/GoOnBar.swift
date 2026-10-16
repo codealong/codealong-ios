@@ -91,7 +91,7 @@ private func snoozes<Pick: Hashable>(_ pick: Binding<Pick>, _ as: @escaping (Sno
 /// answered here is left to the turn you gave it, one at work is left to its work (Mark as done
 /// would only be held by it), and one that waits on you to allow a call or answer its questions
 /// comes round again after the rest, as it did before there was a choice; a snooze picked for one
-/// is done whatever it's at. A PR you reviewed here, or one that doesn't wait on your review, is
+/// is done whatever it waits on. A PR you reviewed here, or one that doesn't wait on your review, is
 /// left as it is.
 enum Going: Equatable {
     case seen, done, archive
@@ -105,15 +105,18 @@ enum Going: Equatable {
     /// It's snoozed, a session or your review of a PR, for as long as this says ("for 1 hour").
     case snooze(String)
 
+    /// `acted`: you replied or answered here, or a message to it is still on its way. Going on
+    /// leaves it to that turn, whatever was picked: a snooze would be ended by the prompt as it
+    /// lands in the session's record, as its Mac has it (board.rs `apply_snooze`).
     static func of(_ pick: SwipeOn, row: SessionRow?, pending: Pending?, acted: Bool) -> Going {
         guard let row else { return .on }
         // Before its Mac has said what it waits on, its status says it waits on something.
         let waits = pending != nil || (row.status == .needs && !row.seenable)
         switch pick {
-        // A snooze picked for this one is done whatever it's at: it puts nothing off for good,
-        // and its Mac snoozes a session at any stage, as its own Snooze does.
-        case .snooze(let time): return .snooze(Snooze.phrase(time.choice()))
         case _ where acted: return .on
+        // A snooze picked for this one is done whatever it waits on: it puts nothing off for
+        // good, and its Mac snoozes a session at any stage, as its own Snooze does.
+        case .snooze(let time): return .snooze(Snooze.phrase(time.choice()))
         case _ where waits: return .later
         case .seen: return row.seenable ? .seen : .on
         case .done: return row.status == .working ? .working : .done

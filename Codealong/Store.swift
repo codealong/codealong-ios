@@ -606,7 +606,8 @@ final class Store {
     }
 
     /// Snoozes a session a swipe went on from, without holding up the swipe, as its Snooze does:
-    /// off Needs you and Your turn everywhere until `until`. It goes after the rest until its Mac
+    /// off Needs you and Your turn everywhere until `until`. Not one with a message on its way,
+    /// whose prompt would end the snooze as it lands (`Going.of`). It goes after the rest until its Mac
     /// has it snoozed, and isn't kept as dealt with, so it's back when the snooze ends, as the
     /// Mac's queue has it; one its Mac didn't snooze comes round again, saying why.
     func snoozeLater(_ key: String, title: String, until: Date) {
