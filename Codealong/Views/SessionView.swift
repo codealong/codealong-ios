@@ -10,7 +10,7 @@ import SwiftUI
 /// swipe or a tap on it goes on, to a PR's page as to a session's screen; holding Send sends and
 /// goes on at once. Going on marks it seen, so a turn that ended leaves Your turn and a reply that
 /// asks you something leaves Needs you, as it always did, unless the bar's menu picks marking it
-/// done or archiving it instead, for this session only (`SwipeOn`). One you replied to here, or one at work, is
+/// done, archiving it or snoozing it instead, for this session only (`SwipeOn`). One you replied to here, or one at work, is
 /// left as it is, and one skipped while it waits on a call to allow comes round again after the
 /// rest (`Going`).
 ///
@@ -1150,7 +1150,13 @@ struct SessionView: View {
             store.dealtWith(key)
             store.archiveLater(key, title: title)
             moveOn(to: next, outcome: "Archived “\(title)”.", speed: speed)
-        case .seen, .on, .working, .later, .snooze:
+        case .snooze:
+            guard case .snooze(let time) = swipeOn else { return moveOn(to: next, speed: speed) }
+            let until = time.choice().until
+            store.snoozeLater(key, title: title, until: until)
+            // Left as it was: it comes back as Your turn when the snooze ends.
+            moveOn(to: next, outcome: "Snoozed “\(title)” until \(Snooze.words(until)).", speed: speed, seen: false)
+        case .seen, .on, .working, .later:
             moveOn(to: next, speed: speed)
         }
     }

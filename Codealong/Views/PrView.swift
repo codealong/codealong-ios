@@ -237,7 +237,7 @@ struct PrView: View {
     /// as the Mac's queue has it. One its Mac didn't snooze says why (`Store.snoozeLater`).
     private func goOn(to next: Waiting, speed: CGFloat = 0) {
         guard swipe.to == nil else { return }
-        if case .snooze = going, let pr, let snooze = reviewOn.snooze() {
+        if case .snooze = going, let pr, let snooze = reviewOn.snoozeChoice() {
             store.passedOver(page)
             store.snoozeLater(pr, until: snooze.until)
             moveOn(to: next, outcome: "Snoozed your review of #\(pr.number) until \(Snooze.words(snooze.until)).", speed: speed)

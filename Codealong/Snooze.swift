@@ -23,6 +23,24 @@ enum Snooze {
         ]
     }
 
+    /// Which of the times offered a snooze runs to, kept as which it is rather than when, so a
+    /// pick made now is worked out when it's used.
+    enum For: CaseIterable, Hashable {
+        case quarter, hour, hours, morning
+
+        /// It as the menus offer it now.
+        func choice(now: Date = .now) -> Choice {
+            // In the order `choices` offers them.
+            let offered = Snooze.choices(now: now)
+            switch self {
+            case .quarter: return offered[0]
+            case .hour: return offered[1]
+            case .hours: return offered[2]
+            case .morning: return offered[3]
+            }
+        }
+    }
+
     /// A choice as a phrase to go after a verb: "for 1 hour", "until tomorrow 9 AM".
     static func phrase(_ choice: Choice) -> String {
         choice.label.prefix(1).lowercased() + choice.label.dropFirst()

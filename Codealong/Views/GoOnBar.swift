@@ -3,17 +3,18 @@ import SwiftUI
 /// What going on to the next session that waits on you does to the one you go on from: a swipe
 /// across the conversation, Next over the box, Go to next in the menu and ⌘] all do it. You pick it
 /// over the reply box for the session you're on: each starts at Mark as seen, what going on did
-/// before there was a choice, so marking one done doesn't carry over to the next.
-enum SwipeOn: String, CaseIterable, Identifiable {
+/// before there was a choice, so marking one done or snoozing one doesn't carry over to the next.
+/// A snooze runs for a time the menus offer, as the session's own Snooze does (`Snooze`).
+enum SwipeOn: Hashable {
     case seen, done, archive
-
-    var id: Self { self }
+    case snooze(Snooze.For)
 
     var label: String {
         switch self {
         case .seen: "Mark as seen"
         case .done: "Mark as done"
         case .archive: "Archive"
+        case .snooze(let time): "Snooze \(Snooze.phrase(time.choice()))"
         }
     }
 
@@ -23,17 +24,21 @@ enum SwipeOn: String, CaseIterable, Identifiable {
         case .seen: "eye"
         case .done: "checkmark.circle"
         case .archive: "archivebox"
+        case .snooze: "moon.zzz"
         }
     }
 
-    /// The bar's menu on a session's screen.
+    /// The bar's menu on a session's screen: what to mark it, then its times to snooze to, as the
+    /// session's own menu has them.
+    @ViewBuilder
     static func picker(_ pick: Binding<SwipeOn>) -> some View {
         Picker("When you go on to the next", selection: pick) {
-            ForEach(allCases) { c in
+            ForEach([SwipeOn.seen, .done, .archive], id: \.self) { c in
                 Label(c.label, systemImage: c.symbol).tag(c)
             }
         }
         .pickerStyle(.inline)
+        snoozes(pick) { SwipeOn.snooze($0) }
     }
 }
 
@@ -41,35 +46,40 @@ enum SwipeOn: String, CaseIterable, Identifiable {
 /// PR you're on, each starting at the first: it comes round again after the rest, as the Mac's ⌘E
 /// skips it, or your review of it is snoozed, as its Snooze review does, for a time the menus
 /// offer (`Snooze`).
-enum ReviewSwipeOn: String, CaseIterable, Identifiable {
-    case later, quarter, hour, hours, morning
-
-    var id: Self { self }
+enum ReviewSwipeOn: Hashable {
+    case later
+    case snooze(Snooze.For)
 
     /// The snooze it is, as the menus offer it now; nil for coming back to it later.
-    func snooze(now: Date = .now) -> Snooze.Choice? {
-        // In the order `Snooze.choices` offers them.
-        let offered = Snooze.choices(now: now)
-        switch self {
-        case .later: return nil
-        case .quarter: return offered[0]
-        case .hour: return offered[1]
-        case .hours: return offered[2]
-        case .morning: return offered[3]
-        }
+    func snoozeChoice(now: Date = .now) -> Snooze.Choice? {
+        if case .snooze(let time) = self { return time.choice(now: now) }
+        return nil
     }
 
     var label: String {
-        snooze().map { "Snooze \(Snooze.phrase($0))" } ?? "Come back to it later"
+        snoozeChoice().map { "Snooze \(Snooze.phrase($0))" } ?? "Come back to it later"
     }
 
     var symbol: String { self == .later ? Going.later.symbol : "moon.zzz" }
 
     /// The bar's menu on a PR's page.
+    @ViewBuilder
     static func picker(_ pick: Binding<ReviewSwipeOn>) -> some View {
         Picker("When you go on to the next", selection: pick) {
-            ForEach(allCases) { c in
-                Label(c.label, systemImage: c.symbol).tag(c)
+            Label(ReviewSwipeOn.later.label, systemImage: ReviewSwipeOn.later.symbol).tag(ReviewSwipeOn.later)
+        }
+        .pickerStyle(.inline)
+        snoozes(pick) { ReviewSwipeOn.snooze($0) }
+    }
+}
+
+/// Snooze in the bar's menu, opening on the times a snooze can run to, as the Snooze in a session's
+/// or a PR's own menu does; the one picked is checked.
+private func snoozes<Pick: Hashable>(_ pick: Binding<Pick>, _ as: @escaping (Snooze.For) -> Pick) -> some View {
+    Menu("Snooze", systemImage: "moon.zzz") {
+        Picker("Snooze", selection: pick) {
+            ForEach(Snooze.For.allCases, id: \.self) { time in
+                Text(time.choice().label).tag(`as`(time))
             }
         }
         .pickerStyle(.inline)
@@ -80,8 +90,9 @@ enum ReviewSwipeOn: String, CaseIterable, Identifiable {
 /// screen, `ReviewSwipeOn` on a PR's page), where that applies. A session you've replied to or
 /// answered here is left to the turn you gave it, one at work is left to its work (Mark as done
 /// would only be held by it), and one that waits on you to allow a call or answer its questions
-/// comes round again after the rest, as it did before there was a choice. A PR you reviewed here,
-/// or one that doesn't wait on your review, is left as it is.
+/// comes round again after the rest, as it did before there was a choice; a snooze picked for one
+/// is done whatever it's at. A PR you reviewed here, or one that doesn't wait on your review, is
+/// left as it is.
 enum Going: Equatable {
     case seen, done, archive
     /// Nothing more is done to it: you've replied here, or there's nothing in it to mark seen.
@@ -91,14 +102,19 @@ enum Going: Equatable {
     /// It waits on an answer from you, or a PR on your review, so it comes round again after the
     /// rest.
     case later
-    /// Your review of a PR is snoozed, for as long as this says ("for 1 hour").
+    /// It's snoozed, a session or your review of a PR, for as long as this says ("for 1 hour").
     case snooze(String)
 
     static func of(_ pick: SwipeOn, row: SessionRow?, pending: Pending?, acted: Bool) -> Going {
-        guard let row, !acted else { return .on }
+        guard let row else { return .on }
         // Before its Mac has said what it waits on, its status says it waits on something.
-        if pending != nil || (row.status == .needs && !row.seenable) { return .later }
+        let waits = pending != nil || (row.status == .needs && !row.seenable)
         switch pick {
+        // A snooze picked for this one is done whatever it's at: it puts nothing off for good,
+        // and its Mac snoozes a session at any stage, as its own Snooze does.
+        case .snooze(let time): return .snooze(Snooze.phrase(time.choice()))
+        case _ where acted: return .on
+        case _ where waits: return .later
         case .seen: return row.seenable ? .seen : .on
         case .done: return row.status == .working ? .working : .done
         case .archive: return row.status == .working ? .working : .archive
@@ -107,7 +123,7 @@ enum Going: Equatable {
 
     static func of(_ pick: ReviewSwipeOn, pr: PrRow?, acted: Bool) -> Going {
         guard let pr, pr.waits, !acted else { return .on }
-        return pick.snooze().map { .snooze(Snooze.phrase($0)) } ?? .later
+        return pick.snoozeChoice().map { .snooze(Snooze.phrase($0)) } ?? .later
     }
 
     /// What the bar says it does.
@@ -143,7 +159,7 @@ enum Going: Equatable {
         case .on: nil
         case .working: "Leaves this one to its work"
         case .later: "This one comes round again after the rest"
-        case .snooze(let phrase): "Snoozes your review of this one \(phrase)"
+        case .snooze(let phrase): "Snoozes this one \(phrase)"
         }
     }
 }
