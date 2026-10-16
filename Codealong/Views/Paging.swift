@@ -120,7 +120,8 @@ struct TitleBlock: View {
     var body: some View {
         switch store.waiting(key) {
         case .pr(let pr):
-            Text("#\(pr.number)").font(.headline)
+            // Verbatim: a localized number would be written #1,244.
+            Text(verbatim: "#\(pr.number)").font(.headline)
         case .session(let row):
             VStack(spacing: 0) {
                 HStack(spacing: 6) {
