@@ -47,7 +47,9 @@ worktree by worktree (tap a worktree to fold it away, or its ✎ to start a sess
 *Recent*, the last active first. The pills under the box narrow the list to one project; a
 project that lives on two Macs is one project here. Each session has the emblem its Mac gave it
 beside its title, a small icon for what it works on in two colors, so you know it at a glance as
-you do there.
+you do there. While the app is open, a short sound says when a session on any of your Macs starts
+to wait on you, as the Mac's do: a pop when it needs you, a lighter tink when its turn ends (turn
+either off in the Macs sheet; neither plays with the phone silenced).
 
 **Read any conversation.** Each session's conversation shows as it does on the Mac: replies as
 formatted text with tables, nested lists and code you can copy, your prompts with their images, the commands that ran and
@@ -189,7 +191,8 @@ on the Mac can send and answer for that agent (see the Mac app's
 [support table](https://github.com/codealong/codealong#what-works-with-each-agent)).
 
 **Will it notify me when an agent needs me?**
-Not yet. Notifications are planned, with widgets and an iPad layout.
+While the app is open, with a sound: a pop when a session needs you, a tink when its turn ends.
+With it closed, not yet: notifications are planned, with widgets and an iPad layout.
 
 **What if my Mac runs an older version of Codealong?**
 The phone works with Macs on older and newer builds. A Mac that doesn't know a request yet says

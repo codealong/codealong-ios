@@ -72,6 +72,9 @@ final class Store {
     @ObservationIgnored private var backgroundTime = UIBackgroundTaskIdentifier.invalid
     /// How long it stays connected in the background: within the half minute or so iOS gives.
     private static let stayConnected: Duration = .seconds(20)
+    /// The app is open in front: sounds play only then, not while it stays connected behind
+    /// another app.
+    @ObservationIgnored private var inFront = false
     /// Launched for a check that goes through your real sessions (`LOOK_ONLY=1 scripts/run.sh`):
     /// nothing opened here is marked seen on its Mac, so the check leaves them as they were.
     private let lookOnly = ProcessInfo.processInfo.environment["CODEALONG_LOOK_ONLY"] == "1"
@@ -101,10 +104,13 @@ final class Store {
         if snap.prs != prs { prs = snap.prs }
         if snap.projects != projects { projects = snap.projects }
         if snap.prProjects != prProjects { prProjects = snap.prProjects }
+        // Asked at every change, whether it will play or not, so what came meanwhile isn't news later.
+        if let sound = core.sound(on: Sounds.on), inFront { Sounds.play(sound) }
     }
 
     func start() {
         guard let core else { return }
+        inFront = true
         // Back before the stop it was waiting to make: it's still connected.
         leaving?.cancel()
         leaving = nil
@@ -140,6 +146,7 @@ final class Store {
     /// it shows what's new at once, then stops. iOS gives it that time, and when it wants the
     /// time back sooner, it stops then.
     func leave() {
+        inFront = false
         guard core != nil, leaving == nil else { return }
         if backgroundTime == .invalid {
             backgroundTime = UIApplication.shared.beginBackgroundTask(withName: "Stay connected") { [weak self] in

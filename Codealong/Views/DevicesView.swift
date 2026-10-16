@@ -6,6 +6,8 @@ struct DevicesView: View {
     @Environment(Store.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var code = ""
+    @AppStorage(Sounds.needsYouKey) private var needsYouSound = true
+    @AppStorage(Sounds.yourTurnKey) private var yourTurnSound = true
 
     var body: some View {
         NavigationStack {
@@ -49,6 +51,17 @@ struct DevicesView: View {
                 } footer: {
                     Text("On the Mac, make a link code in Codealong's Settings › Devices, or run `codealong devices code`. It works once, for ten minutes.")
                 }
+                Section {
+                    Toggle("A session needs you", isOn: $needsYouSound)
+                    Toggle("A session’s turn ended", isOn: $yourTurnSound)
+                } header: {
+                    Text("Sounds")
+                } footer: {
+                    Text("While Codealong is open, a short sound when a session on one of your Macs starts to wait on you: a pop when it needs you, a lighter tink when its turn ends. None with the phone silenced.")
+                }
+                // Turned on, it plays, so you know what you'll hear.
+                .onChange(of: needsYouSound) { _, on in if on { Sounds.play(.needsYou) } }
+                .onChange(of: yourTurnSound) { _, on in if on { Sounds.play(.yourTurn) } }
                 if let problem = store.problem {
                     Section { Text(problem).foregroundStyle(.red) }
                 }

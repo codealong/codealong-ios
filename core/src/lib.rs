@@ -23,9 +23,11 @@ mod prs;
 mod lists;
 mod quick;
 mod review;
+mod sounds;
 pub use lists::*;
 pub use md::*;
 pub use quick::*;
+pub use sounds::Sound;
 
 /// Changes reach Swift at most this often: a busy Mac sends a feed a second, and each can come
 /// with several connections' worth of changes.
@@ -278,6 +280,7 @@ pub struct Core {
     /// Where conversations read lately are saved (`kept`).
     conversations: PathBuf,
     kept: kept::Kept<Conversation>,
+    chimer: Mutex<sounds::Chimer>,
 }
 
 #[uniffi::export]
@@ -318,7 +321,7 @@ impl Core {
                 std::thread::sleep(COALESCE);
             })
             .map_err(|e| CoreError::Failed(e.to_string()))?;
-        Ok(Arc::new(Core { client, conversations, kept: kept::Kept::default() }))
+        Ok(Arc::new(Core { client, conversations, kept: kept::Kept::default(), chimer: Mutex::default() }))
     }
 
     /// This phone's device key, as hex.
@@ -392,12 +395,14 @@ impl Core {
     /// Marks sessions unread on the Macs they're on: each is Your turn again, everywhere, until
     /// it's seen or prompted. Macs before 2026-10-08 refuse it; the first refusal is said.
     pub fn mark_unread(&self, keys: Vec<String>) -> Result<(), CoreError> {
+        self.sorted(&keys);
         each_mac(&keys, |device, keys| self.client.mark_unread(device, keys))
     }
 
     /// Snoozes sessions until `until` (ms), or wakes them with none, on the Macs they're on: off
     /// Needs you and Your turn everywhere until then. Macs before 2026-10-09 refuse it.
     pub fn snooze(&self, keys: Vec<String>, until: Option<i64>) -> Result<(), CoreError> {
+        self.sorted(&keys);
         each_mac(&keys, |device, keys| self.client.snooze(device, keys, until))
     }
 
@@ -405,6 +410,7 @@ impl Core {
     /// don't wait on you, and it comes to you only when it needs you. Macs before 2026-10-09
     /// refuse it.
     pub fn quiet(&self, keys: Vec<String>, quiet: bool) -> Result<(), CoreError> {
+        self.sorted(&keys);
         each_mac(&keys, |device, keys| self.client.quiet(device, keys, quiet))
     }
 
@@ -436,6 +442,7 @@ impl Core {
 
     /// Archives a session, or brings it back, on the Mac it's on.
     pub fn archive(&self, key: String, archived: bool) -> Result<(), CoreError> {
+        self.sorted(std::slice::from_ref(&key));
         let (device, own) = split_remote(&key).ok_or_else(|| CoreError::Failed("That isn't a session on one of your Macs.".into()))?;
         Ok(self.client.archive(device, own, archived)?)
     }
@@ -471,6 +478,25 @@ impl Core {
             let pr_projects = lists::pr_projects(&prs, now);
             Snapshot { devices, sessions, prs, projects, pr_projects }
         })
+    }
+
+    /// The sound due for what came to wait on you since the last time this was asked, if any,
+    /// of the kinds `on` (`sounds`): asked each time `Listener::changed` says something's new,
+    /// sounds on or not, so what came while they were off isn't news later.
+    pub fn sound(&self, on: Vec<Sound>) -> Option<Sound> {
+        let now = now_ms();
+        self.client.with_feeds(|feeds| {
+            let devices: Vec<codealong_peer::client::Device> = feeds.iter().map(|(d, _)| d.clone()).collect();
+            let rows = all_rows(feeds);
+            self.chimer.lock().unwrap_or_else(|e| e.into_inner()).due(&devices, &rows, now, &on)
+        })
+    }
+}
+
+impl Core {
+    /// Sessions sorted here just now, which coming to wait on you then is no news (`sounds`).
+    fn sorted(&self, keys: &[String]) {
+        self.chimer.lock().unwrap_or_else(|e| e.into_inner()).sorted(keys, now_ms());
     }
 }
 
@@ -2039,7 +2065,7 @@ fn placeholder(s: &Session, way: Option<&Way>, resuming: Option<(api::Place, boo
 mod order_tests {
     use super::*;
 
-    fn row(key: &str, status: Status, since: i64, snoozed_until: Option<i64>, last_prompt_at: i64) -> SessionRow {
+    pub(crate) fn row(key: &str, status: Status, since: i64, snoozed_until: Option<i64>, last_prompt_at: i64) -> SessionRow {
         SessionRow {
             key: key.into(),
             device: String::new(),
