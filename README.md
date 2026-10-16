@@ -103,8 +103,9 @@ that Mac; reading and snoozing a review don't.
 which says where it starts: its menu picks the Mac, worktree, account, model, effort and place,
 in an existing worktree, a new one, or a chat in no project. The + beside the box attaches
 photos, and an image pasted into it attaches too; they go with the prompt as they go with a reply. As you type, it finds sessions by what was said in them, and the Mac you pick suggests
-where the prompt belongs when it has Jev's suggestions on, and says when a session may already be
-doing it.
+where the prompt belongs when it has Jev's suggestions on, over the capsule so the keyboard never
+covers them (send it to a session, open one, or start it in another worktree), and says when a
+session may already be doing it.
 
 **Improve Codealong.** The lightbulb on every screen (the list, a conversation, a PR, the Macs
 sheet) takes a picture of that screen, brings the list back onto this app's own source on one of

@@ -191,7 +191,9 @@ struct QuickPrRow: View {
     }
 }
 
-/// A Mac's suggestion for what's typed: what it would do, why, where, and how likely.
+/// A Mac's suggestion for what's typed: what it would do, why, and how likely, as the start bar
+/// lists it over its capsule, short so that three fit over the keyboard. Where it is goes to
+/// VoiceOver; the title and why name it.
 struct SuggestionRow: View {
     let suggestion: Suggestion
     let composer: Composer
@@ -204,29 +206,25 @@ struct SuggestionRow: View {
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Color(.systemBackground))
                 .frame(width: 28, height: 28)
-                .background(Color.primary, in: .circle)
-            VStack(alignment: .leading, spacing: 3) {
+                .background(Color(.label), in: .circle)
+            VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(said.title)
                         .font(.body.weight(.medium))
-                        .lineLimit(2)
+                        .lineLimit(1)
                     Spacer(minLength: 0)
                     Text("\(Int((suggestion.p * 100).rounded()))%")
                         .font(.subheadline.monospacedDigit())
                         .foregroundStyle(sureColor)
                 }
                 Text(said.why)
-                    .font(.subheadline)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
-                    .lineLimit(3)
-                Text(said.place)
-                    .font(.footnote.monospaced())
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
+                    .lineLimit(2)
             }
         }
-        .padding(.vertical, 3)
         .accessibilityElement(children: .combine)
+        .accessibilityValue(said.place)
     }
 
     private var sureColor: Color {

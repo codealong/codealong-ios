@@ -3,21 +3,36 @@ import SwiftUI
 /// The bottom of the quick search: a glass capsule over the list that starts a new session with
 /// what's typed, or with nothing typed puts the cursor in the box for it. Under its title is where
 /// the session starts, and its menu changes that (the Mac, the worktree, the account, model and
-/// place), as the chips under the Mac's panel do; small, so the list keeps the screen. It rides
-/// above the keyboard. The list reads the Mac's choices into the composer.
+/// place), as the chips under the Mac's panel do; small, so the list keeps the screen. Over it are
+/// the Mac's suggestions for what's typed (send it to a session, open one, or start it elsewhere),
+/// which the Mac's panel lists first: here they ride above the keyboard with the capsule, where
+/// the keyboard can't cover them, and scroll among themselves when the list leaves too little room
+/// for them all. The list reads the Mac's choices into the composer.
 struct StartBar: View {
     @Binding var composer: Composer
     let project: String
     let prompt: String
+    /// Where what's typed goes, as the Mac suggests it.
+    let suggestions: [Suggestion]
+    /// The suggestions are for what was typed before: shown dimmed, doing nothing, until the
+    /// Mac answers for what's typed now.
+    let stale: Bool
     /// A session that may already be doing what's typed.
     let duplicate: SessionRow?
     let problem: String?
     let acting: Bool
+    /// How tall the list under it is: the bar leaves a little of it showing.
+    let room: CGFloat
     /// Starts with what's typed; with nothing typed, asks for it.
     let start: () -> Void
+    /// Does what a suggestion says.
+    let suggest: (Suggestion) -> Void
 
     @Environment(Store.self) private var store
     @State private var pickingWorktree = false
+    /// How tall the suggestions are, all of them, and the line over the capsule.
+    @State private var suggestionsHeight: CGFloat = 0
+    @State private var noteHeight: CGFloat = 0
     /// The last account, place and Mac you started with, to start with again.
     @AppStorage("start.account") private var lastAccount = ""
     @AppStorage("start.place") private var lastPlace = ""
@@ -28,6 +43,10 @@ struct StartBar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
+            if !suggestions.isEmpty && !prompt.isEmpty {
+                suggested
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
             if let note {
                 Label(note.text, systemImage: note.symbol)
                     .font(.footnote)
@@ -36,6 +55,7 @@ struct StartBar: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
                     .glassEffect(.regular, in: .rect(cornerRadius: 16))
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { noteHeight = $0 }
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
             HStack(spacing: 4) {
@@ -83,11 +103,48 @@ struct StartBar: View {
         .padding(.bottom, 4)
         .animation(.snappy, value: note?.text)
         .animation(.snappy, value: prompt.isEmpty)
+        .animation(.smooth, value: suggestions.map(\.key))
         .sheet(isPresented: $pickingWorktree) {
             NavigationStack {
                 WorktreePicker(worktrees: composer.device.map { store.worktrees($0) } ?? [], chosen: Binding(get: { worktree }, set: { composer.worktreeID = $0?.id }), first: project.isEmpty ? nil : project)
             }
         }
+    }
+
+    // MARK: Suggestions
+
+    /// The suggestions, in a glass card of their own over the capsule, each a tap from doing what
+    /// it says. They take what room the list leaves, less the capsule, the line over it and a
+    /// little of the list, and scroll within it past that.
+    private var suggested: some View {
+        let others = 56 + 4 + 6 + (note == nil ? 0 : noteHeight + 6)
+        let most = room > 0 ? max(64, room - others - 24) : .infinity
+        return ScrollView {
+            VStack(spacing: 0) {
+                ForEach(Array(suggestions.enumerated()), id: \.element.key) { i, s in
+                    if i > 0 {
+                        Divider().padding(.leading, 52)
+                    }
+                    Button { suggest(s) } label: {
+                        SuggestionRow(suggestion: s, composer: composer, showDevice: store.devices.count > 1)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                    // One at a time: a second tap while photos go to the Mac would send twice.
+                    .disabled(stale || (acting && s.kind != .open))
+                }
+            }
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { suggestionsHeight = $0 }
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .scrollDismissesKeyboard(.never)
+        .frame(height: min(suggestionsHeight, most))
+        .opacity(stale ? 0.5 : 1)
+        .glassEffect(.regular.tint(Color(.systemBackground).opacity(0.7)), in: .rect(cornerRadius: 22))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Suggested")
     }
 
     // MARK: Where it starts

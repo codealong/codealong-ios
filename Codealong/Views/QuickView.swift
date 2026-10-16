@@ -6,9 +6,9 @@ import SwiftUI
 /// turn ended (the ones working when nothing waits), then the rest started in the last day; the
 /// page menu over the input orders them by project or the last active first instead, or lists
 /// PRs, and the pills narrow the list to one project. Typed words find sessions (by what was said
-/// in them too) and PRs, a Mac suggests where what's typed goes, and the row at the bottom starts
-/// a new session with it as the prompt, on the Mac, in the worktree, on the account and where the
-/// chips under it say, with the photos attached under the input. The core has the rules.
+/// in them too) and PRs, a Mac suggests where what's typed goes, over the row at the bottom that
+/// starts a new session with it as the prompt, on the Mac, in the worktree, on the account and
+/// where the chips under it say, with the photos attached under the input. The core has the rules.
 struct QuickView: View {
     @Environment(Store.self) private var store
     @Environment(\.openURL) private var openURL
@@ -22,6 +22,8 @@ struct QuickView: View {
     @AppStorage("folded") private var foldedLines = ""
     /// Merged and closed PRs shown, which start folded.
     @State private var showingDone = false
+    /// How tall the list is, which the start bar over it mustn't outgrow.
+    @State private var listHeight: CGFloat = 0
 
     @State private var text = ""
     @State private var typing = false
@@ -31,6 +33,8 @@ struct QuickView: View {
     /// A Mac's suggestions for what's typed, and the text they're for.
     @State private var route: RouteAnswer?
     @State private var routedFor = ""
+    /// The project and Mac the suggestions are for: they're let go when either changes.
+    @State private var routedWhere = ""
     @State private var routing = false
     @State private var routeProblem: String?
 
@@ -72,16 +76,25 @@ struct QuickView: View {
                 list
                     .safeAreaBar(edge: .bottom) {
                         if !store.devices.isEmpty {
-                            StartBar(composer: $composer, project: startProject, prompt: query, duplicate: routedFor == query ? route?.duplicate : nil, problem: problem, acting: acting) {
+                            // The suggestions for what's typed go over the capsule, above the
+                            // keyboard with it, rather than in the list it covers. While the next
+                            // answer is worked out, the last one's stay (its suggestions dimmed),
+                            // so the bar doesn't jump with each key.
+                            StartBar(composer: $composer, project: startProject, prompt: query, suggestions: route?.suggestions ?? [], stale: routedFor != query, duplicate: route?.duplicate, problem: problem, acting: acting, room: listHeight) {
                                 // Nothing typed yet: the box is where the prompt goes.
                                 if query.isEmpty {
                                     typing = true
                                 } else {
                                     Task { await start() }
                                 }
+                            } suggest: { s in
+                                Task { await act(s) }
                             }
                         }
                     }
+                    // How tall the list is with the bar over it, above the keyboard: what the
+                    // bar can take. Measured inside, the list is less what the bar covers.
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { listHeight = $0 }
             }
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: String.self) { key in destination(key) }
@@ -108,8 +121,12 @@ struct QuickView: View {
             .task(id: query) { await searchSaid() }
             .task(id: "\(query)\u{1}\(startProject)\u{1}\(routeDevice ?? "")") { await suggest() }
             .onAppear {
-                // Text typed for a test at launch (`QUERY=<text> scripts/run.sh`).
-                if let q = ProcessInfo.processInfo.environment["CODEALONG_QUERY"], !q.isEmpty, text.isEmpty { text = q }
+                // Text typed for a test at launch (`QUERY=<text> scripts/run.sh`), the cursor in
+                // the box as it would be, so the keyboard is up as it is while you write.
+                if let q = ProcessInfo.processInfo.environment["CODEALONG_QUERY"], !q.isEmpty, text.isEmpty {
+                    text = q
+                    typing = true
+                }
             }
             // A worktree picked in one project isn't where the next project's work goes.
             .onChange(of: project) { _, _ in composer.worktreeID = nil }
@@ -351,21 +368,6 @@ struct QuickView: View {
             if !store.devices.isEmpty {
                 notes(content, suggested: suggested)
             }
-            if !suggested.isEmpty {
-                Section {
-                    ForEach(suggested, id: \.key) { s in
-                        Button { Task { await act(s) } } label: {
-                            SuggestionRow(suggestion: s, composer: composer, showDevice: store.devices.count > 1)
-                                .contentShape(.rect)
-                        }
-                        .tint(.primary)
-                        // One at a time: a second tap while photos go to the Mac would send twice.
-                        .disabled(acting && s.kind != .open)
-                    }
-                } header: {
-                    GroupHeading(title: "Suggested", count: suggested.count)
-                }
-            }
             switch content {
             case let .quick(quick):
                 quickSections(quick)
@@ -391,7 +393,6 @@ struct QuickView: View {
         .overlay { emptyState(content) }
         // Rows that come, go or move as the Macs report animate there, as a pick of yours does.
         .animation(.snappy, value: content.ids)
-        .animation(.smooth, value: suggested.map(\.key))
     }
 
     /// What the list shows now: the core's lists for the page, the order and what's typed.
@@ -779,6 +780,9 @@ struct QuickView: View {
             route = nil
             return
         }
+        // What was suggested for another project or Mac isn't kept while this one answers.
+        let place = "\(startProject)\u{1}\(device)"
+        if routedWhere != place { route = nil }
         try? await Task.sleep(for: .milliseconds(350))
         if Task.isCancelled { return }
         routing = true
@@ -788,6 +792,7 @@ struct QuickView: View {
             if Task.isCancelled { return }
             route = got
             routedFor = asked
+            routedWhere = place
         } catch {
             if Task.isCancelled { return }
             route = nil
