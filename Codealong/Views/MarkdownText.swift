@@ -33,7 +33,8 @@ struct MarkdownText: View {
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(Array(items.enumerated()), id: \.offset) { i, s in
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(ordered ? "\(Int(start) + i)." : depth == 0 ? "•" : depth == 1 ? "◦" : "▪").foregroundStyle(.secondary).monospacedDigit()
+                        // Verbatim, as written: a localized number would read 1,244.
+                        Text(verbatim: ordered ? "\(Int(start) + i)." : depth == 0 ? "•" : depth == 1 ? "◦" : "▪").foregroundStyle(.secondary).monospacedDigit()
                         Text(Self.inline(s))
                     }
                 }

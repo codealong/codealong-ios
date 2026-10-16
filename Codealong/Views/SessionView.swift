@@ -2089,7 +2089,7 @@ private struct AskedList: View {
                     ForEach(Array(q.options.enumerated()), id: \.offset) { i, o in
                         let picked = q.picked.contains(o.label)
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Text("\(i + 1).").monospacedDigit()
+                            Text(verbatim: "\(i + 1).").monospacedDigit()
                             Text(o.label).fontWeight(picked ? .semibold : .regular)
                             if picked { Image(systemName: "checkmark").accessibilityLabel("Your pick") }
                         }
