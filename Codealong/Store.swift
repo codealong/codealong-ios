@@ -22,6 +22,8 @@ final class Store {
     private(set) var projects: [String] = []
     /// The projects of the PRs page's PRs, for its pills.
     private(set) var prProjects: [String] = []
+    /// The GitHub accounts the Macs are signed in as, and which of them the PRs page counts as yours.
+    private(set) var github: [GithubAccount] = []
     private(set) var problem: String?
     /// Goes up with every change the core reports, rows or not: a reply being written comes this way.
     private(set) var tick = 0
@@ -103,6 +105,7 @@ final class Store {
         } catch {
             problem = words(error)
         }
+        core?.setGithubYours(picked: UserDefaults.standard.stringArray(forKey: "github.yours") ?? [])
         refresh()
     }
 
@@ -118,6 +121,7 @@ final class Store {
         }
         if snap.projects != projects { projects = snap.projects }
         if snap.prProjects != prProjects { prProjects = snap.prProjects }
+        if snap.github != github { github = snap.github }
         // Asked at every change, so what came meanwhile isn't news later; behind another app with
         // none on, so a sound that wouldn't play doesn't hold back the next one.
         if let sound = core.sound(on: inFront ? Sounds.on : []) { Sounds.play(sound) }
@@ -637,6 +641,15 @@ final class Store {
     func quick(project: String, query: String, said: [SaidHit], ranked: [String]) -> QuickList {
         _ = tick
         return core?.quick(project: project, query: query, said: said, ranked: ranked) ?? QuickList(sections: [], nothingWaits: false, working: 0)
+    }
+
+    /// Counts the PRs `login` opened as yours, or not, from now on. One account stays yours.
+    func setYours(_ login: String, _ yours: Bool) {
+        let picked = github.filter { $0.yours && $0.login != login }.map(\.login) + (yours ? [login] : [])
+        guard !picked.isEmpty else { return }
+        UserDefaults.standard.set(picked, forKey: "github.yours")
+        core?.setGithubYours(picked: picked)
+        refresh()
     }
 
     /// The PRs page's groups (the core's rules). Reads `tick`, as `quick` does.

@@ -283,6 +283,17 @@ struct QuickView: View {
                     }
                     .pickerStyle(.inline)
                 }
+            } else if store.github.count > 1 {
+                // Macs signed in as other accounts, a bot's say: which ones are you.
+                Section("Your GitHub accounts") {
+                    ForEach(store.github, id: \.login) { a in
+                        Toggle(isOn: Binding(get: { a.yours }, set: { on in withAnimation(.smooth) { store.setYours(a.login, on) } })) {
+                            Text(a.login)
+                            Text(a.macs.formatted(.list(type: .and)))
+                        }
+                        .disabled(a.yours && store.github.filter(\.yours).count == 1)
+                    }
+                }
             }
         } label: {
             HStack(spacing: 6) {
@@ -302,7 +313,7 @@ struct QuickView: View {
         }
         .tint(.primary)
         .accessibilityLabel(page == .sessions ? "Sessions" : "PRs")
-        .accessibilityHint("Switches between sessions and PRs, and orders the sessions")
+        .accessibilityHint("Switches between sessions and PRs, orders the sessions, and picks which GitHub accounts are yours")
     }
 
     /// A binding whose changes animate, so a menu's pick moves the list rather than swapping it.

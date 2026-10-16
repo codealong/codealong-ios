@@ -12,8 +12,9 @@ use crate::PrRow;
 /// What the box offers for a PR.
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
 pub struct ReviewBox {
-    /// It takes Approve and Request changes (`mayApprove`): it's open and not yours, which GitHub
-    /// doesn't let you approve. Anything takes a comment.
+    /// It takes Approve and Request changes (`mayApprove`): it's open, and not opened by the
+    /// account its Mac is signed in to GitHub as, which GitHub doesn't let approve it. Anything
+    /// takes a comment.
     pub reviewable: bool,
     /// What the field says before you write.
     pub hint: String,
@@ -56,7 +57,7 @@ fn yours(reviews: &[PrReview]) -> Option<String> {
 #[uniffi::export]
 pub fn review_box(pr: PrRow, draft: Option<PrDraft>, reviews: Vec<PrReview>) -> ReviewBox {
     let open = is_open(&pr.state);
-    let reviewable = open && !pr.mine;
+    let reviewable = open && !pr.opened_by_its_mac;
     let hint = if draft.is_some() {
         "Your words, before your draft review’s (optional)".to_string()
     } else if reviewable {
@@ -65,9 +66,13 @@ pub fn review_box(pr: PrRow, draft: Option<PrDraft>, reviews: Vec<PrReview>) -> 
         format!("Comment on #{}", pr.number)
     };
     let why = if !open {
-        Some("It’s closed: a comment still goes to the PR.")
-    } else if pr.mine {
-        Some("GitHub doesn’t let you approve your own PR: you can comment.")
+        Some("It’s closed: a comment still goes to the PR.".to_string())
+    } else if pr.opened_by_its_mac && pr.mine {
+        Some("GitHub doesn’t let you approve your own PR: you can comment.".to_string())
+    } else if pr.opened_by_its_mac {
+        // A bot of yours, say, that the Mac acting on it is signed in as.
+        let author = pr.author.as_deref().unwrap_or("its author");
+        Some(format!("{} is signed in to GitHub as {author}, who opened it, and GitHub doesn’t let them approve it: you can comment.", pr.device_name))
     } else {
         None
     };
@@ -77,7 +82,7 @@ pub fn review_box(pr: PrRow, draft: Option<PrDraft>, reviews: Vec<PrReview>) -> 
     });
     let note = match (why, with) {
         (Some(why), Some(with)) => Some(format!("{why} {with}")),
-        (why, with) => why.map(str::to_string).or(with),
+        (why, with) => why.or(with),
     };
     ReviewBox { reviewable, hint, note, yours: yours(&reviews) }
 }
@@ -115,6 +120,7 @@ mod tests {
         p.number = 7;
         p.state = state.into();
         p.mine = mine;
+        p.opened_by_its_mac = mine;
         p
     }
 
@@ -143,6 +149,22 @@ mod tests {
             assert!(!b.reviewable);
             assert_eq!(b.note.as_deref(), Some("It’s closed: a comment still goes to the PR."));
         }
+    }
+
+    #[test]
+    fn the_box_goes_by_the_account_its_mac_acts_as() {
+        // A bot's PR, asked of the Mac signed in as the bot: GitHub won't take its approval.
+        let mut bots = pr("open", false);
+        bots.opened_by_its_mac = true;
+        bots.author = Some("ann-bot".into());
+        bots.device_name = "Mini".into();
+        let b = review_box(bots, None, vec![]);
+        assert!(!b.reviewable);
+        assert_eq!(b.note.as_deref(), Some("Mini is signed in to GitHub as ann-bot, who opened it, and GitHub doesn’t let them approve it: you can comment."));
+        // Yours, asked of a Mac signed in as another account: that account can approve it.
+        let mut yours = pr("open", true);
+        yours.opened_by_its_mac = false;
+        assert!(review_box(yours, None, vec![]).reviewable);
     }
 
     #[test]

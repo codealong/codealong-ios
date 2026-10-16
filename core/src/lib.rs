@@ -16,6 +16,7 @@ use codealong_peer::{net, proto};
 
 uniffi::setup_scaffolding!();
 
+mod github;
 mod kept;
 mod md;
 mod merge;
@@ -272,6 +273,8 @@ pub struct Snapshot {
     pub projects: Vec<String>,
     /// The projects of the PRs the PRs page lists (`lists::pr_sections`), for its pills.
     pub pr_projects: Vec<String>,
+    /// The GitHub accounts the Macs are signed in as, and which are yours (`github::accounts`).
+    pub github: Vec<github::GithubAccount>,
 }
 
 #[derive(uniffi::Object)]
@@ -281,6 +284,8 @@ pub struct Core {
     conversations: PathBuf,
     kept: kept::Kept<Conversation>,
     chimer: Mutex<sounds::Chimer>,
+    /// The GitHub accounts you picked as yours (`github::accounts`).
+    github: Mutex<Vec<String>>,
 }
 
 #[uniffi::export]
@@ -321,7 +326,7 @@ impl Core {
                 std::thread::sleep(COALESCE);
             })
             .map_err(|e| CoreError::Failed(e.to_string()))?;
-        Ok(Arc::new(Core { client, conversations, kept: kept::Kept::default(), chimer: Mutex::default() }))
+        Ok(Arc::new(Core { client, conversations, kept: kept::Kept::default(), chimer: Mutex::default(), github: Mutex::default() }))
     }
 
     /// This phone's device key, as hex.
@@ -451,7 +456,13 @@ impl Core {
         Ok(self.client.unlink(&device)?)
     }
 
+    /// The GitHub accounts whose PRs are listed as yours: none leaves it to the core.
+    pub fn set_github_yours(&self, picked: Vec<String>) {
+        *self.github.lock().unwrap_or_else(|e| e.into_inner()) = picked;
+    }
+
     pub fn snapshot(&self) -> Snapshot {
+        let picked = self.github_picked();
         self.client.with_feeds(|feeds| {
             let now = now_ms();
             let all = all_rows(feeds);
@@ -471,12 +482,12 @@ impl Core {
             }
             let mut sessions: Vec<SessionRow> = all.into_iter().filter(|s| in_inbox(s, now)).collect();
             sessions.sort_by(inbox_order);
-            let prs = quick::all_prs(feeds);
+            let prs = quick::all_prs(feeds, &picked);
             // A project whose reviews wait on you can be narrowed to, though no session of it is
             // in the list.
             let projects = project_list(sessions.iter().map(|s| s.project.as_str()).chain(prs.iter().filter(|p| p.waits && !p.project.is_empty()).map(|p| p.project.as_str())));
             let pr_projects = lists::pr_projects(&prs, now);
-            Snapshot { devices, sessions, prs, projects, pr_projects }
+            Snapshot { devices, sessions, prs, projects, pr_projects, github: github::accounts(feeds, &picked) }
         })
     }
 
@@ -498,6 +509,10 @@ impl Core {
     /// Sessions sorted here just now, which coming to wait on you then is no news (`sounds`).
     fn sorted(&self, keys: &[String]) {
         self.chimer.lock().unwrap_or_else(|e| e.into_inner()).sorted(keys, now_ms());
+    }
+
+    fn github_picked(&self) -> Vec<String> {
+        self.github.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }
 

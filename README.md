@@ -88,7 +88,9 @@ needs you) work with any Mac, remote control or not.
 **Review and merge PRs.** The PRs that wait on your review are listed after the sessions whose
 turn ended (*Review requested*), longest waiting first. The menu's *PRs* page lists every PR your
 Macs know: pinned ones, the reviews asked of you, yours, the other open ones, snoozed reviews, and
-the last week's merged and closed ones folded away. Open one to see where it stands (checks, whether it can merge, its size, who asked you), your
+the last week's merged and closed ones folded away. Yours are the ones opened by the GitHub account
+most of your Macs are signed in as; when one is signed in as another (a bot your agents open PRs
+as, or a work account), the menu's *Your GitHub accounts* picks which count as you. Open one to see where it stands (checks, whether it can merge, its size, who asked you), your
 draft review of it if you began one, its description, reviews, comments and changed files with
 their diffs. The box at its foot reviews it, as the Mac's does: write what to say, then *Request
 changes*, *Comment* or *Approve* (only *Comment* on your own PR or a closed one), submitting your
