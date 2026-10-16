@@ -397,6 +397,7 @@ private struct PrHeader: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
+            SessionsSection(keys: pr.sessions)
         }
     }
 
@@ -430,6 +431,44 @@ private struct PrHeader: View {
         case "blocked": return "Merging is blocked"
         case "unstable": return "Ready to merge, with checks the repo doesn’t require not passing"
         default: return nil
+        }
+    }
+}
+
+/// The sessions that worked on it, under where it stands, as the Mac's panel has them under its
+/// header (`PanelPlaces`): each opens its session, so the one that made it is a tap away. Only
+/// the ones the list has: an archived session has no row here to open.
+private struct SessionsSection: View {
+    let keys: [String]
+    @Environment(Store.self) private var store
+
+    var body: some View {
+        let rows = keys.compactMap { key in store.sessions.first { $0.key == key } }
+        if !rows.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Heading(text: rows.count == 1 ? "Session" : "Sessions")
+                VStack(spacing: 0) {
+                    ForEach(Array(rows.enumerated()), id: \.element.key) { i, r in
+                        if i > 0 {
+                            Divider().padding(.leading, 12)
+                        }
+                        NavigationLink(value: r.key) {
+                            HStack(spacing: 8) {
+                                QuickSessionRow(row: r, showDevice: store.devices.count > 1, showProject: false)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .contentShape(.rect)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .background(.background.secondary, in: .rect(cornerRadius: 12))
+            }
+            .padding(.top, 10)
         }
     }
 }
