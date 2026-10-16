@@ -284,8 +284,8 @@ pub struct Core {
     conversations: PathBuf,
     kept: kept::Kept<Conversation>,
     chimer: Mutex<sounds::Chimer>,
-    /// The GitHub accounts you picked as yours (`github::accounts`).
-    github: Mutex<Vec<String>>,
+    /// The Macs' GitHub accounts and the ones you picked as yours (`github`).
+    github: Mutex<github::Github>,
 }
 
 #[uniffi::export]
@@ -299,6 +299,7 @@ impl Core {
         let wake = Arc::new((Mutex::new(false), Condvar::new()));
         let signal = wake.clone();
         let conversations = PathBuf::from(&dir).join("conversations");
+        let github = Mutex::new(github::Github::load(PathBuf::from(&dir).join("github.json")));
         let client = Client::new(
             PathBuf::from(dir),
             secret,
@@ -326,7 +327,7 @@ impl Core {
                 std::thread::sleep(COALESCE);
             })
             .map_err(|e| CoreError::Failed(e.to_string()))?;
-        Ok(Arc::new(Core { client, conversations, kept: kept::Kept::default(), chimer: Mutex::default(), github: Mutex::default() }))
+        Ok(Arc::new(Core { client, conversations, kept: kept::Kept::default(), chimer: Mutex::default(), github }))
     }
 
     /// This phone's device key, as hex.
@@ -456,13 +457,12 @@ impl Core {
         Ok(self.client.unlink(&device)?)
     }
 
-    /// The GitHub accounts whose PRs are listed as yours: none leaves it to the core.
+    /// The GitHub accounts whose PRs are listed as yours, kept here: none leaves it to the rule.
     pub fn set_github_yours(&self, picked: Vec<String>) {
-        *self.github.lock().unwrap_or_else(|e| e.into_inner()) = picked;
+        self.github.lock().unwrap_or_else(|e| e.into_inner()).pick(picked);
     }
 
     pub fn snapshot(&self) -> Snapshot {
-        let picked = self.github_picked();
         self.client.with_feeds(|feeds| {
             let now = now_ms();
             let all = all_rows(feeds);
@@ -482,12 +482,13 @@ impl Core {
             }
             let mut sessions: Vec<SessionRow> = all.into_iter().filter(|s| in_inbox(s, now)).collect();
             sessions.sort_by(inbox_order);
-            let prs = quick::all_prs(feeds, &picked);
+            let you = self.you(feeds);
+            let prs = quick::all_prs(feeds, &you);
             // A project whose reviews wait on you can be narrowed to, though no session of it is
             // in the list.
             let projects = project_list(sessions.iter().map(|s| s.project.as_str()).chain(prs.iter().filter(|p| p.waits && !p.project.is_empty()).map(|p| p.project.as_str())));
             let pr_projects = lists::pr_projects(&prs, now);
-            Snapshot { devices, sessions, prs, projects, pr_projects, github: github::accounts(feeds, &picked) }
+            Snapshot { devices, sessions, prs, projects, pr_projects, github: you.accounts }
         })
     }
 
@@ -511,8 +512,9 @@ impl Core {
         self.chimer.lock().unwrap_or_else(|e| e.into_inner()).sorted(keys, now_ms());
     }
 
-    fn github_picked(&self) -> Vec<String> {
-        self.github.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    /// Who's who on GitHub in `feeds` (`github`).
+    fn you(&self, feeds: &Feeds) -> github::You {
+        self.github.lock().unwrap_or_else(|e| e.into_inner()).read(feeds)
     }
 }
 

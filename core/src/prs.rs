@@ -301,10 +301,12 @@ impl Core {
         Ok(MergeDone { merged: done.merged, note: done.note })
     }
 
-    /// Snoozes your review of PRs (`owner/name#number`) on `device` until `until` (ms), or wakes
-    /// it with none: out of what waits on you there and everywhere until then.
-    pub fn pr_snooze(&self, device: String, keys: Vec<String>, until: Option<i64>) -> Result<(), CoreError> {
-        self.client.pr_snooze(&device, &keys, until).map_err(CoreError::Failed)
+    /// Snoozes your review of PR `number` of `repo` (`owner/name`, as `device` names it) there until
+    /// `until` (ms), or wakes it with none: out of what waits on you there and everywhere until
+    /// then.
+    pub fn pr_snooze(&self, device: String, repo: String, number: u64, until: Option<i64>) -> Result<(), CoreError> {
+        // Its key there, which a renamed repo's PR has under the name the Mac knows it by.
+        self.client.pr_snooze(&device, &[format!("{repo}#{number}")], until).map_err(CoreError::Failed)
     }
 }
 

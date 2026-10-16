@@ -105,7 +105,6 @@ final class Store {
         } catch {
             problem = words(error)
         }
-        core?.setGithubYours(picked: UserDefaults.standard.stringArray(forKey: "github.yours") ?? [])
         refresh()
     }
 
@@ -497,7 +496,7 @@ final class Store {
     func prSnooze(_ pr: PrRow, until: Date?) async throws {
         let core = try running()
         let ms = until.map { Int64($0.timeIntervalSince1970 * 1000) }
-        try await Task.detached { try core.prSnooze(device: pr.device, keys: [pr.key], until: ms) }.value
+        try await Task.detached { try core.prSnooze(device: pr.device, repo: pr.slug, number: pr.number, until: ms) }.value
     }
 
     /// Snoozes a session until `until`, or wakes it with none, on its Mac: off Needs you and Your
@@ -647,7 +646,6 @@ final class Store {
     func setYours(_ login: String, _ yours: Bool) {
         let picked = github.filter { $0.yours && $0.login != login }.map(\.login) + (yours ? [login] : [])
         guard !picked.isEmpty else { return }
-        UserDefaults.standard.set(picked, forKey: "github.yours")
         core?.setGithubYours(picked: picked)
         refresh()
     }

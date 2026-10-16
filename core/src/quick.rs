@@ -94,7 +94,7 @@ pub struct PrRow {
     pub project: String,
     pub updated_at: i64,
     pub author: Option<String>,
-    /// An account of yours opened it (`github::yours`).
+    /// An account of yours opened it (`github::You`).
     pub mine: bool,
     /// Its Mac (`device`) is signed in to GitHub as the account that opened it, so an approval of
     /// it can't go from there.
@@ -337,35 +337,38 @@ pub(crate) fn quick_list(rows: &[SessionRow], prs: &[PrRow], project: &str, quer
     QuickList { sections, nothing_waits: false, working: 0 }
 }
 
-/// Whether a PR (`key`, `url`) is new to `seen`, which keeps it from now on. A PR goes by its URL
-/// too: a Mac whose checkout still names a renamed or moved repo by its old name lists its PRs
-/// under that name, and GitHub gives them their URLs under the new one.
-pub(crate) fn first_seen(seen: &mut std::collections::HashSet<String>, key: &str, url: &str) -> bool {
-    let new_key = seen.insert(key.to_lowercase());
-    let new_url = url.is_empty() || seen.insert(url.to_lowercase());
-    new_key && new_url
+/// A PR's key, `owner/name#number`, as GitHub names it now (its URL), so a PR is one PR however
+/// its Macs name its repo: a Mac whose checkout still names a renamed or moved repo by its old
+/// name lists its PRs under that one. `theirs`, its Mac's key, when its URL isn't a PR's.
+pub(crate) fn pr_key(url: &str, theirs: &str) -> String {
+    let named = || {
+        let mut parts = url.split_once("://")?.1.split('/').skip(1);
+        let (owner, name) = (parts.next()?, parts.next()?);
+        let number: u64 = parts.next().filter(|p| *p == "pull").and(parts.next())?.split(['#', '?']).next()?.parse().ok()?;
+        Some(format!("{owner}/{name}#{number}"))
+    };
+    named().unwrap_or_else(|| theirs.to_string())
 }
 
-/// Every worktree's PR on the linked Macs, once each, those `picked` accounts opened as yours
-/// (`github::accounts`).
-pub(crate) fn all_prs(feeds: &Feeds, picked: &[String]) -> Vec<PrRow> {
+/// Every worktree's PR on the linked Macs, once each, those `you` opened as yours.
+pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
     let worktrees = all_worktrees(feeds);
     let projects = crate::Projects::of_feeds(feeds);
-    let yours = crate::github::yours(feeds, picked);
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     // Each Mac's PR list, the ones online first, of those the ones that take remote control, then
     // the ones signed in to GitHub as you: a PR two Macs list is asked about where it can be read,
     // and reviewed and merged as you.
     let mut macs: Vec<&(codealong_peer::client::Device, &codealong_peer::feed::Replica)> = feeds.iter().collect();
-    macs.sort_by_key(|(d, r)| (!d.online, !d.remote_control, !crate::github::opened_by_you(crate::github::signed_in_as(r), &yours)));
+    macs.sort_by_key(|(d, _)| (!d.online, !d.remote_control, !you.signs_in(&d.key)));
     for (d, replica) in macs {
         for p in &replica.prs {
-            if !first_seen(&mut seen, &p.key, &p.url) {
+            let key = pr_key(&p.url, &p.key);
+            if !seen.insert(key.to_lowercase()) {
                 continue;
             }
             out.push(PrRow {
-                key: p.key.clone(),
+                key,
                 device: d.key.clone(),
                 device_name: d.name.clone(),
                 slug: p.repo.clone(),
@@ -384,7 +387,7 @@ pub(crate) fn all_prs(feeds: &Feeds, picked: &[String]) -> Vec<PrRow> {
                 project: projects.of(&p.project, &[p.repo.to_lowercase()]).unwrap_or_else(|| p.project.clone()),
                 updated_at: p.updated_at,
                 author: p.author.clone(),
-                mine: crate::github::opened_by_you(p.author.as_deref(), &yours),
+                mine: you.opened(p.author.as_deref()),
                 opened_by_its_mac: p.mine,
                 waits: p.waits,
                 review_requested: p.review_requested,
@@ -404,8 +407,8 @@ pub(crate) fn all_prs(feeds: &Feeds, picked: &[String]) -> Vec<PrRow> {
         for l in &replica.lanes {
             let Some(pr) = &l.pr else { continue };
             // Two worktrees of one repo can be on the same PR's branch.
-            let key = format!("{}#{}", l.repo_slug.as_deref().unwrap_or(&l.repo), pr.number);
-            if !first_seen(&mut seen, &key, &pr.url) {
+            let key = pr_key(&pr.url, &format!("{}#{}", l.repo_slug.as_deref().unwrap_or(&l.repo), pr.number));
+            if !seen.insert(key.to_lowercase()) {
                 continue;
             }
             let Some(w) = worktrees.iter().find(|w| w.device == d.key && w.id == l.id) else { continue };
@@ -588,8 +591,7 @@ impl Core {
     /// What the quick search lists for `query` in `project` (empty for all), with the Macs' text
     /// search hits for it (`said`) and the sessions a Mac's suggestion ranked first (`ranked`).
     pub fn quick(&self, project: String, query: String, said: Vec<SaidHit>, ranked: Vec<String>) -> QuickList {
-        let picked = self.github_picked();
-        self.client.with_feeds(|feeds| quick_list(&all_rows(feeds), &all_prs(feeds, &picked), &project, &query, &said, &ranked, now_ms()))
+        self.client.with_feeds(|feeds| quick_list(&all_rows(feeds), &all_prs(feeds, &self.you(feeds)), &project, &query, &said, &ranked, now_ms()))
     }
 
     /// Looks for the words in what was said in sessions on every connected Mac, at once.
@@ -801,7 +803,7 @@ pub(crate) mod tests {
         let first = Replica { lanes: vec![lane], prs: vec![card("Apps")], ..Replica::default() };
         let second = Replica { prs: vec![card("app")], ..Replica::default() };
         let feeds = vec![(mac("watching", false), &first), (mac("driving", true), &second)];
-        let prs = all_prs(&feeds, &[]);
+        let prs = all_prs(&feeds, &crate::github::You::default());
         assert_eq!(prs.len(), 1);
         assert_eq!((prs[0].device.as_str(), prs[0].project.as_str()), ("driving", "Apps"));
     }
@@ -818,16 +820,28 @@ pub(crate) mod tests {
         let mini = Replica { prs: vec![card("old/app", 1, "ann", false), card("old/app", 3, "ann-bot", true)], ..Replica::default() };
         let laptop = Replica { prs: vec![card("o/app", 1, "ann", true), card("o/app", 2, "ann", true)], ..Replica::default() };
         let feeds = vec![(mac("mini"), &mini), (mac("laptop"), &laptop)];
-        let seen = |picked: &[String]| -> Vec<(u64, bool, bool, String)> {
-            let mut prs: Vec<(u64, bool, bool, String)> = all_prs(&feeds, picked).into_iter().map(|p| (p.number, p.mine, p.opened_by_its_mac, p.device)).collect();
+        let signed_in: HashMap<String, String> = [("mini".to_string(), "ann-bot".to_string()), ("laptop".into(), "ann".into())].into();
+        let seen = |picked: &[String]| -> Vec<(String, bool, bool, String, String)> {
+            let mut prs: Vec<(String, bool, bool, String, String)> = all_prs(&feeds, &crate::github::You::of(&feeds, &signed_in, picked)).into_iter().map(|p| (p.key, p.mine, p.opened_by_its_mac, p.device, p.slug)).collect();
             prs.sort();
             prs
         };
-        // Ann's are hers whichever Mac lists them, once each, and asked of the Mac signed in as
-        // her; the bot's aren't, and its Mac can't approve them.
-        assert_eq!(seen(&[]), [(1, true, true, "laptop".into()), (2, true, true, "laptop".into()), (3, false, true, "mini".into())]);
-        // Picked as yours too.
-        assert_eq!(seen(&["ann-bot".into(), "ann".into()])[2], (3, true, true, "mini".into()));
+        // Ann's are hers whichever Mac lists them, once each by their name on GitHub, and asked
+        // of the Mac signed in as her; the bot's aren't, and its Mac can't approve them.
+        let row = |n: u64, mine: bool, its: bool, mac: &str, slug: &str| (format!("o/app#{n}"), mine, its, mac.to_string(), slug.to_string());
+        assert_eq!(seen(&[]), [row(1, true, true, "laptop", "o/app"), row(2, true, true, "laptop", "o/app"), row(3, false, true, "mini", "old/app")]);
+        // Picked as yours too, the one both list is asked of the mini, under its own name for
+        // the repo, and keeps its key.
+        assert_eq!(seen(&["ann-bot".into()])[0], row(1, false, false, "mini", "old/app"));
+        assert_eq!(seen(&["ann-bot".into(), "ann".into()])[2], row(3, true, true, "mini", "old/app"));
+    }
+
+    #[test]
+    fn a_prs_key_is_its_name_on_github() {
+        assert_eq!(pr_key("https://github.com/new/app/pull/12", "old/app#12"), "new/app#12");
+        assert_eq!(pr_key("https://ghe.example.com/o/app/pull/3#discussion", "o/app#3"), "o/app#3");
+        assert_eq!(pr_key("", "app#4"), "app#4");
+        assert_eq!(pr_key("https://github.com/o/app/issues/5", "o/app#5"), "o/app#5");
     }
 
     #[test]

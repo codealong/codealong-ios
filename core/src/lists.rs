@@ -196,8 +196,7 @@ fn shorts<'a>(feeds: &'a Feeds) -> HashMap<&'a str, &'a str> {
 impl Core {
     /// The PRs page for `project` (empty for all).
     pub fn pr_list(&self, project: String) -> Vec<PrSection> {
-        let picked = self.github_picked();
-        self.client.with_feeds(|feeds| pr_sections(&crate::quick::all_prs(feeds, &picked), &project, now_ms()))
+        self.client.with_feeds(|feeds| pr_sections(&crate::quick::all_prs(feeds, &self.you(feeds)), &project, now_ms()))
     }
 
     /// The PRs waiting on your review in every project, pinned or not, the longest wait first: as
