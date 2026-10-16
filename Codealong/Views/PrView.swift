@@ -231,12 +231,13 @@ struct PrView: View {
     }
 
     /// Goes on to `next` as a swipe does, doing to this PR what the bar says. Snoozing waits on its
-    /// Mac, which the swipe doesn't: it's out of what's next meanwhile, and one its Mac didn't
-    /// snooze comes round again, saying why (`Store.snoozeLater`).
+    /// Mac, which the swipe doesn't: it goes after the rest meanwhile, and leaves what waits on you
+    /// once its Mac has it snoozed; it isn't kept as dealt with, so it's back when the snooze ends,
+    /// as the Mac's queue has it. One its Mac didn't snooze says why (`Store.snoozeLater`).
     private func goOn(to next: Waiting, speed: CGFloat = 0) {
         guard swipe.to == nil else { return }
         if case .snooze = going, let pr, let snooze = reviewOn.snooze() {
-            store.dealtWith(page)
+            store.passedOver(page)
             store.snoozeLater(pr, until: snooze.until)
             moveOn(to: next, outcome: "Snoozed your review of #\(pr.number) until \(Snooze.words(snooze.until)).", speed: speed)
         } else {

@@ -17,6 +17,8 @@ final class Store {
     /// slides in is drawn from it.
     private(set) var prDetails: [String: PrDetail] = [:]
     @ObservationIgnored private var prReadAt: [String: Date] = [:]
+    /// How many reads of each PR's page have been asked for: the latest is the one kept.
+    @ObservationIgnored private var prReads: [String: Int] = [:]
     private(set) var projects: [String] = []
     /// The projects of the PRs page's PRs, for its pills.
     private(set) var prProjects: [String] = []
@@ -272,14 +274,10 @@ final class Store {
         return all.filter { !passed.contains($0.key) } + passed.compactMap { key in all.first { $0.key == key } }
     }
 
-    /// The PRs waiting on your review, the longest wait first, as the PRs page lists them (the
-    /// core's rules), and then any pinned: the page lists those under Pinned. Only ones its Mac
-    /// can read can be opened here.
+    /// The PRs waiting on your review, pinned or not, the longest wait first, as the Mac's queue
+    /// takes them (the core's rules). Only ones its Mac can read can be opened here.
     private func reviewsWaiting() -> [PrRow] {
-        let sections = core?.prList(project: "") ?? []
-        let reviews = sections.first { $0.group == .reviews }?.rows ?? []
-        let pinned = sections.first { $0.group == .pinned }?.rows.filter(\.waits) ?? []
-        return (reviews + pinned).filter { !$0.slug.isEmpty }
+        (core?.reviewQueue() ?? []).filter { !$0.slug.isEmpty }
     }
 
     /// What waits on you by its key in the list's path, while it's listed.
@@ -438,11 +436,17 @@ final class Store {
 
     /// A PR's description, reviews, comments, changed files and your draft review of it, as its
     /// Mac's `gh` reads them; kept, so its page opens with it at once next time (`prDetails`).
+    /// Reads of one PR can overlap (one ahead, its page's, one after a review): only the latest
+    /// asked for is kept, so an older answer coming in last doesn't put back what it said.
     func prDetail(_ pr: PrRow) async throws -> PrDetail {
         let core = try running()
+        let asked = (prReads[pr.key] ?? 0) + 1
+        prReads[pr.key] = asked
         let read = try await Task.detached { try core.prDetail(device: pr.device, repo: pr.slug, number: pr.number) }.value
-        prDetails[pr.key] = read
-        prReadAt[pr.key] = .now
+        if prReads[pr.key] == asked {
+            prDetails[pr.key] = read
+            prReadAt[pr.key] = .now
+        }
         return read
     }
 

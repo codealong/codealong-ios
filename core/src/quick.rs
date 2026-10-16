@@ -257,7 +257,7 @@ pub(crate) fn quick_list(rows: &[SessionRow], prs: &[PrRow], project: &str, quer
         let waiting = attention.iter().any(|r| r.section != InboxSection::Working);
         // PRs that wait on your review, the longest wait first, as the Mac's queue takes them.
         let mut reviews: Vec<&PrRow> = prs.iter().filter(|p| p.waits && inp(&p.project)).collect();
-        reviews.sort_by_key(|p| (p.requested_at.unwrap_or(p.updated_at), p.key.clone()));
+        reviews.sort_by(|a, b| crate::lists::by_wait(a, b));
         let waiting = waiting || !reviews.is_empty();
         let mut shown = std::collections::HashSet::new();
         // The pinned ones aren't listed again below.

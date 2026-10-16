@@ -88,13 +88,26 @@ pub(crate) fn pr_sections(prs: &[PrRow], project: &str, now: i64) -> Vec<PrSecti
         .filter(|(_, rows)| !rows.is_empty())
         .map(|(group, mut rows)| {
             match group {
-                PrGroup::Reviews => rows.sort_by_key(|p| (p.requested_at.unwrap_or(p.updated_at), p.key.clone())),
+                PrGroup::Reviews => rows.sort_by(|a, b| by_wait(a, b)),
                 PrGroup::Snoozed => rows.sort_by_key(|p| (p.snoozed_until, p.key.clone())),
                 _ => rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| a.key.cmp(&b.key))),
             }
             PrSection { group, rows: rows.into_iter().cloned().collect() }
         })
         .collect()
+}
+
+/// The order PRs waiting on your review are gone through in, the longest wait first, as the Mac's
+/// queue takes them: by when your review was asked for, else when the PR last changed.
+pub(crate) fn by_wait(a: &PrRow, b: &PrRow) -> std::cmp::Ordering {
+    (a.requested_at.unwrap_or(a.updated_at), &a.key).cmp(&(b.requested_at.unwrap_or(b.updated_at), &b.key))
+}
+
+/// The PRs waiting on your review, pinned or not, the longest wait first (`by_wait`).
+pub(crate) fn waiting_reviews(prs: &[PrRow]) -> Vec<PrRow> {
+    let mut out: Vec<PrRow> = prs.iter().filter(|p| p.waits).cloned().collect();
+    out.sort_by(by_wait);
+    out
 }
 
 /// The projects of the PRs the PRs page lists, for its pills: a project with only PRs in it,
@@ -186,6 +199,12 @@ impl Core {
         self.client.with_feeds(|feeds| pr_sections(&crate::quick::all_prs(feeds), &project, now_ms()))
     }
 
+    /// The PRs waiting on your review in every project, pinned or not, the longest wait first: as
+    /// the Mac's queue goes through them, between the sessions that need you and Your turn.
+    pub fn review_queue(&self) -> Vec<PrRow> {
+        self.client.with_feeds(|feeds| waiting_reviews(&crate::quick::all_prs(feeds)))
+    }
+
     /// The list's sessions by project and worktree, in `project` (empty for all).
     pub fn by_project(&self, project: String) -> Vec<ProjectGroup> {
         self.client.with_feeds(|feeds| {
@@ -229,6 +248,26 @@ mod tests {
 
     fn groups(sections: &[PrSection]) -> Vec<(PrGroup, Vec<u64>)> {
         sections.iter().map(|s| (s.group, s.rows.iter().map(|p| p.number).collect())).collect()
+    }
+
+    #[test]
+    fn reviews_waiting_go_by_how_long_they_have_waited_pinned_or_not() {
+        let mut pinned = pr(1, "open", NOW - HOUR);
+        pinned.pinned = true;
+        pinned.waits = true;
+        pinned.requested_at = Some(NOW - 10 * HOUR);
+        let mut asked_long_ago = pr(2, "open", NOW - HOUR);
+        asked_long_ago.waits = true;
+        asked_long_ago.requested_at = Some(NOW - 48 * HOUR);
+        let mut asked_lately = pr(3, "open", NOW - 30 * HOUR);
+        asked_lately.waits = true;
+        asked_lately.requested_at = Some(NOW - 2 * HOUR);
+        // With no time it was asked for, it goes by when it last changed.
+        let mut unasked = pr(4, "open", NOW - 5 * HOUR);
+        unasked.waits = true;
+        let not_waiting = pr(5, "open", NOW - 72 * HOUR);
+        let order: Vec<u64> = waiting_reviews(&[asked_lately, not_waiting, pinned, unasked, asked_long_ago]).iter().map(|p| p.number).collect();
+        assert_eq!(order, vec![2, 1, 4, 3]);
     }
 
     #[test]
