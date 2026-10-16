@@ -2392,12 +2392,12 @@ struct SessionGlance: View {
 /// Between the reply box's buttons and its edge.
 private let replyInset: CGFloat = 6
 
-/// The reply box, floating over the conversation in glass as a control, not a bar, as Codex's
-/// phone app draws its own. While you aren't writing it's folded to a line: photos, who a message
-/// goes to, and send, or stop while a turn runs. Open, its field has the box's width to itself,
-/// over a row of its buttons: photos on the left; the model, send now and send or stop on the
-/// right. The session's screen and a glance of it both draw it, so a session slid in looks as its
-/// screen will.
+/// The reply box, a control in glass as Codex's phone app draws its own, at the foot of the
+/// conversation, which goes under it at a hard edge rather than reading through it. While you
+/// aren't writing it's folded to a line: photos, who a message goes to, and send, or stop while a
+/// turn runs. Open, its field has the box's width to itself, over a row of its buttons: photos on
+/// the left; the model, send now and send or stop on the right. The session's screen and a glance
+/// of it both draw it, so a session slid in looks as its screen will.
 private struct ReplyBox<Above: View, Field: View, Tools: View, Action: View>: View {
     let open: Bool
     /// The send button's, which a line of the box matches.
