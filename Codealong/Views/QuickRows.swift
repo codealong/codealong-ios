@@ -191,9 +191,9 @@ struct QuickPrRow: View {
     }
 }
 
-/// A Mac's suggestion for what's typed: what it would do, why, and how likely, as the start bar
-/// lists it over its capsule, short so that three fit over the keyboard. Where it is goes to
-/// VoiceOver; the title and why name it.
+/// A Mac's suggestion for what's typed: what it would do, where, why, and how likely, as the start
+/// bar lists it over its capsule, short so that three fit over the keyboard: where leads the line
+/// under the title, so two sessions of a title are told apart before a tap sends to one.
 struct SuggestionRow: View {
     let suggestion: Suggestion
     let composer: Composer
@@ -217,14 +217,19 @@ struct SuggestionRow: View {
                         .font(.subheadline.monospacedDigit())
                         .foregroundStyle(sureColor)
                 }
-                Text(said.why)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                Group {
+                    if said.place.isEmpty {
+                        Text(said.why)
+                    } else {
+                        Text("\(Text(said.place).monospaced().foregroundStyle(.tertiary))  \(said.why)")
+                    }
+                }
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityValue(said.place)
     }
 
     private var sureColor: Color {

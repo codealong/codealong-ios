@@ -114,8 +114,11 @@ struct StartBar: View {
     // MARK: Suggestions
 
     /// The suggestions, in a glass card of their own over the capsule, each a tap from doing what
-    /// it says. They take what room the list leaves, less the capsule, the line over it and a
-    /// little of the list, and scroll within it past that.
+    /// it says. They take what room the list leaves, less the capsule (its 56 points, under 4 and
+    /// 6 between), the line over it and a little of the list, and scroll within it past that.
+    /// Never less than a row's start, though: with a long prompt on a small phone the bar then
+    /// reaches over the box's last lines rather than leave no suggestion to tap, as when the list
+    /// had them.
     private var suggested: some View {
         let others = 56 + 4 + 6 + (note == nil ? 0 : noteHeight + 6)
         let most = room > 0 ? max(64, room - others - 24) : .infinity

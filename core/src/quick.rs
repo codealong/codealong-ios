@@ -359,12 +359,15 @@ pub(crate) fn first_seen(seen: &mut std::collections::HashSet<String>, key: &str
     seen.insert(key) && new_theirs
 }
 
-/// Every worktree's PR on the linked Macs, once each, those `you` opened as yours.
+/// Every worktree's PR on the linked Macs, once each, those `you` opened as yours, with the
+/// sessions that worked on it on any of them.
 pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
     let worktrees = all_worktrees(feeds);
     let projects = crate::Projects::of_feeds(feeds);
     let mut seen = std::collections::HashSet::new();
-    let mut out = Vec::new();
+    let mut out: Vec<PrRow> = Vec::new();
+    // Each PR's place in `out`, by its key and its Macs' own for it, in lower case.
+    let mut at: HashMap<String, usize> = HashMap::new();
     // Each Mac's PR list, the ones online first, of those the ones that take remote control, then
     // the ones signed in to GitHub as you: a PR two Macs list is asked about where it can be read,
     // and reviewed and merged as you.
@@ -373,9 +376,15 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
     for (d, replica) in macs {
         for p in &replica.prs {
             let key = pr_key(&p.url, &p.key);
+            let sessions: Vec<String> = p.sessions.iter().map(|k| remote_key(&d.short, k)).collect();
             if !first_seen(&mut seen, &key, &p.key) {
+                // Another Mac lists it too: the sessions there worked on it as well.
+                if let Some(i) = place(&mut at, &key, &p.key, None) {
+                    add_sessions(&mut out[i].sessions, sessions);
+                }
                 continue;
             }
+            place(&mut at, &key, &p.key, Some(out.len()));
             out.push(PrRow {
                 key,
                 device: d.key.clone(),
@@ -407,7 +416,7 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                 additions: p.additions,
                 deletions: p.deletions,
                 changed_files: p.changed_files,
-                sessions: p.sessions.iter().map(|k| remote_key(&d.short, k)).collect(),
+                sessions,
             });
         }
     }
@@ -418,10 +427,19 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
             // Two worktrees of one repo can be on the same PR's branch.
             let theirs = format!("{}#{}", l.repo_slug.as_deref().unwrap_or(&l.repo), pr.number);
             let key = pr_key(&pr.url, &theirs);
+            let sessions: Vec<String> = l.sessions.iter().map(|s| remote_key(&d.short, &s.key)).collect();
             if !first_seen(&mut seen, &key, &theirs) {
+                // Its sessions worked on it too, unless this Mac's PR list has it and says there
+                // which did. A Mac leaves a PR merged or closed a day ago out of its list, though
+                // its worktree still has it.
+                let listed = replica.prs.iter().any(|p| pr_key(&p.url, &p.key).eq_ignore_ascii_case(&key) || p.key.eq_ignore_ascii_case(&theirs));
+                if let (false, Some(i)) = (listed, place(&mut at, &key, &theirs, None)) {
+                    add_sessions(&mut out[i].sessions, sessions);
+                }
                 continue;
             }
             let Some(w) = worktrees.iter().find(|w| w.device == d.key && w.id == l.id) else { continue };
+            place(&mut at, &key, &theirs, Some(out.len()));
             out.push(PrRow {
                 key,
                 device: d.key.clone(),
@@ -452,11 +470,30 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                 additions: 0,
                 deletions: 0,
                 changed_files: 0,
-                sessions: l.sessions.iter().map(|s| remote_key(&d.short, &s.key)).collect(),
+                sessions,
             });
         }
     }
     out
+}
+
+/// Where a PR is in `all_prs`'s list, by its key or its Mac's own for it, `to` putting it there;
+/// both are kept for it, so a Mac that names it either way finds it.
+fn place(at: &mut HashMap<String, usize>, key: &str, theirs: &str, to: Option<usize>) -> Option<usize> {
+    let (key, theirs) = (key.to_lowercase(), theirs.to_lowercase());
+    let found = to.or_else(|| at.get(&key).or_else(|| at.get(&theirs)).copied())?;
+    at.entry(key).or_insert(found);
+    at.entry(theirs).or_insert(found);
+    Some(found)
+}
+
+/// Adds the sessions a PR's list doesn't have yet, after the ones it has.
+fn add_sessions(to: &mut Vec<String>, sessions: Vec<String>) {
+    for s in sessions {
+        if !to.contains(&s) {
+            to.push(s);
+        }
+    }
 }
 
 fn state_word(s: PrState) -> &'static str {
@@ -859,6 +896,43 @@ pub(crate) mod tests {
         let feeds = vec![(mac("asleep", false), &asleep), (mac("awake", true), &awake)];
         let prs = all_prs(&feeds, &crate::github::You::default());
         assert_eq!(prs.iter().map(|p| (p.key.as_str(), p.device.as_str())).collect::<Vec<_>>(), [("new/app#1", "awake")]);
+    }
+
+    #[test]
+    fn a_pr_has_the_sessions_that_worked_on_it_on_every_mac() {
+        use codealong_peer::client::Device;
+        use codealong_peer::feed::Replica;
+        use codealong_peer::model::{Harness, Lane, Session};
+        let mac = |key: &str, remote_control: bool| Device { key: key.into(), short: key.into(), name: key.into(), online: true, since: None, last_seen: None, remote_control, app: String::new(), loading: false, linked_back: true };
+        let card = |url: &str, sessions: &[&str]| serde_json::from_value::<codealong_peer::pr::PrCard>(serde_json::json!({"key": "O/App#5", "repo": "O/App", "project": "Apps", "number": 5, "title": "T", "url": url, "state": "open", "author": null, "head": "b", "sessions": sessions})).unwrap();
+        // Both Macs list it, each with the session there that worked on it, the second under the
+        // repo's new name; the one asked about it is the one that takes remote control, and the
+        // other's session is still its own.
+        let watching = Replica { prs: vec![card("https://github.com/O/App/pull/5", &["claude:a:1"])], ..Replica::default() };
+        let driving = Replica { prs: vec![card("https://github.com/N/App/pull/5", &["claude:b:2", "claude:b:3"])], ..Replica::default() };
+        let feeds = vec![(mac("watching", false), &watching), (mac("driving", true), &driving)];
+        let prs = all_prs(&feeds, &crate::github::You::default());
+        assert_eq!(prs.len(), 1);
+        assert_eq!(prs[0].device, "driving");
+        assert_eq!(prs[0].sessions, vec!["@driving:claude:b:2", "@driving:claude:b:3", "@watching:claude:a:1"]);
+
+        // A Mac whose PR list doesn't have it (an older build sends none; a PR merged a day ago
+        // is left out) has only its worktrees to go by: two of one repo on the PR's branch each
+        // add theirs.
+        let pr = codealong_peer::model::Pr { number: 5, title: "T".into(), url: String::new(), state: PrState::Open, checks: Default::default(), merge: Default::default(), updated_at: 0, merged_at: None, closed_at: None };
+        let lane = |id: &str, session: &str| {
+            let mut l = Lane::new(id, "Apps", "App");
+            l.repo_slug = Some("O/App".into());
+            l.pr = Some(pr.clone());
+            l.sessions = vec![Session::new(Harness::Claude, "c", session)];
+            l
+        };
+        let other = serde_json::from_value::<codealong_peer::pr::PrCard>(serde_json::json!({"key": "O/App#9", "repo": "O/App", "project": "Apps", "number": 9, "title": "U", "url": "", "state": "open", "author": null, "head": "c", "sessions": ["claude:c:9"]})).unwrap();
+        let old = Replica { lanes: vec![lane("l1", "4"), lane("l2", "5")], prs: vec![other], ..Replica::default() };
+        let feeds = vec![(mac("driving", true), &driving), (mac("old", false), &old)];
+        let prs = all_prs(&feeds, &crate::github::You::default());
+        assert_eq!(prs.iter().map(|p| p.key.as_str()).collect::<Vec<_>>(), vec!["N/App#5", "O/App#9"]);
+        assert_eq!(prs[0].sessions, vec!["@driving:claude:b:2", "@driving:claude:b:3", "@old:claude:c:4", "@old:claude:c:5"]);
     }
 
     #[test]
