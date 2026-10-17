@@ -85,9 +85,14 @@ the core whenever `core/` isn't what it was last built from).
 ## Landing work
 
 Commit with a descriptive message, have a change to code reviewed (*Review before pushing*),
-`git fetch`, rebase onto `origin/main`, and `git push origin HEAD:main`. No AI attribution in
-commits or PRs (no `Co-Authored-By: Claude` trailer). Ask before anything destructive:
-force-push, reset, rebasing pushed commits, deleting branches.
+`git fetch`, rebase onto `origin/main`, and `git push origin HEAD:main`. Ask before anything
+destructive: force-push, reset, rebasing pushed commits, deleting branches.
+
+The history was rewritten on 2026-10-17, before the repo went public (the main repo's was too, so
+the codealong-peer pin moved with it), and the old `main` is kept here as `refs/pre-rewrite/main`.
+A branch made before then shares no commits with `origin/main`: move your own commits with `git
+rebase --onto origin/main $(git merge-base HEAD refs/pre-rewrite/main)`, never a plain `git rebase
+origin/main` or `git pull`, which would replay the whole old history.
 
 Open the last message of every turn that changed something with the work's status on one short
 line (`Pushed: …`, `Committed: …`, `Not committed: …`), as the main repo's CLAUDE.md describes.
