@@ -57,6 +57,9 @@ struct QuickView: View {
     /// When a row's Mark as done was held by work under way, by session: done again soon after
     /// ends that too.
     @State private var doneHeld: [String: Date] = [:]
+    /// What a row's menu asked of a Mac and waits on its answer for, as `<what>:<key>`: asked again
+    /// meanwhile, it would go twice (two approvals, two forks).
+    @State private var asking: Set<String> = []
     /// The last account, place and Mac you started on, to start with again.
     @AppStorage("start.account") private var lastAccount = ""
     @AppStorage("start.place") private var lastPlace = ""
@@ -192,6 +195,15 @@ struct QuickView: View {
     private func act(_ ask: @escaping () async throws -> Void) {
         Task {
             do { try await ask() } catch { store.notice = words(error) }
+        }
+    }
+
+    /// Asks as `act` does, but not again while the same ask (`what`) waits on its Mac's answer.
+    private func actOnce(_ what: String, _ ask: @escaping () async throws -> Void) {
+        guard asking.insert(what).inserted else { return }
+        act {
+            defer { asking.remove(what) }
+            try await ask()
         }
     }
 
@@ -718,7 +730,7 @@ struct QuickView: View {
                 Button("New session here…", systemImage: "square.and.pencil") { startIn(worktree) }
             }
             Button("Fork", systemImage: "arrow.triangle.branch") { fork(r) }
-                .disabled(store.cannotReach(r) != nil)
+                .disabled(store.cannotReach(r) != nil || asking.contains("fork:" + r.key))
         }
         Section {
             Button("Rename…", systemImage: "pencil") {
@@ -748,7 +760,7 @@ struct QuickView: View {
                 Label("Quiet", systemImage: "speaker.slash")
             }
             Button("Mark as done", systemImage: "checkmark.circle") { markDone(r) }
-                .disabled(!online)
+                .disabled(!online || asking.contains("done:" + r.key))
             Button("Archive", systemImage: "archivebox") { store.archive(r.key) }
         }
         Section {
@@ -782,7 +794,7 @@ struct QuickView: View {
             // Where the review box would take an approval: an open PR its Mac didn't open.
             if !pr.slug.isEmpty && reviewBox(pr: pr, draft: nil, reviews: []).reviewable {
                 Button("Approve #\(String(pr.number))", systemImage: "checkmark") { approve(pr) }
-                    .disabled(PrView.whyNot(pr, store: store) != nil)
+                    .disabled(PrView.whyNot(pr, store: store) != nil || asking.contains("approve:" + pr.key))
             }
             if pr.reviewRequested && !pr.slug.isEmpty {
                 Menu("Snooze review", systemImage: "moon.zzz") {
@@ -818,7 +830,7 @@ struct QuickView: View {
     /// Forks a session into a copy that goes on in the background on its Mac, as its own Fork
     /// does. The copy waits for a prompt, so it opens once its Mac lists it, as a start here does.
     private func fork(_ r: SessionRow) {
-        act {
+        actOnce("fork:" + r.key) {
             let started = try await store.fork(r.key, prompt: "")
             if let key = started.key {
                 store.openWhenListed = key
@@ -838,7 +850,7 @@ struct QuickView: View {
             store.notice = "“\(r.title)” is still working. Mark it done again to end that too."
             return
         }
-        act {
+        actOnce("done:" + r.key) {
             let outcome = try await store.done(r.key, stop: stop)
             guard outcome.done else {
                 doneHeld[r.key] = .now
@@ -854,7 +866,7 @@ struct QuickView: View {
     /// Approves a PR as you on GitHub, through its Mac, as its review box's Approve does with
     /// nothing written. A draft review of yours on it holds that back: its Mac says to open it.
     private func approve(_ pr: PrRow) {
-        act {
+        actOnce("approve:" + pr.key) {
             let went = try await store.prReview(pr, verdict: .approve, body: "", draft: nil)
             store.dealtWith(PrView.prefix + pr.key)
             store.notice = reviewedWords(verdict: .approve, number: pr.number, draft: went)
