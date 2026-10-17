@@ -241,5 +241,7 @@ Mac app's repo, `design/plans/ios.md`.
 ## License
 
 Copyright 2026 Gordon L. Hempton. The code is under the [Apache License 2.0](LICENSE), as the Mac
-app's is; copies carry the [NOTICE](NOTICE). The Codealong name and logo are trademarks, and the
-license doesn't grant rights to them: a fork should go by its own name and icon.
+app's is; copies carry the [NOTICE](NOTICE). The emblems' icons are Tabler's, under their own
+license ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)). The Codealong name and logo are
+trademarks, and the license doesn't grant rights to them: a fork should go by its own name and
+icon.
