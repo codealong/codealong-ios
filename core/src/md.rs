@@ -685,7 +685,7 @@ mod tests {
         // A reply that came out flat on the Mac, its sub-items beside their items and its
         // paragraph out of the list (Markdown.test.ts, 2026-10-08).
         let src = [
-            "- **For a Northwind review, effort sets how many checks the planner proposes:**",
+            "- **For a design review, effort sets how many checks the planner proposes:**",
             "  - Quick: about 10.",
             "  - Deep: also every interface.",
             "",
@@ -699,7 +699,7 @@ mod tests {
         assert_eq!(
             parts(&src),
             [
-                (0, list(false, 1, &["**For a Northwind review, effort sets how many checks the planner proposes:**"])),
+                (0, list(false, 1, &["**For a design review, effort sets how many checks the planner proposes:**"])),
                 (1, list(false, 1, &["Quick: about 10.", "Deep: also every interface."])),
                 (1, para("The approval card would say what the next level adds.")),
                 (0, list(false, 1, &["**A customer's own list has no effort setting.** The list is the scope.", "**\"Only P1s\" isn't effort.** It fits in two places:"])),

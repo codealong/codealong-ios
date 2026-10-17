@@ -2235,11 +2235,11 @@ mod project_tests {
         // What the Macs send, the first Mac's lanes first.
         let lanes = [
             ("Codealong", slugs(&["codealong/codealong"])),
-            ("Kestrel", slugs(&[])),
+            ("Garden", slugs(&[])),
             ("Elsewhere", slugs(&["someone/scratch"])),
             ("Work", slugs(&["acme/app"])),
             ("App", slugs(&["acme/app"])),
-            ("kestrel", slugs(&[])),
+            ("garden", slugs(&[])),
         ];
         let p = Projects::new(lanes.iter().map(|(n, s)| (*n, s.clone())));
         // The second Mac's worktree of a repo goes where the first Mac has it, even from no project.
@@ -2248,7 +2248,7 @@ mod project_tests {
         // A repo by the name GitHub gives it now lines up too.
         assert_eq!(p.of("Elsewhere", &slugs(&["old/name", "acme/app"])).as_deref(), Some("Work"));
         // No repo in common: a project of the same name, spelled as the first Mac spells it.
-        assert_eq!(p.of("kestrel", &[]).as_deref(), Some("Kestrel"));
+        assert_eq!(p.of("garden", &[]).as_deref(), Some("Garden"));
         // In no project on any Mac.
         assert_eq!(p.of("Elsewhere", &slugs(&["someone/scratch"])), None);
         assert_eq!(p.of("Elsewhere", &[]), None);
@@ -2256,8 +2256,8 @@ mod project_tests {
 
     #[test]
     fn projects_list_by_name_with_elsewhere_last() {
-        let names = ["kestrel", "Elsewhere", "Codealong", "Kestrel", "Codealong", "api"];
-        assert_eq!(project_list(names.into_iter()), ["api", "Codealong", "kestrel", "Kestrel", "Elsewhere"]);
+        let names = ["garden", "Elsewhere", "Codealong", "Garden", "Codealong", "api"];
+        assert_eq!(project_list(names.into_iter()), ["api", "Codealong", "garden", "Garden", "Elsewhere"]);
     }
 }
 

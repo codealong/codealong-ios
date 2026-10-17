@@ -1244,7 +1244,7 @@ enum Marked {
     }
 }
 
-/// How a Mac's name reads where space is short: without its owner ("Gordon’s MacBook Pro" is
+/// How a Mac's name reads where space is short: without its owner ("Sam’s MacBook Pro" is
 /// "MacBook Pro"), since every Mac here is yours.
 enum Names {
     static func short(_ name: String) -> String {
