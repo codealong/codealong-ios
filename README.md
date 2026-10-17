@@ -237,3 +237,9 @@ LOOK_ONLY=1 QUEUE=<key>,<key> OPEN=<key> scripts/run.sh  # go through real sessi
 On the Mac, `codealong devices code` makes a link code (the app running, with Devices and iroh
 on). [CLAUDE.md](CLAUDE.md) has the working notes every change follows, and the plan is in the
 Mac app's repo, `design/plans/ios.md`.
+
+## License
+
+Copyright 2026 Gordon L. Hempton. The code is under the [Apache License 2.0](LICENSE), as the Mac
+app's is; copies carry the [NOTICE](NOTICE). The Codealong name and logo are trademarks, and the
+license doesn't grant rights to them: a fork should go by its own name and icon.
