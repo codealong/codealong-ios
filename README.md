@@ -122,12 +122,13 @@ sent, so you can write the next one or move on. One that doesn't go comes back t
 ## How it works with your Macs
 
 You need the [Codealong Mac app](https://github.com/codealong/codealong) on each Mac you want to
-see, with **Settings › Devices** turned on. That's all it takes to see sessions and read their
-conversations.
+see, with *Show my other devices* turned on in its Settings › Devices. That's all it takes to see
+sessions and read their conversations.
 
-To reply, approve, start or stop from your phone, turn on **remote control** in Settings › Devices
-on the Mac you want to act on. It's off by default, it's per Mac, and every request a Mac takes
-from another device is written to its `~/Library/Logs/Codealong/devices.log`.
+To reply, approve, start or stop from your phone, turn on remote control (*Let my linked devices
+act on sessions here*, in Settings › Devices) on the Mac you want to act on. It's off by default,
+it's per Mac, and every request a Mac takes from another device is written to its
+`~/Library/Logs/Codealong/devices.log`.
 
 The phone doesn't keep a board of its own. Each Mac works out its sessions' status and what
 they're waiting on, and sends the phone a feed of them; the phone asks the Mac for what it shows
@@ -135,22 +136,25 @@ and keeps what it last saw, so it opens straight onto your sessions while it rec
 
 ## Get it on your iPhone
 
-Until it's on TestFlight, you build it on a Mac and install it on an iPhone paired with that Mac.
+Until it's on TestFlight, you build it on a Mac and install it on an iPhone (or an iPad) paired
+with that Mac.
 
 **You'll need:**
 
-- A Mac with [Xcode](https://developer.apple.com/xcode/) 26 and its iOS SDK
+- A Mac with [Xcode](https://developer.apple.com/xcode/) 26 and its iOS SDK, as the selected
+  developer directory: if `xcode-select -p` names the Command Line Tools rather than Xcode,
+  `sudo xcode-select -s /Applications/Xcode.app`
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen): `brew install xcodegen`
 - Rust (`rustup`) with the iOS targets: `rustup target add aarch64-apple-ios aarch64-apple-ios-sim`
-- An iPhone on iOS 26, and an Apple ID added in Xcode › Settings › Accounts (a free Personal
-  Team works)
+- An iPhone or iPad on iOS 26, and an Apple ID added in Xcode › Settings › Accounts (a free
+  Personal Team works)
 
 **Install it:**
 
 1. Connect your iPhone to the Mac with a cable once, and tap *Trust* on the phone.
 2. On the phone, turn on Developer Mode (Settings › Privacy & Security › Developer Mode) and
    restart when it asks.
-3. Clone and install, with the phone unlocked:
+3. Clone and install, with the phone unlocked and connected:
 
    ```bash
    git clone https://github.com/codealong/codealong-ios.git
@@ -158,17 +162,34 @@ Until it's on TestFlight, you build it on a Mac and install it on an iPhone pair
    scripts/install-device.sh
    ```
 
-   It builds the app for iPhone, signs it with your team from Xcode's settings
-   (`CODEALONG_TEAM_ID` picks another), installs it and opens it.
-4. The first time, iOS asks you to trust the developer: Settings › General › VPN & Device
-   Management, then your Apple ID.
+   It says which team signs the app and which phone it goes on: your team from Xcode's settings,
+   and the phone connected now (`CODEALONG_TEAM_ID` and `DEVICE` pick others, and `DRY_RUN=1`
+   says which without building). Then it builds the app for that phone, which registers the
+   phone with your team, installs it and opens it.
+
+   The first build takes a while, about 10 to 20 minutes on a busy Mac: cargo downloads and
+   compiles the Rust core and the crate it shares with the Mac app, `codealong-peer`, from the
+   Mac app's public repo ([codealong/codealong](https://github.com/codealong/codealong)). Later
+   builds rebuild the core only when it changed.
+4. The first time, iOS won't open the app until you trust its developer: Settings › General ›
+   VPN & Device Management, then your Apple ID. Then open Codealong.
+
+An app's ID belongs to one Apple developer team, and `dev.codealong.app` is Codealong's own, so
+the app you build is `dev.codealong.app.<your team ID>` (`CODEALONG_BUNDLE_ID` sets another).
+Install it with the same team each time: the phone keeps its device key for that ID, and an app
+with another ID is a second app to iOS, to link with your Macs again. The simulator's build is
+`dev.codealong.app`.
 
 With a free Personal Team, Apple lets the app run for 7 days before it needs installing again:
 run `scripts/install-device.sh` again. A paid developer account signs it for a year.
 
-**Link it with your Macs.** On each Mac, open Codealong's Settings › Devices and scan its QR code
-with the iPhone's camera; the app opens and asks to link. Or, on the Mac, run `codealong devices code`
-and enter the code in the app, under *Macs*. You do this once per Mac.
+**Link it with your Macs.** On each Mac, open Codealong's Settings › Devices, turn on *Show my
+other devices* (*Reach linked devices anywhere*, under it, stays on), and click *Make a link
+code*. Scan the QR code it shows with the iPhone's camera: the app opens and asks to link. Or
+enter the code in the app, under *Macs*. With Codealong running, `codealong devices code` makes
+one in a terminal too, once Settings › Agents has installed the `codealong` command. You do this
+once per Mac. To reply, approve or start from the phone, turn on *Let my linked devices act on
+sessions here* on that Mac as well.
 
 ## Privacy and security
 
@@ -226,7 +247,7 @@ project.yml         XcodeGen's spec; Codealong.xcodeproj is generated from it
 To run it in the simulator:
 
 ```bash
-scripts/build.sh                    # the core for the simulator if it's missing, then the app
+scripts/build.sh                    # the core for the simulator if core/ changed, then the app
 CORE=1 scripts/build.sh             # rebuild the core too
 scripts/run.sh                      # install and launch on the booted simulator
 LINK_CODE=cal1… scripts/run.sh      # launch with a Mac's link code, as if entered

@@ -13,9 +13,9 @@ projects or naming.
 scripts/build-core.sh          # Rust core → build/CodealongCore.xcframework + Codealong/Generated (SIM_ONLY=1: simulator only)
 scripts/build-emblems.sh       # the Mac's emblem icons and colors → Codealong/Assets.xcassets/Emblems, from the pinned commit (build-core.sh runs it)
 swift scripts/make-sounds.swift  # the app's sounds → Codealong/Sounds (made from sine waves; checked in)
-scripts/build.sh               # core if missing (CORE=1 forces it), xcodegen, then the app for the simulator
+scripts/build.sh               # core if core/ changed since it was built (CORE=1 forces it), xcodegen, then the app for the simulator
 scripts/run.sh                 # install and launch on the booted simulator; LINK_CODE=<code> links it at launch
-scripts/install-device.sh      # a release build on a paired iPhone, signed by your team (README, Get it on your iPhone)
+scripts/install-device.sh      # a release build on a paired iPhone or iPad, signed by your team (README, Get it on your iPhone); DRY_RUN=1 says what it would use
 (cd core && cargo test)        # the core's tests
 ```
 
@@ -40,12 +40,15 @@ Mac's board sorts them). So:
   the connection there, so only send new messages to Macs that say they know them.
 
 To take a newer one: set `rev` in `core/Cargo.toml` to a commit in the main repo's `origin/main`,
-then `scripts/build-core.sh` (cargo fetches it with your git login).
+then `scripts/build-core.sh` (cargo fetches it with git; build.sh and install-device.sh rebuild
+the core whenever `core/` isn't what it was last built from).
 
 ## How the phone is a device
 
-- It has an Ed25519 device key in the Keychain (this device only) and links with a Mac's link
-  code (`cal1…`: the Mac's key and a one-time secret) over iroh, typed or pasted, or as the
+- It has an Ed25519 device key in the Keychain (this device only), which belongs to the app's ID:
+  `dev.codealong.app` for Codealong's own team and `dev.codealong.app.<team ID>` for anyone else's
+  (install-device.sh), so a build with another ID is another app, linked anew. It links with a
+  Mac's link code (`cal1…`: the Mac's key and a one-time secret) over iroh, typed or pasted, or as the
   `codealong://link/<code>` its QR code holds, which the camera opens here (the app asks first).
   Its hello says it's a phone (or a tablet), so the Mac lists it apart in Settings › Devices,
   sends it its feed, answers its requests, and never dials it or asks it to search.

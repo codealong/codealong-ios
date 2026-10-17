@@ -10,5 +10,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 APP=DerivedData/Build/Products/Debug-iphonesimulator/Codealong.app
+# The ID the build has (project.yml's), not one written here again.
+ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")
 xcrun simctl install booted "$APP"
-SIMCTL_CHILD_CODEALONG_LINK_CODE="${LINK_CODE:-}" SIMCTL_CHILD_CODEALONG_QUERY="${QUERY:-}" SIMCTL_CHILD_CODEALONG_OPEN="${OPEN:-}" SIMCTL_CHILD_CODEALONG_LOOK_ONLY="${LOOK_ONLY:-}" SIMCTL_CHILD_CODEALONG_QUEUE="${QUEUE:-}" SIMCTL_CHILD_CODEALONG_IMPROVE="${IMPROVE:-}" xcrun simctl launch --terminate-running-process booted dev.codealong.app
+SIMCTL_CHILD_CODEALONG_LINK_CODE="${LINK_CODE:-}" SIMCTL_CHILD_CODEALONG_QUERY="${QUERY:-}" SIMCTL_CHILD_CODEALONG_OPEN="${OPEN:-}" SIMCTL_CHILD_CODEALONG_LOOK_ONLY="${LOOK_ONLY:-}" SIMCTL_CHILD_CODEALONG_QUEUE="${QUEUE:-}" SIMCTL_CHILD_CODEALONG_IMPROVE="${IMPROVE:-}" xcrun simctl launch --terminate-running-process booted "$ID"

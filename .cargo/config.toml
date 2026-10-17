@@ -1,5 +1,6 @@
 # Builds go next to the repo, as the Mac app's do, so every worktree shares compiled
-# dependencies. `git-fetch-with-cli` lets cargo fetch the private main repo with your git login.
+# dependencies. `git-fetch-with-cli` has cargo fetch the main repo with git itself, which uses
+# your git login where one is needed (a private fork, say).
 [build]
 target-dir = "../codealong-ios-target"
 

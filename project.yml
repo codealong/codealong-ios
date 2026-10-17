@@ -56,6 +56,8 @@ targets:
             CFBundleURLSchemes: [codealong]
     settings:
       base:
+        # The simulator's ID, and a phone's signed by Codealong's own team; install-device.sh signs
+        # it as dev.codealong.app.<team ID> for any other team, since an App ID belongs to one.
         PRODUCT_BUNDLE_IDENTIFIER: dev.codealong.app
         TARGETED_DEVICE_FAMILY: "1,2"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
