@@ -51,6 +51,12 @@ struct QuickView: View {
     @State private var acting = false
     /// Starts that went, for the haptic.
     @State private var started = 0
+    /// The session a row's Rename… names, and the name as it's typed.
+    @State private var renaming: SessionRow?
+    @State private var newName = ""
+    /// When a row's Mark as done was held by work under way, by session: done again soon after
+    /// ends that too.
+    @State private var doneHeld: [String: Date] = [:]
     /// The last account, place and Mac you started on, to start with again.
     @AppStorage("start.account") private var lastAccount = ""
     @AppStorage("start.place") private var lastPlace = ""
@@ -137,6 +143,16 @@ struct QuickView: View {
             .sensoryFeedback(.success, trigger: started)
             .alert(store.notice ?? "", isPresented: Binding(get: { store.notice != nil }, set: { if !$0 { store.notice = nil } })) {
                 Button("OK", role: .cancel) { store.notice = nil }
+            }
+            .alert("Rename", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+                TextField("Name", text: $newName)
+                Button("Rename") {
+                    if let r = renaming { rename(r) }
+                    renaming = nil
+                }
+                Button("Cancel", role: .cancel) { renaming = nil }
+            } message: {
+                Text("Its harness keeps the name, so it shows there too.")
             }
             .alert("Link with this Mac?", isPresented: Binding(get: { store.offeredLink != nil }, set: { if !$0 { store.offeredLink = nil } })) {
                 Button("Link") {
@@ -658,33 +674,7 @@ struct QuickView: View {
                 .contentShape(.rect)
         }
         .tint(.primary)
-        .contextMenu {
-            // Pinned on its Mac, which lists it first there and here.
-            Button(r.pinned == nil ? "Pin" : "Unpin", systemImage: r.pinned == nil ? "pin" : "pin.slash") {
-                act { try await store.pin(r.key, r.pinned == nil) }
-            }
-            if r.seenable {
-                Button("Mark as seen", systemImage: "eye") { store.markSeen(r.key) }
-            }
-            if r.unreadable {
-                Button("Mark as unread", systemImage: "circle.badge") {
-                    Task {
-                        do { try await store.markUnread(r.key) } catch { store.notice = words(error) }
-                    }
-                }
-            }
-            Menu("Snooze", systemImage: "moon.zzz") {
-                ForEach(Snooze.choices()) { c in
-                    Button(c.label) { act { try await store.snooze(r.key, until: c.until) } }
-                }
-                if r.snoozedUntil != nil {
-                    Button("Wake now", systemImage: "sun.max") { act { try await store.snooze(r.key, until: nil) } }
-                }
-            }
-            Toggle(isOn: Binding(get: { r.quiet }, set: { on in act { try await store.quiet(r.key, on) } })) {
-                Label("Quiet", systemImage: "speaker.slash")
-            }
-        }
+        .contextMenu { sessionMenu(r) }
         .swipeActions(edge: .trailing) {
             Button("Archive", systemImage: "archivebox") { store.archive(r.key) }
                 .tint(.gray)
@@ -710,9 +700,89 @@ struct QuickView: View {
                 .contentShape(.rect)
         }
         .tint(.primary)
-        .contextMenu {
+        .contextMenu { prMenu(pr) }
+    }
+
+    /// A session's menu, in the order of its right-click menu on the Mac, less what a phone can't
+    /// do: opening its PR and starting from it; what it is to you; copying it.
+    @ViewBuilder
+    private func sessionMenu(_ r: SessionRow) -> some View {
+        // Renaming it and marking it done wait on its Mac, so they need it connected; forking it
+        // needs remote control on there too.
+        let online = store.devices.contains { $0.key == r.device && $0.online }
+        Section {
+            if let pr = r.worktreePr {
+                Button("Open PR #\(String(pr.number))", systemImage: "arrow.triangle.pull") { openPr(pr) }
+            }
+            if let worktree = store.worktrees(r.device).first(where: { $0.id == r.worktreeId }) {
+                Button("New session here…", systemImage: "square.and.pencil") { startIn(worktree) }
+            }
+            Button("Fork", systemImage: "arrow.triangle.branch") { fork(r) }
+                .disabled(store.cannotReach(r) != nil)
+        }
+        Section {
+            Button("Rename…", systemImage: "pencil") {
+                newName = r.name ?? r.title
+                renaming = r
+            }
+            .disabled(!online)
+            if r.seenable {
+                Button("Mark as seen", systemImage: "eye") { store.markSeen(r.key) }
+            }
+            if r.unreadable {
+                Button("Mark as unread", systemImage: "envelope.badge") { act { try await store.markUnread(r.key) } }
+            }
+            // Pinned on its Mac, which lists it first there and here.
+            Button(r.pinned == nil ? "Pin" : "Unpin", systemImage: r.pinned == nil ? "pin" : "pin.slash") {
+                act { try await store.pin(r.key, r.pinned == nil) }
+            }
+            Menu("Snooze", systemImage: "moon.zzz") {
+                ForEach(Snooze.choices()) { c in
+                    Button(c.label) { act { try await store.snooze(r.key, until: c.until) } }
+                }
+                if r.snoozedUntil != nil {
+                    Button("Wake now", systemImage: "sun.max") { act { try await store.snooze(r.key, until: nil) } }
+                }
+            }
+            Toggle(isOn: Binding(get: { r.quiet }, set: { on in act { try await store.quiet(r.key, on) } })) {
+                Label("Quiet", systemImage: "speaker.slash")
+            }
+            Button("Mark as done", systemImage: "checkmark.circle") { markDone(r) }
+                .disabled(!online)
+            Button("Archive", systemImage: "archivebox") { store.archive(r.key) }
+        }
+        Section {
+            if !r.id.isEmpty {
+                Button("Copy session ID", systemImage: "doc.on.doc") { UIPasteboard.general.string = r.id }
+            }
+        }
+    }
+
+    /// A PR's menu, in the order of its menu on the Mac, less what a phone can't do: opening it and
+    /// its sessions; approving it and snoozing your review; copying its link and branch.
+    @ViewBuilder
+    private func prMenu(_ pr: PrRow) -> some View {
+        // The sessions that worked on it that the list has: an archived one has no page here.
+        let sessions = pr.sessions.compactMap { key in store.sessions.first { $0.key == key } }
+        Section {
             if let url = URL(string: pr.url) {
                 Button("Open on GitHub", systemImage: "safari") { openURL(url) }
+            }
+            if sessions.count == 1 {
+                Button("Open its session", systemImage: "bubble.left") { path.append(sessions[0].key) }
+            } else if sessions.count > 1 {
+                Menu("Open its session", systemImage: "bubble.left") {
+                    ForEach(sessions, id: \.key) { s in
+                        Button(s.title) { path.append(s.key) }
+                    }
+                }
+            }
+        }
+        Section {
+            // Where the review box would take an approval: an open PR its Mac didn't open.
+            if !pr.slug.isEmpty && reviewBox(pr: pr, draft: nil, reviews: []).reviewable {
+                Button("Approve #\(String(pr.number))", systemImage: "checkmark") { approve(pr) }
+                    .disabled(PrView.whyNot(pr, store: store) != nil)
             }
             if pr.reviewRequested && !pr.slug.isEmpty {
                 Menu("Snooze review", systemImage: "moon.zzz") {
@@ -725,6 +795,76 @@ struct QuickView: View {
                 }
             }
         }
+        Section {
+            if !pr.url.isEmpty {
+                Button("Copy link", systemImage: "link") { UIPasteboard.general.string = pr.url }
+            }
+            if let branch = pr.branch, !branch.isEmpty {
+                Button("Copy branch name", systemImage: "arrow.triangle.branch") { UIPasteboard.general.string = branch }
+            }
+        }
+    }
+
+    /// A session's PR: its page here where the PRs listed have it and its Mac can read it there,
+    /// as a PR's row opens, else on GitHub.
+    private func openPr(_ wp: WorktreePr) {
+        if let pr = store.pr(wp.key), !pr.slug.isEmpty {
+            path.append(PrView.prefix + pr.key)
+        } else if let url = URL(string: wp.url) {
+            openURL(url)
+        }
+    }
+
+    /// Forks a session into a copy that goes on in the background on its Mac, as its own Fork
+    /// does. The copy waits for a prompt, so it opens once its Mac lists it, as a start here does.
+    private func fork(_ r: SessionRow) {
+        act {
+            let started = try await store.fork(r.key, prompt: "")
+            if let key = started.key {
+                store.openWhenListed = key
+            } else {
+                store.notice = started.message ?? "Forked “\(r.title)”: the copy waits for a prompt in the background on its Mac."
+            }
+        }
+    }
+
+    /// Done with a session, as the Mac's Mark as done and its own: it closes where its Mac can
+    /// close it, and is marked seen and archived. Work under way holds it, and done again soon
+    /// after ends that too.
+    private func markDone(_ r: SessionRow) {
+        let stop = doneHeld[r.key].map { Date.now.timeIntervalSince($0) < 15 } ?? false
+        if !stop && r.status == .working {
+            doneHeld[r.key] = .now
+            store.notice = "“\(r.title)” is still working. Mark it done again to end that too."
+            return
+        }
+        act {
+            let outcome = try await store.done(r.key, stop: stop)
+            guard outcome.done else {
+                doneHeld[r.key] = .now
+                store.notice = "\(outcome.message) Mark it done again to end that too."
+                return
+            }
+            doneHeld[r.key] = nil
+            store.dealtWith(r.key)
+            if outcome.noted { store.notice = outcome.message }
+        }
+    }
+
+    /// Approves a PR as you on GitHub, through its Mac, as its review box's Approve does with
+    /// nothing written. A draft review of yours on it holds that back: its Mac says to open it.
+    private func approve(_ pr: PrRow) {
+        act {
+            let went = try await store.prReview(pr, verdict: .approve, body: "", draft: nil)
+            store.dealtWith(PrView.prefix + pr.key)
+            store.notice = reviewedWords(verdict: .approve, number: pr.number, draft: went)
+        }
+    }
+
+    private func rename(_ r: SessionRow) {
+        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name != r.title else { return }
+        act { try await store.rename(r.key, to: name) }
     }
 
     @ViewBuilder

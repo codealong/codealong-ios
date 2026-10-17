@@ -719,6 +719,7 @@ pub(crate) mod tests {
             in_app: false,
             asks: false,
             pr: None,
+            worktree_pr: None,
             seenable: false,
             unreadable: false,
             stoppable: false,
@@ -735,6 +736,7 @@ pub(crate) mod tests {
             runs_working: 0,
             suggestions: None,
             emblem: None,
+            id: key.into(),
         }
     }
 

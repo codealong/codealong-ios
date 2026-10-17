@@ -162,6 +162,8 @@ pub struct SessionRow {
     pub asks: bool,
     /// Its worktree's PR, as "#12 Title", for the quick search to find it by.
     pub pr: Option<String>,
+    /// Its worktree's PR, for its menu's Open PR.
+    pub worktree_pr: Option<WorktreePr>,
     /// A finished turn waiting on you to read it, or a reply that asks you something: marking it
     /// seen settles it (the Mac's lanes.ts `seenable`).
     pub seenable: bool,
@@ -208,6 +210,19 @@ pub struct SessionRow {
     /// The small icon in two colors beside its title, as its Mac gave it. None until its Mac
     /// has given it one, and from Macs that don't give them.
     pub emblem: Option<Emblem>,
+    /// The id its harness gives it (Claude Code's session id, Codex's thread id), which its menu's
+    /// Copy session ID copies, as the Mac's does. Its resume command, which the Mac's menu copies
+    /// too, isn't sent to other devices: it works only on its Mac (peerfeed.rs `shareable`).
+    pub id: String,
+}
+
+/// A session's worktree's PR: where its menu's Open PR goes.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct WorktreePr {
+    /// Its key among the PRs listed (`PrRow::key`), whose page opens here.
+    pub key: String,
+    pub number: u64,
+    pub url: String,
 }
 
 /// A session's emblem, as the Mac draws it (its primitives.tsx `SessionEmblem`): the icon Jev
@@ -604,6 +619,8 @@ pub(crate) fn all_rows(feeds: &Feeds) -> Vec<SessionRow> {
                 in_app: s.surface == codealong_peer::model::Surface::App,
                 asks: s.asks,
                 pr: lane.pr.as_ref().map(|p| format!("#{} {}", p.number, p.title)),
+                // Keyed as the PRs listed key a worktree's (quick.rs `all_prs`), so its page is found.
+                worktree_pr: lane.pr.as_ref().map(|p| WorktreePr { key: quick::pr_key(&p.url, &format!("{}#{}", lane.repo_slug.as_deref().unwrap_or(&lane.repo), p.number)), number: p.number, url: p.url.clone() }),
                 seenable: status == Status::Unread || s.asks,
                 unreadable: !s.asks && matches!(status, Status::Idle | Status::Stopped),
                 // Macs before 2026-09-29 don't say, and stop only the sessions Codealong runs.
@@ -621,6 +638,7 @@ pub(crate) fn all_rows(feeds: &Feeds) -> Vec<SessionRow> {
                 runs_working: 0,
                 suggestions: s.suggestions.as_ref().filter(|g| !g.replies.is_empty()).map(|g| SuggestedReplies { replies: g.replies.clone(), note: g.note.clone(), by: g.by_title.clone() }),
                 emblem: s.emblem.as_ref().map(Emblem::from),
+                id: s.id.clone(),
             });
         }
     }
@@ -1329,6 +1347,26 @@ mod tests {
         let replica = Replica { lanes: vec![lane], ..Replica::default() };
         let keys: Vec<String> = all_rows(&[(mac, &replica)]).into_iter().map(|r| r.key).collect();
         assert_eq!(keys, ["@m:claude:claude:a"]);
+    }
+
+    #[test]
+    fn a_sessions_row_has_its_id_and_its_worktrees_pr_as_the_prs_listed_have_it() {
+        use codealong_peer::client::Device;
+        use codealong_peer::feed::Replica;
+        let mac = Device { key: "m".into(), short: "m".into(), name: "Mac".into(), online: true, since: None, last_seen: None, remote_control: true, app: String::new(), loading: false, linked_back: true };
+        let mut lane = codealong_peer::model::Lane::new("/src/app", "App", "app");
+        lane.repo_slug = Some("o/app".into());
+        lane.pr = Some(serde_json::from_value(serde_json::json!({"number": 7, "title": "Fix it", "url": "https://github.com/O/App/pull/7", "state": "open", "checks": {"passed": 0, "failed": 0, "pending": 0, "skipped": 0, "failing": []}, "merge": "clean", "updatedAt": 0, "mergedAt": null, "closedAt": null})).unwrap());
+        lane.sessions = vec![Session::new(Harness::Claude, "claude", "6e07c149")];
+        let replica = Replica { lanes: vec![lane], ..Replica::default() };
+        let feeds = [(mac, &replica)];
+        let rows = all_rows(&feeds);
+        assert_eq!((rows[0].key.as_str(), rows[0].id.as_str()), ("@m:claude:claude:6e07c149", "6e07c149"));
+        let pr = rows[0].worktree_pr.clone().unwrap();
+        assert_eq!((pr.number, pr.url.as_str()), (7, "https://github.com/O/App/pull/7"));
+        // Its key is the PR's among the PRs listed, so Open PR finds its page here.
+        let listed = all_prs(&feeds, &crate::github::You::default());
+        assert_eq!(listed.iter().map(|p| p.key.as_str()).collect::<Vec<_>>(), [pr.key.as_str()]);
     }
 
     #[test]
@@ -2114,6 +2152,7 @@ mod order_tests {
             in_app: false,
             asks: false,
             pr: None,
+            worktree_pr: None,
             seenable: false,
             unreadable: false,
             stoppable: false,
@@ -2130,6 +2169,7 @@ mod order_tests {
             runs_working: 0,
             suggestions: None,
             emblem: None,
+            id: key.into(),
         }
     }
 

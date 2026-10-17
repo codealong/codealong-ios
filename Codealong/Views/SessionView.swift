@@ -356,7 +356,7 @@ struct SessionView: View {
     }
 
     /// The session's menu: stop, rename, fork, where it came from, done, snooze, quiet, seen or
-    /// unread, archive.
+    /// unread, pin, archive; then copying its ID, as the Mac's menu does.
     @ViewBuilder
     private var sessionMenu: some View {
         // A swipe across the screen does it too, and what the bar says goes with it.
@@ -404,12 +404,20 @@ struct SessionView: View {
                 .disabled(!online)
         }
         if row?.unreadable == true {
-            Button("Mark as unread", systemImage: "circle.badge") { Task { await markUnread() } }
+            Button("Mark as unread", systemImage: "envelope.badge") { Task { await markUnread() } }
                 .disabled(!online)
         }
+        // Pinned on its Mac, which lists it first there and here.
+        Button(row?.pinned == nil ? "Pin" : "Unpin", systemImage: row?.pinned == nil ? "pin" : "pin.slash") { Task { await pin() } }
+            .disabled(!online)
         Button("Archive", systemImage: "archivebox") {
             store.archive(key)
             dismiss()
+        }
+        if let id = row?.id, !id.isEmpty {
+            Section {
+                Button("Copy session ID", systemImage: "doc.on.doc") { UIPasteboard.general.string = id }
+            }
         }
     }
 
@@ -1103,6 +1111,15 @@ struct SessionView: View {
             dismiss()
         } catch {
             markedUnread = false
+            said = words(error)
+        }
+    }
+
+    private func pin() async {
+        let on = row?.pinned == nil
+        do {
+            try await store.pin(key, on)
+        } catch {
             said = words(error)
         }
     }

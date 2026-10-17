@@ -202,6 +202,17 @@ struct PrView: View {
                     }
                     .disabled(!macOnline)
                 }
+                // What the Mac's menu copies.
+                if let pr {
+                    Section {
+                        if !pr.url.isEmpty {
+                            Button("Copy link", systemImage: "link") { UIPasteboard.general.string = pr.url }
+                        }
+                        if let branch = pr.branch, !branch.isEmpty {
+                            Button("Copy branch name", systemImage: "arrow.triangle.branch") { UIPasteboard.general.string = branch }
+                        }
+                    }
+                }
             } label: {
                 Image(systemName: "ellipsis.circle")
             }
