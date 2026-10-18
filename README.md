@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="design/app-icon.svg" alt="" width="112" height="112" />
+  <img src="design/app-icon.png" alt="" width="112" height="112" />
 </p>
 
 <h1 align="center">Codealong for iPhone</h1>
@@ -17,6 +17,7 @@
   &nbsp;·&nbsp; <a href="#privacy-and-security">Privacy</a>
   &nbsp;·&nbsp; <a href="#faq">FAQ</a>
   &nbsp;·&nbsp; <a href="https://github.com/codealong/codealong">The Mac app</a>
+  &nbsp;·&nbsp; <a href="https://www.codealong.com">codealong.com</a>
 </p>
 
 > **Early days.** The app works day to day, but it isn't on the App Store or TestFlight yet: for
@@ -24,7 +25,7 @@
 
 ## What it is
 
-[Codealong](https://github.com/codealong/codealong) is a Mac app that keeps track of every coding
+[Codealong](https://www.codealong.com) is a Mac app that keeps track of every coding
 agent you run (Claude Code, Codex, OpenCode, Antigravity and Cursor, on every account) and shows
 what each one is doing and which ones need you. Codealong for iPhone takes that with you.
 
