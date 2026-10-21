@@ -783,8 +783,14 @@ final class Store {
     func steer(_ key: String, message: HeldMessage) async -> String? {
         let core: Core
         do { core = try running() } catch { return words(error) }
-        let o = Outgoing(id: UUID().uuidString, text: message.text, at: .now, how: .steer(message.id), state: .sending)
-        outgoing[key, default: []].append(o)
+        // One sent from here goes in its own place, and comes back as it was if it doesn't go, as
+        // the Mac's `steerAhead` has it.
+        let mine = outgoing[key]?.firstIndex { o in
+            if case .sent(_, _, message.id) = o.state { true } else { false }
+        }
+        let before = mine.flatMap { outgoing[key]?[$0] }
+        let o = Outgoing(id: before?.id ?? UUID().uuidString, text: message.text, at: .now, how: .steer(message.id), state: .sending)
+        if let mine { outgoing[key]?[mine] = o } else { outgoing[key, default: []].append(o) }
         do {
             let said = try await Task.detached { try core.conversation(key: key).steer(id: message.id) }.value
             if let j = outgoing[key]?.firstIndex(where: { $0.id == o.id }) {
@@ -792,7 +798,9 @@ final class Store {
             }
             return nil
         } catch {
-            outgoing[key]?.removeAll { $0.id == o.id }
+            if let j = outgoing[key]?.firstIndex(where: { $0.id == o.id }) {
+                if let before { outgoing[key]?[j] = before } else { outgoing[key]?.remove(at: j) }
+            }
             return words(error)
         }
     }

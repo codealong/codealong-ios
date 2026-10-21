@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use codealong_peer::api;
+use codealong_peer::{api, proto};
 use serde::{Deserialize, Serialize};
 
 /// Conversations kept in memory, the latest used.
@@ -32,6 +32,12 @@ pub(crate) struct Saved {
     pub items: Vec<api::Item>,
     pub before: Option<u64>,
     pub after: u64,
+    /// What this phone said it knows when it was read (`proto::KNOWS`). A Mac sends a
+    /// conversation as the phone says it can show it (another session's message whole once it
+    /// knows `peer-items`, a note of its first line before), and only what came since is read
+    /// again, so one saved under other words is read afresh. Missing from builds before.
+    #[serde(default)]
+    pub knows: Vec<String>,
 }
 
 impl Saved {
@@ -45,7 +51,7 @@ impl Saved {
         let kept = items[from.min(items.len())..].to_vec();
         // Cut short, the page before is the one before the first item kept.
         let before = if from > 0 { kept.first().map(|i| i.cursor).or(before) } else { before };
-        Saved { key: key.to_string(), continues: continues.map(String::from), items: kept, before, after }
+        Saved { key: key.to_string(), continues: continues.map(String::from), items: kept, before, after, knows: knows() }
     }
 }
 
@@ -60,11 +66,16 @@ pub(crate) fn file_for(dir: &Path, key: &str) -> PathBuf {
     dir.join(format!("{h:016x}.json"))
 }
 
+/// What this phone tells its Macs it knows.
+fn knows() -> Vec<String> {
+    proto::KNOWS.map(String::from).to_vec()
+}
+
 /// What was saved of a session's conversation, when it's this session's in the record it goes
-/// on in now.
+/// on in now, read as the phone reads one now.
 pub(crate) fn load(path: &Path, key: &str, continues: Option<&str>) -> Option<Saved> {
     let saved: Saved = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
-    (saved.key == key && saved.continues.as_deref() == continues).then_some(saved)
+    (saved.key == key && saved.continues.as_deref() == continues && saved.knows == knows()).then_some(saved)
 }
 
 /// Saves a conversation, and lets go of the oldest saved past `SAVED`. A save that fails costs
@@ -161,6 +172,15 @@ mod tests {
         // Gone on in another record, or another session's, it's read afresh.
         assert!(load(&path, "@abc:claude:claude:1", Some("r2")).is_none());
         assert!(load(&path, "@abc:claude:claude:2", Some("r1")).is_none());
+        // So is one read when the phone said it knew less: a build before whole messages from
+        // other sessions has them as notes of their first line.
+        let older = Saved { knows: vec!["have".into()], ..Saved::of("@abc:claude:claude:1", Some("r1"), &[item(1, 0)], None, 2) };
+        std::fs::write(&path, serde_json::to_vec(&older).unwrap()).unwrap();
+        assert!(load(&path, "@abc:claude:claude:1", Some("r1")).is_none());
+        let mut unsaid = serde_json::to_value(&older).unwrap();
+        unsaid.as_object_mut().unwrap().remove("knows");
+        std::fs::write(&path, serde_json::to_vec(&unsaid).unwrap()).unwrap();
+        assert!(load(&path, "@abc:claude:claude:1", Some("r1")).is_none());
         // The oldest go past the limit.
         for i in 0..5 {
             save(&file_for(&dir, &i.to_string()), &Saved::of(&i.to_string(), None, &[], None, 0));

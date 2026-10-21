@@ -161,6 +161,47 @@ pub fn prompt_parts(text: String) -> Vec<PromptPart> {
     out
 }
 
+/// A prompt of yours, split for Edit from here: its words as written, with every file it came
+/// with still referred to as it was, and apart from them the images it came with, each as the
+/// prompt refers to it, to go back in front of the words unless taken out.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct PromptEdit {
+    pub words: String,
+    pub images: Vec<PromptImage>,
+}
+
+/// An image a prompt came with: its name, where its Mac keeps it, and the prompt's reference to it.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct PromptImage {
+    pub name: String,
+    pub path: String,
+    pub reference: String,
+}
+
+/// A prompt split for its edit (`PromptEdit`): the images out of its words, and the line each
+/// stood alone on with it.
+#[uniffi::export]
+pub fn prompt_edit(text: String) -> PromptEdit {
+    let mut words = String::new();
+    let mut images = Vec::new();
+    let mut rest = text.as_str();
+    while !rest.is_empty() {
+        if let Some((part, len)) = kept_at(rest).filter(|(p, _)| p.kind == PromptPartKind::Image) {
+            images.push(PromptImage { name: part.text, path: part.url.unwrap_or_default(), reference: rest[..len].to_string() });
+            rest = &rest[len..];
+            // Alone on its line, the line goes with it.
+            if (words.is_empty() || words.ends_with('\n')) && rest.starts_with('\n') {
+                rest = &rest[1..];
+            }
+            continue;
+        }
+        let c = rest.chars().next().expect("not empty");
+        words.push(c);
+        rest = &rest[c.len_utf8()..];
+    }
+    PromptEdit { words: words.trim().to_string(), images }
+}
+
 /// An image or a file Codealong kept, written as a link at the start of `s`, and how long it is.
 fn kept_at(s: &str) -> Option<(PromptPart, usize)> {
     let hex16 = |h: &str| h.len() == 16 && h.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f'));
@@ -765,6 +806,19 @@ mod tests {
         assert_eq!(inline("**bold** and *it*"), "**bold** and *it*");
         // A word that runs into the scheme isn't a link.
         assert_eq!(inline("xhttps://a.b"), "xhttps://a.b");
+    }
+
+    #[test]
+    fn a_prompt_to_edit_keeps_its_files_as_written_and_takes_its_images_apart() {
+        let shot = "![shot](images/0123456789abcdef.png)";
+        let file = "[log.txt](files/0123456789abcdef/log.txt)";
+        let e = prompt_edit(format!("{shot}\nFix it, see {file}.\n{shot}\nThen https://example.com"));
+        // The words as written, the file still referred to; the image's lines go with it.
+        assert_eq!(e.words, format!("Fix it, see {file}.\nThen https://example.com"));
+        assert_eq!(e.images.len(), 2);
+        assert_eq!((e.images[0].name.as_str(), e.images[0].path.as_str(), e.images[0].reference.as_str()), ("shot", "images/0123456789abcdef.png", shot));
+        // One in the middle of a line leaves the rest of the line as it was.
+        assert_eq!(prompt_edit(format!("Before {shot} after")).words, "Before  after");
     }
 
     #[test]

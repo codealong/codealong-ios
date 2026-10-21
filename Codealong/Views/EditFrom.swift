@@ -12,31 +12,17 @@ struct EditFromSheet: View {
     let fork: (String) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var text: String
-    @State private var images: [KeptRef]
+    @State private var images: [PromptImage]
     @FocusState private var focused: Bool
-
-    /// An image the prompt refers to, as it refers to it.
-    struct KeptRef: Identifiable, Equatable {
-        let name: String
-        let path: String
-        var id: String { path }
-        var reference: String { "![\(name)](\(path))" }
-    }
 
     init(title: String, mac: String, prompt: Item, fork: @escaping (String) -> Void) {
         self.title = title
         self.mac = mac
         self.fork = fork
-        let parts = promptParts(text: prompt.text)
-        _images = State(initialValue: parts.compactMap { p in
-            guard p.kind == .image, let path = p.url else { return nil }
-            return KeptRef(name: p.text, path: path)
-        })
-        // The words as written, a file it came with as the prompt refers to it.
-        let words = parts.filter { $0.kind != .image }.map { p in
-            p.kind == .file ? "[\(p.text)](\(p.url ?? ""))" : p.text
-        }
-        _text = State(initialValue: words.joined().trimmingCharacters(in: .whitespacesAndNewlines))
+        // Its words as written, the files it came with still in them, and its images apart.
+        let edit = promptEdit(text: prompt.text)
+        _text = State(initialValue: edit.words)
+        _images = State(initialValue: edit.images)
     }
 
     /// The edit as it goes: the images first, each on a line of its own, as a reply sends them.
@@ -60,7 +46,7 @@ struct EditFromSheet: View {
                     Section("Images") {
                         ScrollView(.horizontal) {
                             HStack(spacing: 8) {
-                                ForEach(images) { image in
+                                ForEach(images, id: \.reference) { image in
                                     KeptImage(mac: mac, path: image.path, side: 72)
                                         .overlay(alignment: .topTrailing) {
                                             Button {
