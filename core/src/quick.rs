@@ -112,6 +112,106 @@ pub struct PrRow {
     pub changed_files: u64,
     /// The sessions that worked on it, by their keys here (`@<device>:<key>`).
     pub sessions: Vec<String>,
+    /// Its labels on GitHub, in the order of their names; none from Macs before 2026-10-17.
+    pub labels: Vec<PrLabelRow>,
+    /// It's approved, but only by approvals of an earlier commit than the one it's at, which
+    /// GitHub still counts: who approved which, in a sentence (prStatus.ts `staleWords`).
+    pub stale: Option<String>,
+    /// Where Codealong's own review of it stands on its Mac, once it's had one.
+    pub agent_review: Option<AgentReviewLine>,
+}
+
+/// A label on a PR, as its repo on GitHub defines it.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct PrLabelRow {
+    pub name: String,
+    /// Its color, as GitHub keeps it; none when GitHub gave none that reads as one.
+    pub color: Option<LabelColor>,
+    pub description: Option<String>,
+}
+
+/// A label's color, each part from 0 to 1.
+#[derive(uniffi::Record, Clone, Copy, Debug, PartialEq)]
+pub struct LabelColor {
+    pub red: f32,
+    pub green: f32,
+    pub blue: f32,
+}
+
+impl PrLabelRow {
+    fn of(l: &codealong_peer::model::PrLabel) -> PrLabelRow {
+        // Six hex digits, as the Mac sends them.
+        let part = |i: usize| l.color.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok()).map(|v| f32::from(v) / 255.0);
+        let color = match (l.color.len(), part(0), part(2), part(4)) {
+            (6, Some(red), Some(green), Some(blue)) => Some(LabelColor { red, green, blue }),
+            _ => None,
+        };
+        PrLabelRow { name: l.name.clone(), color, description: l.description.clone() }
+    }
+}
+
+/// The latest round of Codealong's automatic review of a PR, as the line over the Mac's review box
+/// says it (review.ts `autoReviewWords`).
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct AgentReviewLine {
+    /// `queued`, `reviewing`, `posted`, `drafted`, `kept`, `skipped`, `failed`, or `submitted`
+    /// once it went as your review, for its icon.
+    pub stage: String,
+    /// "Agent reviewed 1a2b3c4 and commented".
+    pub says: String,
+    /// What its agent would do with the PR, while its review hasn't gone as yours: "Suggests
+    /// approving".
+    pub suggests: Option<String>,
+}
+
+/// What a PR's card says of Codealong's own review of it, from the round a Mac sends.
+fn agent_review_line(r: &codealong_peer::pr::AutoReview) -> AgentReviewLine {
+    use codealong_peer::pr::{ReviewStage, Verdict};
+    let at = r.head.get(..7).unwrap_or(&r.head);
+    if let Some(v) = r.submitted {
+        let says = match v {
+            Verdict::Approve => format!("Agent approved {at} for you"),
+            Verdict::RequestChanges => format!("Agent requested changes on {at} for you"),
+            Verdict::Comment => format!("Agent commented on {at} for you"),
+        };
+        return AgentReviewLine { stage: "submitted".into(), says, suggests: None };
+    }
+    let (stage, says) = match r.stage {
+        ReviewStage::Queued => ("queued", format!("Agent review of {at} to come")),
+        ReviewStage::Reviewing => ("reviewing", format!("Agent reviewing {at}")),
+        ReviewStage::Posted => ("posted", format!("Agent reviewed {at} and commented")),
+        ReviewStage::Drafted => ("drafted", format!("Agent drafted a review of {at}")),
+        ReviewStage::Kept => ("kept", format!("Agent reviewed {at}")),
+        ReviewStage::Skipped => ("skipped", format!("Agent passed on {at}")),
+        ReviewStage::Failed | ReviewStage::Other => ("failed", format!("Agent\u{2019}s review of {at} didn\u{2019}t get done")),
+    };
+    let suggests = r.suggests.filter(|_| matches!(r.stage, ReviewStage::Posted | ReviewStage::Drafted | ReviewStage::Kept)).map(|v| {
+        match v {
+            Verdict::Approve => "Suggests approving",
+            Verdict::RequestChanges => "Suggests changes",
+            Verdict::Comment => "Suggests a comment",
+        }
+        .to_string()
+    });
+    AgentReviewLine { stage: stage.into(), says, suggests }
+}
+
+/// A PR approved only before its latest commits, in a sentence (prStatus.ts `staleWords`): who
+/// approved which commit, and that GitHub still counts it, which is why it can read as ready to
+/// merge. None for one that isn't approved, or is approved as it is.
+fn stale_words(state: PrState, stale: Option<&codealong_peer::model::StaleApproval>) -> Option<String> {
+    let s = stale.filter(|_| state == PrState::Approved)?;
+    let at = s.commit.get(..7).unwrap_or(&s.commit);
+    let who = match s.by.as_slice() {
+        [] => "A reviewer".to_string(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    };
+    Some(if s.by.len() > 1 {
+        format!("Approved before its latest commits: {who} approved earlier ones, the latest {at}. GitHub still counts the approvals, as the repo doesn\u{2019}t dismiss them when commits come.")
+    } else {
+        format!("Approved before its latest commits: {who} approved {at}. GitHub still counts the approval, as the repo doesn\u{2019}t dismiss it when commits come.")
+    })
 }
 
 #[derive(uniffi::Enum, Clone, Debug, PartialEq)]
@@ -327,7 +427,8 @@ pub(crate) fn quick_list(rows: &[SessionRow], prs: &[PrRow], project: &str, quer
     let mut prs: Vec<(bool, &PrRow)> = prs
         .iter()
         .filter(|p| inp(&p.project))
-        .filter(|p| has_all(&[format!("#{}", p.number).as_str(), &p.title, &p.repo, p.branch.as_deref().unwrap_or(""), &p.project].join("\n").to_lowercase()))
+        // By its labels too, as the Mac's search finds a PR.
+        .filter(|p| has_all(&[format!("#{}", p.number).as_str(), &p.title, &p.repo, p.branch.as_deref().unwrap_or(""), &p.project, &p.labels.iter().map(|l| l.name.as_str()).collect::<Vec<_>>().join("\n")].join("\n").to_lowercase()))
         .map(|p| (has_all(&p.title.to_lowercase()), p))
         .collect();
     prs.sort_by(|a, b| b.0.cmp(&a.0).then(state_rank(a.1).cmp(&state_rank(b.1))).then(b.1.updated_at.cmp(&a.1.updated_at)).then_with(|| a.1.key.cmp(&b.1.key)));
@@ -417,6 +518,10 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                 deletions: p.deletions,
                 changed_files: p.changed_files,
                 sessions,
+                labels: p.labels.iter().map(PrLabelRow::of).collect(),
+                // A PR card doesn't carry it: its worktree's PR on the same Mac does.
+                stale: stale_words(p.state, replica.lanes.iter().filter_map(|l| l.pr.as_ref()).find(|w| !w.url.is_empty() && w.url == p.url).and_then(|w| w.stale_approval.as_ref())),
+                agent_review: p.auto_review.as_ref().map(agent_review_line),
             });
         }
     }
@@ -471,6 +576,9 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                 deletions: 0,
                 changed_files: 0,
                 sessions,
+                labels: Vec::new(),
+                stale: stale_words(pr.state, pr.stale_approval.as_ref()),
+                agent_review: None,
             });
         }
     }
@@ -725,6 +833,15 @@ pub(crate) mod tests {
             stoppable: false,
             steerable: false,
             model: None,
+            effort: None,
+            mode: None,
+            modes: vec![],
+            queued: vec![],
+            queued_at: None,
+            flagged: false,
+            cut_off: None,
+            remote_control: None,
+            edits: false,
             name: None,
             origin: None,
             limit: None,
@@ -836,7 +953,44 @@ pub(crate) mod tests {
             deletions: 0,
             changed_files: 0,
             sessions: Vec::new(),
+            labels: Vec::new(),
+            stale: None,
+            agent_review: None,
         }
+    }
+
+    #[test]
+    fn a_labels_color_is_read_from_githubs_hex() {
+        use codealong_peer::model::PrLabel;
+        let label = |color: &str| PrLabelRow::of(&PrLabel { name: "bug".into(), color: color.into(), description: None }).color;
+        assert_eq!(label("ff8000"), Some(LabelColor { red: 1.0, green: 128.0 / 255.0, blue: 0.0 }));
+        assert_eq!(label(""), None);
+        assert_eq!(label("zz0000"), None);
+    }
+
+    #[test]
+    fn a_pr_approved_before_its_latest_commits_says_who_approved_which() {
+        use codealong_peer::model::StaleApproval;
+        let one = StaleApproval { by: vec!["ana".into()], commit: "1a2b3c4d5e".into() };
+        assert_eq!(stale_words(PrState::Approved, Some(&one)).as_deref(), Some("Approved before its latest commits: ana approved 1a2b3c4. GitHub still counts the approval, as the repo doesn\u{2019}t dismiss it when commits come."));
+        let three = StaleApproval { by: vec!["ana".into(), "ken".into(), "sam".into()], commit: "1a2b3c4d5e".into() };
+        assert!(stale_words(PrState::Approved, Some(&three)).unwrap().starts_with("Approved before its latest commits: ana, ken and sam approved earlier ones, the latest 1a2b3c4."));
+        // Only an approved PR is approved stale.
+        assert_eq!(stale_words(PrState::Changes, Some(&one)), None);
+        assert_eq!(stale_words(PrState::Approved, None), None);
+    }
+
+    #[test]
+    fn an_agent_review_says_where_its_round_stands_and_what_went_as_yours() {
+        use codealong_peer::pr::{AutoReview, ReviewStage, Verdict};
+        let round = |stage: ReviewStage| AutoReview { stage, head: "9f8e7d6c5b".into(), suggests: Some(Verdict::Approve), submitted: None };
+        let posted = agent_review_line(&round(ReviewStage::Posted));
+        assert_eq!((posted.stage.as_str(), posted.says.as_str(), posted.suggests.as_deref()), ("posted", "Agent reviewed 9f8e7d6 and commented", Some("Suggests approving")));
+        // Under way, it suggests nothing yet.
+        assert_eq!(agent_review_line(&round(ReviewStage::Reviewing)).suggests, None);
+        // One submitted as yours says so, and suggests nothing more.
+        let submitted = agent_review_line(&AutoReview { submitted: Some(Verdict::RequestChanges), ..round(ReviewStage::Posted) });
+        assert_eq!((submitted.stage.as_str(), submitted.says.as_str(), submitted.suggests), ("submitted", "Agent requested changes on 9f8e7d6 for you", None));
     }
 
     #[test]
@@ -921,7 +1075,7 @@ pub(crate) mod tests {
         // A Mac whose PR list doesn't have it (an older build sends none; a PR merged a day ago
         // is left out) has only its worktrees to go by: two of one repo on the PR's branch each
         // add theirs.
-        let pr = codealong_peer::model::Pr { number: 5, title: "T".into(), url: String::new(), state: PrState::Open, checks: Default::default(), merge: Default::default(), updated_at: 0, merged_at: None, closed_at: None };
+        let pr = codealong_peer::model::Pr { number: 5, title: "T".into(), url: String::new(), state: PrState::Open, checks: Default::default(), merge: Default::default(), updated_at: 0, merged_at: None, closed_at: None, stale_approval: None };
         let lane = |id: &str, session: &str| {
             let mut l = Lane::new(id, "Apps", "App");
             l.repo_slug = Some("O/App".into());
@@ -996,6 +1150,8 @@ pub(crate) mod tests {
             no_repo: 0.0,
             habit: Default::default(),
             duplicate: None,
+            agents: vec![],
+            needs: None,
             model: "jev".into(),
             ms: 1,
             input_tokens: 0,
@@ -1042,6 +1198,8 @@ pub(crate) mod tests {
             own_worktree_asked: own_worktree,
             habit: Default::default(),
             duplicate: None,
+            agents: vec![],
+            needs: None,
             model: "jev".into(),
             ms: 1,
             input_tokens: 0,

@@ -113,10 +113,17 @@ struct QuickPrRow: View {
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
                 }
-                Text(meta)
-                    .font(.footnote.monospaced())
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
+                // Its labels after its repo, as many as fit, as the Mac's row has them after its title.
+                HStack(spacing: 8) {
+                    Text(meta)
+                        .font(.footnote.monospaced())
+                        .foregroundStyle(.tertiary)
+                        .layoutPriority(1)
+                    if !pr.labels.isEmpty {
+                        PrLabels(labels: pr.labels, compact: true)
+                    }
+                }
+                .lineLimit(1)
                 HStack(spacing: 5) {
                     if let s = standing.symbol {
                         Image(systemName: s).font(.caption.weight(.bold))
@@ -165,6 +172,8 @@ struct QuickPrRow: View {
         if pr.state == "changes" { return ("exclamationmark.bubble", "Changes asked for", .orange) }
         if pr.merge == "conflicts" { return ("exclamationmark.triangle", "Conflicts", .orange) }
         if pr.pending > 0 { return ("clock", "Checks running", .secondary) }
+        // Approved only before its latest commits: GitHub still counts it, so it says so in amber.
+        if pr.state == "approved" && pr.stale != nil { return ("clock.badge.exclamationmark", pr.merge == "clean" ? "Stale approval · ready to merge" : "Stale approval", .orange) }
         if pr.state == "approved" { return ("checkmark", pr.merge == "clean" ? "Approved · ready to merge" : "Approved", Self.passed) }
         if pr.passed > 0 { return ("checkmark", "Checks passed", Self.passed) }
         return (nil, "Open", .secondary)

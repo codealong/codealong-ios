@@ -100,6 +100,12 @@ struct SessionView: View {
     @State private var resumeModel: String?
     @State private var resumeEffort: String?
     @State private var switching = false
+    /// A prompt of yours being edited, to go on from just before it (Edit from here).
+    @State private var editing: Item?
+    /// The mode picked here, until its Mac's feed says the one it's in.
+    @State private var modePicked: String?
+    /// A queued message Send now didn't send into the turn, and why.
+    @State private var unsteered: (id: String, why: String)?
     /// When Mark as done was last held here by work under way: done again soon after ends that too.
     @State private var heldAt: Date?
     @State private var finishing = false
@@ -181,6 +187,11 @@ struct SessionView: View {
         .task(id: key) { await open() }
         // How a message gets there changes as it starts and stops running somewhere.
         .task(id: "\(row?.live == true)\(row?.inApp == true)\(online)") { await readWay() }
+        .sheet(item: $editing) { prompt in
+            EditFromSheet(title: title, mac: row?.device ?? "", prompt: prompt) { text in
+                Task { await editFrom(prompt, text) }
+            }
+        }
         .alert("Rename", isPresented: $renaming) {
             TextField("Name", text: $newName)
             Button("Rename") { Task { await rename() } }
@@ -197,6 +208,8 @@ struct SessionView: View {
         .onChange(of: online) { _, now in
             if now { Task { await reconnected() } }
         }
+        // Its Mac says the mode it's in now: that's the one shown.
+        .onChange(of: row?.mode?.id) { _, _ in modePicked = nil }
         // A turn that ends while it's shown here has been seen; one you marked unread here is
         // left so.
         .onChange(of: row?.status) { _, status in
@@ -263,7 +276,7 @@ struct SessionView: View {
                     ForEach(Entry.of(items)) { entry in
                         switch entry {
                         case .said(let item) where item.kind == .you:
-                            ItemView(item: item, putBack: canAct ? { draft = $0 } : nil)
+                            ItemView(item: item, putBack: canAct ? { draft = $0 } : nil, editFrom: canAct && item.editable && row?.edits == true ? { editing = item } : nil)
                                 .onGeometryChange(for: PromptPlace.self) { [viewTop] geo in
                                     PromptPlace(geo.frame(in: .global), top: viewTop)
                                 } action: { place in
@@ -277,8 +290,12 @@ struct SessionView: View {
                     if let live {
                         LiveReply(live: live)
                     }
-                    ForEach(store.outgoing[key] ?? []) { o in
-                        OutgoingView(outgoing: o) { store.dismissOutgoing(key, id: o.id) }
+                    ForEach(outgoingShown) { o in
+                        OutgoingView(outgoing: o, held: o.held(in: row)) { store.dismissOutgoing(key, id: o.id) }
+                    }
+                    // After the turn that's running, which they wait on.
+                    ForEach(heldShown, id: \.id) { m in
+                        HeldView(message: m, sendNow: canAct && row?.steerable == true ? { Task { await steer(m) } } : nil, why: unsteered?.id == m.id ? unsteered?.why : nil)
                     }
                     if loading && items.isEmpty {
                         ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
@@ -377,6 +394,13 @@ struct SessionView: View {
         .disabled(!online)
         Button("Fork", systemImage: "arrow.triangle.branch") { Task { await fork("") } }
             .disabled(!canAct)
+        // A running Claude Code session the Claude app reaches through its Remote Control: what
+        // you type there goes to it where it runs, as the Mac's Open in Claude app does.
+        if let url = row?.remoteControl.flatMap({ URL(string: $0) }) {
+            Link(destination: url) {
+                Label("Open in the Claude app", systemImage: "arrow.up.forward.app")
+            }
+        }
         if let origin = row?.origin, let title = origin.title {
             Button(origin.fork ? "Forked from “\(title)”" : "Started by “\(title)”", systemImage: "arrow.turn.left.up") { go(origin.key) }
                 .disabled(!store.sessions.contains { $0.key == origin.key })
@@ -451,6 +475,12 @@ struct SessionView: View {
             if let lost = row?.connectionLost {
                 LostConnection(words: lost)
             }
+            if let cut = row?.cutOff {
+                SessionNote(words: cut, symbol: "scissors", tint: .orange)
+            }
+            if row?.flagged == true {
+                SessionNote(words: SessionNote.flagged, symbol: "flag.fill", tint: .red)
+            }
             if let said {
                 Text(said).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -500,8 +530,12 @@ struct SessionView: View {
             } tools: {
                 // Where one that isn't running goes on is said here too, under its model.
                 if canAct && (resuming || showsModel) {
-                    ModelMenu(rules: rules, resumePlace: $resumePlace, resumeModel: $resumeModel, resumeEffort: $resumeEffort, switching: switching, height: sendSize) { model in
+                    ModelMenu(rules: rules, resumePlace: $resumePlace, resumeModel: $resumeModel, resumeEffort: $resumeEffort, switching: switching, height: sendSize, modePicked: modePicked) { model in
                         Task { await switchModel(model) }
+                    } switchEffort: { effort in
+                        Task { await switchEffort(effort) }
+                    } switchMode: { mode in
+                        Task { await switchMode(mode) }
                     }
                 }
                 if canSendNow {
@@ -699,6 +733,33 @@ struct SessionView: View {
     }
 
     /// Messages from here its Mac took that the conversation doesn't show yet.
+    /// The messages its harness holds, but those sent into the turn from here, which show as sent
+    /// in their place.
+    private var heldShown: [HeldMessage] {
+        let steered = Set((store.outgoing[key] ?? []).compactMap { o -> String? in
+            if case .steer(let id) = o.how { id } else { nil }
+        })
+        return (row?.queued ?? []).filter { !steered.contains($0.id) }
+    }
+
+    /// Messages on their way from here, but those its harness lists among what it holds, which
+    /// show there once.
+    private var outgoingShown: [Outgoing] {
+        let held = Set(heldShown.map(\.id))
+        return (store.outgoing[key] ?? []).filter { o in
+            guard case .sent(_, _, let id?) = o.state else { return true }
+            return !held.contains(id)
+        }
+    }
+
+    /// Sends a queued message into the turn now.
+    private func steer(_ message: HeldMessage) async {
+        unsteered = nil
+        if let why = await store.steer(key, message: message) {
+            unsteered = (message.id, why)
+        }
+    }
+
     private var awaitingRecord: Int {
         (store.outgoing[key] ?? []).count { if case .sent = $0.state { true } else { false } }
     }
@@ -1024,6 +1085,21 @@ struct SessionView: View {
         }
     }
 
+    /// Forks it from just before one of your prompts, your edit in its place (Edit from here):
+    /// the copy shows once it's listed, as the Mac's window follows it, and this one stays as it
+    /// was.
+    private func editFrom(_ prompt: Item, _ text: String) async {
+        guard let conv = conversation else { return }
+        said = "Forking “\(title)”…"
+        do {
+            let started = try await Task.detached { try conv.edit(item: prompt.id, prompt: text) }.value
+            said = started.message ?? "Forked: the copy goes on from before that message, with your edit, on its Mac."
+            if let copy = started.key { store.openWhenListed = copy }
+        } catch {
+            said = words(error)
+        }
+    }
+
     /// Forks it into a copy that goes on in the background on its Mac, on `prompt` when there's
     /// one; you stay here, as on the Mac.
     private func fork(_ prompt: String) async {
@@ -1141,6 +1217,35 @@ struct SessionView: View {
         do {
             said = try await Task.detached { try conv.switchModel(model: model) }.value
         } catch {
+            said = words(error)
+        }
+    }
+
+    private func switchEffort(_ effort: String) async {
+        guard let conv = conversation else { return }
+        switching = true
+        defer { switching = false }
+        do {
+            said = try await Task.detached { try conv.switchEffort(effort: effort) }.value
+        } catch {
+            said = words(error)
+        }
+    }
+
+    /// Switches one Codealong runs to another mode: the one picked shows at once, then the one its
+    /// agent says it's in, which may be another (Accept edits for Auto, on a model that doesn't
+    /// take it), until its Mac's feed has it.
+    private func switchMode(_ mode: String) async {
+        guard let conv = conversation else { return }
+        switching = true
+        modePicked = mode
+        defer { switching = false }
+        do {
+            let switched = try await Task.detached { try conv.switchMode(id: mode) }.value
+            modePicked = switched.mode
+            said = switched.message
+        } catch {
+            modePicked = nil
             said = words(error)
         }
     }
@@ -1571,6 +1676,26 @@ private struct WaitingCard: ViewModifier {
 }
 
 /// Why its last turn ended, when its harness couldn't reach its API, as the Mac's header says it.
+/// Something about the session's last turn, above the box, as the Mac's header says it.
+private struct SessionNote: View {
+    let words: String
+    let symbol: String
+    let tint: Color
+
+    /// A session its provider flagged, as the Mac's Flagged chip says it.
+    static let flagged = "Its provider flagged a message in this conversation, so by default its Mac sends it nothing by itself (Settings › Automation there). You can still reply yourself."
+
+    var body: some View {
+        Label {
+            Text(words)
+        } icon: {
+            Image(systemName: symbol).foregroundStyle(tint)
+        }
+        .font(.footnote)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 private struct LostConnection: View {
     let words: String
 
@@ -1820,7 +1945,8 @@ private enum Entry: Identifiable {
         var out: [Entry] = []
         var run: [Item] = []
         for item in items {
-            if item.kind == .tool && item.link == nil {
+            // A call that made a page, or handed you files, stays in view.
+            if item.kind == .tool && item.link == nil && item.files.isEmpty {
                 run.append(item)
                 continue
             }
@@ -1851,6 +1977,8 @@ private enum Entry: Identifiable {
 private struct ItemView: View {
     let item: Item
     var putBack: ((String) -> Void)?
+    /// Goes on from just before this prompt of yours with an edit of it, where it can.
+    var editFrom: (() -> Void)?
 
     var body: some View {
         switch item.kind {
@@ -1872,6 +2000,7 @@ private struct ItemView: View {
                         .background(Color.accentColor.opacity(item.withdrawn ? 0.06 : 0.15), in: .rect(cornerRadius: 16))
                         .foregroundStyle(item.withdrawn ? .secondary : .primary)
                         .textSelection(.enabled)
+                        .modifier(EditFromMenu(text: item.text, edit: editFrom))
                 }
                 if item.withdrawn {
                     Text("Taken back: the turn was stopped before a reply, so the agent never saw this.")
@@ -1893,6 +2022,51 @@ private struct ItemView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity)
+        case .peer:
+            PeerMessage(item: item)
+        case .codealong:
+            // What Codealong sent by itself, under its name, quieter than the agent's words.
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Codealong")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                MarkdownText(text: item.text)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+/// Another session's message, whole, under who sent it: a long one cut to its first lines until
+/// it's opened, as the Mac's thread shows one (SessionThread.tsx `PeerText`).
+private struct PeerMessage: View {
+    let item: Item
+    @State private var opened = false
+    @State private var long = false
+    @ScaledMetric(relativeTo: .body) private var cut: CGFloat = 220
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(item.from.map { "From “\($0)”" } ?? "From another session")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            MarkdownText(text: item.text)
+                .fixedSize(horizontal: false, vertical: true)
+                .onGeometryChange(for: Bool.self) { $0.size.height > cut + 1 } action: { long = $0 }
+                .frame(maxHeight: opened ? nil : cut, alignment: .top)
+                .clipped()
+                // The cut fades out, so it reads as more to come.
+                .mask {
+                    LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: long && !opened ? 0.8 : 1), .init(color: .black.opacity(long && !opened ? 0 : 1), location: 1)], startPoint: .top, endPoint: .bottom)
+                }
+            if long {
+                Button(opened ? "Show less" : "Show all") { opened.toggle() }
+                    .font(.caption)
+            }
+        }
+        .padding(.leading, 10)
+        .overlay(alignment: .leading) {
+            Capsule().fill(.quaternary).frame(width: 3)
         }
     }
 }
@@ -1903,6 +2077,8 @@ private struct ItemView: View {
 /// it, and can be put away.
 private struct OutgoingView: View {
     let outgoing: Outgoing
+    /// Its session's harness holds it until the turn it's taking ends: it says so for as long.
+    var held = false
     let dismiss: () -> Void
 
     var body: some View {
@@ -1938,15 +2114,60 @@ private struct OutgoingView: View {
     }
 
     private var state: String {
-        switch outgoing.state {
+        if held { return HeldView.words }
+        return switch outgoing.state {
         case .queued, .sending: "Sending…"
-        case .sent(let message, _): message.isEmpty ? "Sent" : message
+        case .sent(let message, _, _): message.isEmpty ? "Sent" : message
         }
     }
 
     private func isUnconfirmed(at now: Date) -> Bool {
-        guard case .sent(_, let at) = outgoing.state else { return false }
+        guard !held, case .sent(_, let at, _) = outgoing.state else { return false }
         return now.timeIntervalSince(at) > Outgoing.confirm
+    }
+}
+
+/// A message the session's harness holds until the turn it's taking ends, whoever sent it, at the
+/// end of the conversation after that turn, as the Mac's thread shows one (SessionThread.tsx
+/// `NotYetSaid`): faint, saying so, with Send now while the turn would take it sooner, as Steer
+/// beside one in the Codex app does.
+private struct HeldView: View {
+    let message: HeldMessage
+    /// Sends it into the turn now; none where the turn can't take it or nothing can be sent here.
+    let sendNow: (() -> Void)?
+    /// Why Send now didn't, when it didn't.
+    let why: String?
+
+    static let words = "Queued until this turn ends"
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            HStack {
+                Spacer(minLength: 40)
+                PromptText(text: message.text)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color.accentColor.opacity(0.08), in: .rect(cornerRadius: 16))
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 10) {
+                Text(Self.words)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                if let sendNow {
+                    Button("Send now", systemImage: "bolt", action: sendNow)
+                        .font(.caption)
+                        .accessibilityHint("Into the turn it's taking, rather than once the turn ends")
+                }
+            }
+            if let why {
+                Text(why)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.trailing)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .trailing)
     }
 }
 
@@ -2089,6 +2310,24 @@ private struct ToolLine: View {
                     }
                     if let note = link.note {
                         Text(note).font(.caption).foregroundStyle(.tertiary)
+                    }
+                }
+            }
+            // The files it handed you, on its Mac, each by its name and folder, with what the
+            // agent said with them, as the Mac's line lists them.
+            if !item.files.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    if let caption = item.caption, !caption.isEmpty {
+                        Text(caption).font(.caption)
+                    }
+                    ForEach(Array(item.files.enumerated()), id: \.offset) { _, file in
+                        HStack(spacing: 6) {
+                            Image(systemName: "doc").foregroundStyle(.secondary)
+                            Text(file.name).font(.caption.weight(.medium))
+                            Text(file.folder).font(.caption).foregroundStyle(.tertiary).truncationMode(.head)
+                        }
+                        .lineLimit(1)
+                        .accessibilityElement(children: .combine)
                     }
                 }
             }
@@ -2357,6 +2596,12 @@ struct SessionGlance: View {
             if let lost = row?.connectionLost {
                 LostConnection(words: lost)
             }
+            if let cut = row?.cutOff {
+                SessionNote(words: cut, symbol: "scissors", tint: .orange)
+            }
+            if row?.flagged == true {
+                SessionNote(words: SessionNote.flagged, symbol: "flag.fill", tint: .red)
+            }
             if let said {
                 Text(said).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -2574,17 +2819,58 @@ private struct ReplyRules {
         ["terminal", "background", "codealong"].contains(resumeAt?.id ?? "")
     }
 
-    /// A running one can be switched to another of its account's models: one Codealong runs, or
-    /// one its Mac types into, where its harness's command does it.
-    var switchesModel: Bool {
-        guard let row, row.live, let account, !account.models.isEmpty else { return false }
+    /// What its Mac sends it goes to an app that runs it on its own model and effort (the Codex
+    /// app, Cursor, OpenCode), running or not.
+    var goesOnWithIt: Bool {
+        switch way {
+        case .cursor, .codexApp, .opencode: true
+        default: false
+        }
+    }
+
+    /// Its app takes a switch of model or effort whenever, for its next turn (the Codex app's).
+    var inApp: Bool { goesOnWithIt && account?.switchesInApp == true }
+
+    /// It's running where Codealong can switch it: one Codealong runs, or one its Mac types into.
+    private var switchable: Bool {
+        guard let row, row.live else { return false }
         if row.hosted { return true }
-        if case .typed = way { return account.switchesModel }
+        if case .typed = way { return true }
         return false
     }
 
-    /// A running one says its model beside the box.
-    var showsModel: Bool { row?.live == true && (switchesModel || row?.model != nil) }
+    /// It can be switched to another of its account's models, as the Mac's reply box has it: one
+    /// Codealong runs, one its Mac types into where its harness's command does it, or one whose
+    /// app takes a switch.
+    var switchesModel: Bool {
+        guard let row, let account, !account.models.isEmpty else { return false }
+        return inApp || (switchable && (row.hosted || account.switchesModel))
+    }
+
+    /// It can be switched to another of its account's effort levels, as its model can.
+    var switchesEffort: Bool {
+        guard let row, let account, !account.efforts.isEmpty else { return false }
+        return inApp || (switchable && (row.hosted || account.switchesEffort))
+    }
+
+    /// One Codealong runs switches to another of the modes its agent offers, any time.
+    var switchesMode: Bool {
+        guard let row, row.live, row.hosted else { return false }
+        return row.modes.filter { !$0.id.isEmpty }.count > 1
+    }
+
+    /// A switch of model or effort waits while its turn runs or it waits on you, where the command
+    /// would go in as a prompt or answer it; an app takes one whenever, for the next turn.
+    var switchWaits: Bool {
+        guard !inApp, let row else { return false }
+        return row.status == .working || row.status == .needs || row.stalled
+    }
+
+    /// It says what it's on beside the box: a running one, or one an app goes on with.
+    var showsModel: Bool {
+        guard let row, !resuming, row.live || goesOnWithIt else { return false }
+        return switchesModel || switchesEffort || switchesMode || row.model != nil || row.effort != nil
+    }
 }
 
 /// The model a reply goes on with, in the reply box beside send: a running session's, which
@@ -2597,7 +2883,11 @@ private struct ModelMenu: View {
     let switching: Bool
     /// The send button's, so it lines up with it.
     let height: CGFloat
+    /// The mode it's in, as switched here until its Mac says: by its id.
+    var modePicked: String? = nil
     let switchModel: (String) -> Void
+    var switchEffort: (String) -> Void = { _ in }
+    var switchMode: (String) -> Void = { _ in }
 
     var body: some View {
         // Quiet, as the box's words are: not a link's accent.
@@ -2645,25 +2935,67 @@ private struct ModelMenu: View {
             }
             .accessibilityLabel(takesModel ? "Goes on in \(place) on \(model)\(effort.map { ", \($0) effort" } ?? "")" : "Goes on in \(place)")
         } else if rules.showsModel {
-            let shown = rules.row?.model.map { modelName(model: $0, models: rules.account?.models ?? []) } ?? "Model"
-            if rules.switchesModel, let account = rules.account {
+            let model = rules.row?.model.map { modelName(model: $0, models: rules.account?.models ?? []) }
+            let effort = rules.row?.effort
+            let shown = [model, effort].compactMap { $0 }.joined(separator: " · ")
+            let modes = (rules.row?.modes ?? []).filter { !$0.id.isEmpty }
+            let mode = modes.first { $0.id == modePicked } ?? rules.row?.mode
+            let words = shown.isEmpty ? (mode?.label ?? "Model") : shown
+            let under = shown.isEmpty ? nil : mode?.label
+            let spoken = "\(model.map { "Model: \($0)" } ?? "Model")\(effort.map { ", \($0) effort" } ?? "")\(mode.map { ", \($0.label) mode" } ?? "")"
+            if let account = rules.account, rules.switchesModel || rules.switchesEffort || rules.switchesMode {
+                // A switch of model or effort waits for the turn, where the command would go in as
+                // a prompt or answer it; an app takes one for its next turn, and a mode any time.
+                let waits = switching || rules.switchWaits
                 Menu {
-                    // Which of the names it's on isn't known for sure (a reply names the model
-                    // without its context size), so none is checked; the label says it.
-                    ForEach(account.models, id: \.id) { m in
-                        Button(m.label) { switchModel(m.id) }
+                    if rules.switchesModel {
+                        Section(waits && !switching ? "Model, once its turn ends" : "Model") {
+                            // Which of the names it's on isn't known for sure (a reply names the
+                            // model without its context size), so none is checked; the label says it.
+                            ForEach(account.models, id: \.id) { m in
+                                Button(m.label) { switchModel(m.id) }
+                            }
+                        }
+                        .disabled(waits)
+                    }
+                    if rules.switchesEffort {
+                        // The levels as the Mac's chip says them (`xhigh`), the one it's on checked.
+                        Section(waits && !switching ? "Effort, once its turn ends" : "Effort") {
+                            ForEach(account.efforts, id: \.id) { e in
+                                Button {
+                                    if e.id != effort { switchEffort(e.id) }
+                                } label: {
+                                    if e.id == effort { Label(e.id, systemImage: "checkmark") } else { Text(e.id) }
+                                }
+                            }
+                        }
+                        .disabled(waits)
+                    }
+                    if rules.switchesMode {
+                        Section("Mode") {
+                            ForEach(modes, id: \.id) { m in
+                                Button {
+                                    if m.id != mode?.id { switchMode(m.id) }
+                                } label: {
+                                    if m.id == mode?.id {
+                                        Label(m.label, systemImage: "checkmark")
+                                    } else {
+                                        Text(m.label)
+                                    }
+                                    Text(m.detail)
+                                }
+                            }
+                        }
+                        .disabled(switching)
                     }
                 } label: {
-                    label(switching ? "Switching…" : shown)
+                    label(switching ? "Switching…" : words, under: switching ? nil : under)
                 }
-                // Not while its turn runs or it waits on you: the command would go in as a
-                // prompt, or answer it.
-                .disabled(switching || rules.row?.status == .working || rules.row?.status == .needs)
-                .accessibilityLabel("Model: \(shown)")
-                .accessibilityHint("Switches this session's model, for it alone, once its turn ends")
+                .accessibilityLabel(spoken)
+                .accessibilityHint(rules.inApp ? "Switches this session's model or effort, for it alone, from its next turn" : "Switches this session's model, effort or mode, for it alone")
             } else {
-                label(shown, menu: false)
-                    .accessibilityLabel("Model: \(shown)")
+                label(words, under: under, menu: false)
+                    .accessibilityLabel(spoken)
             }
         }
     }
@@ -2723,3 +3055,6 @@ private struct UpToWide: Layout {
         subviews.first?.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
     }
 }
+
+/// A prompt of yours opens Edit from here's sheet by its id.
+extension Item: Identifiable {}

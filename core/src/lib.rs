@@ -38,6 +38,8 @@ const RECENT_MS: i64 = 3 * 24 * 60 * 60 * 1000;
 /// Pages read back past the oldest shown, looking for the prompt behind it, before giving up, as
 /// the Mac's panel does.
 const LOOK_BACK: usize = 16;
+/// How long a request that acts on a session waits for its Mac, as the client's own do.
+const ACT_WAIT: Duration = Duration::from_secs(40);
 
 /// What Swift implements to hear that `Core::snapshot` has something new.
 #[uniffi::export(callback_interface)]
@@ -177,6 +179,33 @@ pub struct SessionRow {
     pub steerable: bool,
     /// The model it's on, as its harness names it, where its Mac says.
     pub model: Option<String>,
+    /// The reasoning effort it's on, as its harness names the level (`high`, `xhigh`), where its
+    /// Mac says.
+    pub effort: Option<String>,
+    /// How it goes about what would need your say (Claude Code's manual, plan or bypass
+    /// permissions), as its harness last wrote it, where its Mac says.
+    pub mode: Option<ModeChoice>,
+    /// The modes it can be switched to from here, in its agent's order: for a session Codealong
+    /// runs, whose agent takes a switch; none for one that runs elsewhere.
+    pub modes: Vec<ModeChoice>,
+    /// The messages its harness holds until the turn it's taking ends, in the order they'll go,
+    /// where its harness says what they are (the Codex app's queue), whoever sent them.
+    pub queued: Vec<HeldMessage>,
+    /// When the latest message its harness holds came, where its harness says only that
+    /// (Antigravity's terminal UI); none when it holds none.
+    pub queued_at: Option<i64>,
+    /// Its provider refused a message in it, or flagged it under its content policy: its Mac
+    /// sends it nothing by itself by default (Settings › Automation there).
+    pub flagged: bool,
+    /// Its last turn was cut off partway (its terminal closed, Codealong or the Mac restarted)
+    /// and nothing has been said since: what that comes to, as the Mac says it.
+    pub cut_off: Option<String>,
+    /// While it runs, the page that opens it in the Claude app, through its Remote Control: what
+    /// you type there goes to it where it runs.
+    pub remote_control: Option<String>,
+    /// Its harness can go on from before a prompt of yours, as a copy (Edit from here): Claude
+    /// Code, Codex and OpenCode can, as the Mac's harness.ts `EDITS` has it.
+    pub edits: bool,
     /// The name you gave it, where its harness keeps one.
     pub name: Option<String>,
     /// The session it came from, when its harness or Codealong wrote that down.
@@ -274,6 +303,47 @@ pub struct SessionOrigin {
     pub title: Option<String>,
     /// A copy of its conversation going on by itself; otherwise its agent started this one.
     pub fork: bool,
+}
+
+/// A message a session's harness holds until the turn it's taking ends (`Session::queued`).
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct HeldMessage {
+    /// Its id in its harness's queue, which Send now names (`steer`); for one sent from here, the
+    /// one its send said (`SendOutcome::queued`).
+    pub id: String,
+    pub at: i64,
+    /// What it says, each image in it as `[Image #n]`.
+    pub text: String,
+}
+
+/// A mode a session's agent offers, or the one it's in (`SessionMode`).
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct ModeChoice {
+    /// Its harness's id for it (`acceptEdits`), which a switch names; empty where it can't be
+    /// switched to from here.
+    pub id: String,
+    pub label: String,
+    /// What it means, in a sentence.
+    pub detail: String,
+    /// How much it lets the session do without asking you, as the Mac's `ModeKind` names it:
+    /// `plan`, `read-only`, `asks`, `edits`, `auto`, `skips`, or `other`.
+    pub kind: String,
+}
+
+impl From<&codealong_peer::model::SessionMode> for ModeChoice {
+    fn from(m: &codealong_peer::model::SessionMode) -> ModeChoice {
+        use codealong_peer::model::ModeKind;
+        let kind = match m.kind {
+            ModeKind::Plan => "plan",
+            ModeKind::ReadOnly => "read-only",
+            ModeKind::Asks => "asks",
+            ModeKind::Edits => "edits",
+            ModeKind::Auto => "auto",
+            ModeKind::Skips => "skips",
+            ModeKind::Other => "other",
+        };
+        ModeChoice { id: m.id.clone(), label: m.label.clone(), detail: m.detail.clone(), kind: kind.into() }
+    }
 }
 
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
@@ -627,6 +697,15 @@ pub(crate) fn all_rows(feeds: &Feeds) -> Vec<SessionRow> {
                 stoppable: s.stoppable || (s.hosted && status == Status::Working),
                 steerable: s.steerable,
                 model: s.model.clone(),
+                effort: s.effort.clone(),
+                mode: s.mode.as_ref().map(ModeChoice::from),
+                modes: s.modes.iter().map(ModeChoice::from).collect(),
+                queued: s.queued.iter().map(|m| HeldMessage { id: m.id.clone(), at: m.at, text: m.text.clone() }).collect(),
+                queued_at: s.queued_at,
+                flagged: s.flagged,
+                cut_off: s.cut_off.filter(|_| status != Status::Working).map(|_| CUT_OFF.to_string()),
+                remote_control: s.remote_control.as_deref().filter(|_| s.live).map(remote_control_url),
+                edits: matches!(s.harness, Harness::Claude | Harness::Codex | Harness::Opencode),
                 name: s.name.clone(),
                 origin: s.origin.as_ref().map(|o| SessionOrigin { key: remote_key(&d.short, &o.key), title: titles.get(o.key.as_str()).map(|t| t.to_string()), fork: o.how == OriginHow::Fork }),
                 limit: s.limit.as_ref().filter(|_| status != Status::Working).map(|l| limit_words(&s.account, l, now)),
@@ -671,6 +750,17 @@ fn count_runs(rows: &mut [SessionRow]) {
     }
 }
 
+/// What a cut-off turn comes to, as the Mac's session header says it (lanes.ts `cutOffWords`).
+const CUT_OFF: &str = "Its last turn was cut off partway: what ran it ended (its terminal closed, Codealong or the Mac restarted, or it was killed). Resume it, or send it something, to carry on.";
+
+/// The page that opens a session in the Claude app by its Remote Control session (`session_…`),
+/// as the Mac's Open in Claude app does with `claude://code/<id>`: on the phone, the web's address
+/// for it, which opens the Claude app where it's installed, and claude.ai where it isn't.
+fn remote_control_url(id: &str) -> String {
+    let safe: String = id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-').collect();
+    format!("https://claude.ai/code/{safe}")
+}
+
 /// Why a session's last turn ended when its harness couldn't reach its API, and what happens next,
 /// as the Mac's session header says it (lanes.ts `connectionLostWords`).
 fn connection_lost_words(lost: &codealong_peer::model::ConnectionLost) -> String {
@@ -690,9 +780,11 @@ fn limit_words(account: &str, limit: &SessionLimit, now: i64) -> String {
         _ => "usage limit".to_string(),
     };
     let spent = if limit.spend_capped { ", with no extra usage to carry it" } else { "" };
+    let then = if limit.continues { ", and Codealong tells it to carry on then" } else { "" };
     let when = match limit.resets_at {
+        _ if lifted && limit.continues => " It has lifted since: Codealong tells it to carry on.".to_string(),
         _ if lifted => " It has lifted since: send it something to go on.".to_string(),
-        Some(t) => format!(" It lifts {{in:{t}}}."),
+        Some(t) => format!(" It lifts {{in:{t}}}{then}."),
         None => String::new(),
     };
     let room = match &limit.move_to {
@@ -794,6 +886,10 @@ pub enum ItemKind {
     Agent,
     Tool,
     Note,
+    /// Another session's message, whole, with who sent it (`Item::from`).
+    Peer,
+    /// What Codealong sent the session by itself: a review handed back, a PR's news.
+    Codealong,
 }
 
 /// One thing said or done in a session. A tool call carries its output once it's in: the Mac
@@ -804,8 +900,10 @@ pub struct Item {
     pub id: String,
     pub at: i64,
     pub kind: ItemKind,
-    /// Prose for you, the agent and notes (Markdown); a one-line label for a tool call.
+    /// Prose for you, the agent, notes and messages (Markdown); a one-line label for a tool call.
     pub text: String,
+    /// Who sent another session's message: that session's name, where its record says.
+    pub from: Option<String>,
     /// A tool call's whole input; on a prompt of yours, a command you ran in the session's shell
     /// (Claude Code's `!`), whose `output` is what it printed.
     pub input: Option<String>,
@@ -818,6 +916,15 @@ pub struct Item {
     pub questions: Vec<Question>,
     /// A page on the web the call made or opened: an artifact Claude Code published.
     pub link: Option<WebLink>,
+    /// The files the call handed you to look at (Claude Code's `SendUserFile`), on its Mac.
+    pub files: Vec<SentFile>,
+    /// What the agent said with them.
+    pub caption: Option<String>,
+    /// A prompt of yours that Edit from here can go back to (`Conversation::edit`), as the Mac's
+    /// thread has them (SessionThread.tsx `editablePrompts`): one you wrote, not a command you
+    /// ran nor one the session took back, with something of the agent's before it, which there
+    /// may be above a page that doesn't begin at the session's start.
+    pub editable: bool,
 }
 
 /// A question an agent asks you (Claude Code's `AskUserQuestion`), with its choices, and, once
@@ -852,6 +959,28 @@ pub struct QuestionAnswer {
     pub question: String,
     pub multi_select: bool,
     pub picks: Vec<String>,
+}
+
+/// A file an agent handed you, on its session's Mac, as its line in the Mac's conversation lists it:
+/// by its name and the folder it's in.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct SentFile {
+    pub name: String,
+    /// Its folder on its Mac, `~` for the home folder there.
+    pub folder: String,
+}
+
+impl SentFile {
+    fn of(path: &str) -> SentFile {
+        let (folder, name) = path.rsplit_once('/').unwrap_or(("", path));
+        // `/Users/<you>` as `~`, as the Mac writes a home folder.
+        let mut parts = folder.splitn(4, '/');
+        let folder = match (parts.next(), parts.next(), parts.next(), parts.next()) {
+            (Some(""), Some("Users"), Some(_), rest) => format!("~{}", rest.map(|r| format!("/{r}")).unwrap_or_default()),
+            _ => folder.to_string(),
+        };
+        SentFile { name: name.to_string(), folder }
+    }
 }
 
 /// A page on the web that a tool call made or opened.
@@ -996,14 +1125,22 @@ impl Thread {
                 results.insert(id.as_str(), i);
             }
         }
+        // Anything above what's been read may be the agent's.
+        let mut answered = self.before.is_some();
         self.items
             .iter()
             .filter_map(|i| {
+                if matches!(i.kind.as_str(), "agent" | "tool") {
+                    answered = true;
+                }
+                let editable = i.kind == "you" && answered && !i.withdrawn && i.input.is_none() && !i.text.trim().is_empty();
                 let kind = match i.kind.as_str() {
                     "you" => ItemKind::You,
                     "agent" => ItemKind::Agent,
                     "tool" => ItemKind::Tool,
                     "note" => ItemKind::Note,
+                    "peer" => ItemKind::Peer,
+                    "codealong" => ItemKind::Codealong,
                     // A result shows with its call, and one whose call is further back waits for it.
                     "result" => return None,
                     _ => ItemKind::Note,
@@ -1018,16 +1155,49 @@ impl Thread {
                     at: i.at,
                     kind,
                     text: i.text.clone(),
+                    from: i.from.clone(),
                     input: i.input.clone(),
                     output: result.and_then(|r| r.output.clone()).or_else(|| i.output.clone()),
                     failed: i.failed || result.is_some_and(|r| r.failed),
                     withdrawn: i.withdrawn,
                     questions: i.questions.iter().map(|q| question_of(q, answers)).collect(),
                     link: i.link.as_ref().or(result.and_then(|r| r.link.as_ref())).map(|l| WebLink { url: l.url.clone(), title: l.title.clone(), note: l.note.clone() }),
+                    files: i.sent.as_ref().map(|s| s.files.iter().map(|f| SentFile::of(f)).collect()).unwrap_or_default(),
+                    caption: i.sent.as_ref().and_then(|s| s.caption.clone()),
+                    editable,
                 })
             })
             .collect()
     }
+}
+
+/// How a message sent from here went, as its Mac said.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct SendOutcome {
+    /// What happened, in a sentence; empty when there's nothing to say.
+    pub message: String,
+    /// The id its harness holds it under until the session's turn ends (the Codex app's queue):
+    /// it's queued while the session's `queued` has that id.
+    pub queued: Option<String>,
+    /// The way in failed after it may have put it in the session (its terminal didn't confirm
+    /// the typing), so it counts as sent without being sure, and `message` says where to look:
+    /// sent again, the session could have it twice.
+    pub uncertain: bool,
+}
+
+impl From<api::Sent> for SendOutcome {
+    fn from(s: api::Sent) -> SendOutcome {
+        SendOutcome { message: s.message, queued: s.queued, uncertain: s.uncertain }
+    }
+}
+
+/// How a switch of a session's mode went: what happened, in a sentence, and the mode it's in now,
+/// by its id, which isn't always the one asked for (an agent puts a session whose model doesn't
+/// take Auto in Accept edits instead).
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct ModeSwitch {
+    pub message: String,
+    pub mode: String,
 }
 
 /// A message sent from here, by when it went (this phone's clock).
@@ -1041,13 +1211,13 @@ pub struct SentAt {
 const SENT_SLACK_MS: i64 = 3_000;
 
 /// Which messages sent from here the conversation shows now, as the Mac's ahead.ts `inRecord`
-/// tells: oldest first, each takes the first prompt of yours (or message from another session) at
-/// or after it went that an earlier one didn't take. The text isn't compared: a harness can
-/// record a message otherwise than it was sent (a message from Codealong comes as one from
-/// another session).
+/// tells: oldest first, each takes the first prompt of yours (or message from another session,
+/// whole or as the note Macs before 2026-10-14 sent) at or after it went that an earlier one
+/// didn't take. The text isn't compared: a harness can record a message otherwise than it was
+/// sent (a message from Codealong comes as one from another session).
 #[uniffi::export]
 pub fn sends_in_record(sends: Vec<SentAt>, items: Vec<Item>) -> Vec<String> {
-    let said: Vec<&Item> = items.iter().filter(|i| i.kind == ItemKind::You || (i.kind == ItemKind::Note && i.text.starts_with("From another session"))).collect();
+    let said: Vec<&Item> = items.iter().filter(|i| matches!(i.kind, ItemKind::You | ItemKind::Peer) || (i.kind == ItemKind::Note && i.text.starts_with("From another session"))).collect();
     let mut used = vec![false; said.len()];
     let mut sends = sends;
     sends.sort_by_key(|s| s.at);
@@ -1086,12 +1256,16 @@ fn prompt_in(page: &api::Page) -> Option<Item> {
         at: i.at,
         kind: ItemKind::You,
         text: i.text.clone(),
+        from: None,
         input: None,
         output: None,
         failed: false,
         withdrawn: i.withdrawn,
         questions: Vec::new(),
         link: None,
+        files: Vec::new(),
+        caption: None,
+        editable: false,
     })
 }
 
@@ -1227,9 +1401,17 @@ impl Conversation {
 
     /// Sends the session a prompt, where it runs on its Mac; with `now`, into the turn it's taking
     /// at once (one whose row says `steerable`). Says how it went.
-    pub fn send(&self, text: String, now: bool) -> Result<String, CoreError> {
-        let sent = self.client.send(&self.device, &self.key, &text, now)?;
-        Ok(sent.message)
+    pub fn send(&self, text: String, now: bool) -> Result<SendOutcome, CoreError> {
+        Ok(self.client.send(&self.device, &self.key, &text, now)?.into())
+    }
+
+    /// Sends a message its harness holds until the turn ends (`id`, one of its row's `queued`)
+    /// into the turn it's taking now, as Steer beside a queued message in the Codex app does.
+    /// Says what happened. Macs before 2026-10-20 refuse it.
+    pub fn steer(&self, id: String) -> Result<String, CoreError> {
+        let params = serde_json::to_value(api::params::Steer { key: self.key.clone(), id }).map_err(|e| CoreError::Failed(e.to_string()))?;
+        let said = self.client.ask(&self.device, api::SESSION_STEER, params, ACT_WAIT).map_err(|e| older_mac(e, &self.client, &self.device, "send a queued message now from here"))?;
+        Ok(said.as_str().map(str::to_string).unwrap_or_else(|| "Sent into the turn.".into()))
     }
 
     /// How a message sent to it would reach it, as its Mac says; None for one Codealong runs, and
@@ -1240,17 +1422,42 @@ impl Conversation {
 
     /// Goes on with it where `place` says (one of its account's `resumes`), on `model` and
     /// `effort` where that place takes them, on `prompt`. Says how it went, as a send does.
-    pub fn resume(&self, place: String, model: Option<String>, effort: Option<String>, prompt: String) -> Result<String, CoreError> {
+    pub fn resume(&self, place: String, model: Option<String>, effort: Option<String>, prompt: String) -> Result<SendOutcome, CoreError> {
         let place = api::Place::from_word(&place).ok_or_else(|| CoreError::Failed(format!("{place} isn't a place a session can go on in.")))?;
         let takes = place_takes_model(place);
         let resume = api::ResumeIn { place, model: model.filter(|_| takes), effort: effort.filter(|_| takes) };
-        Ok(self.client.resume(&self.device, &self.key, resume, &prompt)?.message)
+        Ok(self.client.resume(&self.device, &self.key, resume, &prompt)?.into())
     }
 
-    /// Switches it, while it runs, to another of its account's models, for it alone. Says what
-    /// happened.
+    /// Switches it to another of its account's models, for it alone: while it runs, or, in the
+    /// Codex app, from its next turn. Says what happened.
     pub fn switch_model(&self, model: String) -> Result<String, CoreError> {
         Ok(self.client.switch_model(&self.device, &self.key, &model)?)
+    }
+
+    /// Switches it to another of its account's effort levels, for it alone, as `switch_model`
+    /// does. Says what happened. Macs before 2026-10-14 refuse it.
+    pub fn switch_effort(&self, effort: String) -> Result<String, CoreError> {
+        self.client.switch_effort(&self.device, &self.key, &effort).map_err(|e| CoreError::Failed(older_mac(e, &self.client, &self.device, "switch effort from here")))
+    }
+
+    /// Switches one its Mac runs itself to another of the modes its agent offers (`id`, one of
+    /// its row's `modes`), for it alone. Macs before 2026-10-14 refuse it.
+    pub fn switch_mode(&self, id: String) -> Result<ModeSwitch, CoreError> {
+        let switched = self.client.switch_mode(&self.device, &self.key, &id).map_err(|e| CoreError::Failed(older_mac(e, &self.client, &self.device, "switch modes from here")))?;
+        Ok(ModeSwitch { message: switched.message, mode: switched.mode })
+    }
+
+    /// Forks it from just before a prompt of yours (`item`, an item's id here), your edit of it
+    /// (`prompt`) in its place: a copy of its conversation up to there goes on without a window
+    /// on its Mac, and the session itself is left as it is. Macs before 2026-10-20 refuse it.
+    pub fn edit(&self, item: String, prompt: String) -> Result<StartedSession, CoreError> {
+        let cursor = item.split(':').next().and_then(|c| c.parse::<u64>().ok()).ok_or_else(|| CoreError::Failed("That isn't a prompt in this session.".into()))?;
+        let params = serde_json::to_value(api::params::Edit { key: self.key.clone(), cursor, prompt }).map_err(|e| CoreError::Failed(e.to_string()))?;
+        let said = self.client.ask(&self.device, api::SESSION_EDIT, params, ACT_WAIT).map_err(|e| older_mac(e, &self.client, &self.device, "edit a prompt from here"))?;
+        let started: api::Started = serde_json::from_value(said).map_err(|e| CoreError::Failed(e.to_string()))?;
+        let short = self.device.get(..10).unwrap_or(&self.device);
+        Ok(StartedSession { key: started.key.map(|k| remote_key(short, &k)), message: started.message })
     }
 }
 
@@ -1378,7 +1585,32 @@ mod tests {
     }
 
     fn item(kind: &str, cursor: u64, id: Option<&str>, output: Option<&str>) -> api::Item {
-        api::Item { at: cursor as i64, kind: kind.into(), text: format!("{kind} {cursor}"), id: id.map(String::from), input: None, output: output.map(String::from), failed: false, withdrawn: false, questions: vec![], answers: Default::default(), link: None, cursor, n: 0 }
+        api::Item { at: cursor as i64, kind: kind.into(), text: format!("{kind} {cursor}"), from: None, id: id.map(String::from), input: None, output: output.map(String::from), failed: false, withdrawn: false, questions: vec![], answers: Default::default(), link: None, sent: None, cursor, n: 0 }
+    }
+
+    #[test]
+    fn files_an_agent_sent_are_named_with_their_folder() {
+        assert_eq!(SentFile::of("/Users/me/app/shots/before.png"), SentFile { name: "before.png".into(), folder: "~/app/shots".into() });
+        assert_eq!(SentFile::of("/Users/me/notes.md"), SentFile { name: "notes.md".into(), folder: "~".into() });
+        assert_eq!(SentFile::of("/tmp/out.txt"), SentFile { name: "out.txt".into(), folder: "/tmp".into() });
+    }
+
+    #[test]
+    fn edit_from_here_goes_back_to_your_prompts_after_the_agents_words() {
+        let mut t = Thread::default();
+        let mut ran = item("you", 30, None, None);
+        ran.input = Some("ls".into());
+        let mut taken = item("you", 50, None, None);
+        taken.withdrawn = true;
+        t.take(api::Page { items: vec![item("you", 10, None, None), item("agent", 20, None, None), ran, item("you", 40, None, None), taken], before: None, after: 60 }, false);
+        // The first comes before anything of the agent's, one is a command you ran, and the last
+        // was taken back.
+        let editable: Vec<String> = t.shown().into_iter().filter(|i| i.editable).map(|i| i.id).collect();
+        assert_eq!(editable, ["40:0"]);
+        // A page that doesn't begin at the session's start may have the agent's words above it.
+        let mut later = Thread::default();
+        later.take(api::Page { items: vec![item("you", 10, None, None)], before: Some(5), after: 20 }, false);
+        assert!(later.shown()[0].editable);
     }
 
     #[test]
@@ -1463,11 +1695,21 @@ mod tests {
         assert_eq!(done_anyway("Fix it", false, "Mini", "anything"), DoneOutcome { done: true, message: "Done with \u{201c}Fix it\u{201d}: it\u{2019}s archived.".into(), noted: false });
     }
 
+    fn sent_at(id: &str, at: i64) -> SentAt {
+        SentAt { id: id.into(), at }
+    }
+
     #[test]
     fn a_message_sent_shows_once_the_record_has_a_prompt_after_it() {
-        let said = |kind: ItemKind, at: i64, text: &str| Item { id: at.to_string(), at, kind, text: text.into(), input: None, output: None, failed: false, withdrawn: false, questions: vec![], link: None };
+        let said = |kind: ItemKind, at: i64, text: &str| Item { id: at.to_string(), at, kind, text: text.into(), from: None, input: None, output: None, failed: false, withdrawn: false, questions: vec![], link: None, files: vec![], caption: None, editable: false };
         let items = vec![said(ItemKind::You, 1_000, "old"), said(ItemKind::Agent, 9_000, "reply"), said(ItemKind::You, 10_000, "first"), said(ItemKind::Note, 12_000, "From another session: second")];
-        let sent = |id: &str, at: i64| SentAt { id: id.into(), at };
+        // A message from Codealong comes as another session's: whole from Macs since 2026-10-14,
+        // as a note of its first line from those before.
+        let whole = vec![said(ItemKind::Agent, 9_000, "reply"), said(ItemKind::Peer, 10_000, "Carry on.\n\nThe limit lifted."), said(ItemKind::Codealong, 11_000, "Review handed back")];
+        assert_eq!(sends_in_record(vec![sent_at("a", 9_500)], whole.clone()), ["a"]);
+        // What Codealong sent by itself isn't a message from here.
+        assert!(sends_in_record(vec![sent_at("a", 14_000)], whole).is_empty());
+        let sent = sent_at;
         // Each takes the first prompt at or after it went; the old one before them takes none.
         assert_eq!(sends_in_record(vec![sent("b", 11_000), sent("a", 10_500)], items.clone()), ["a", "b"]);
         // A third has nothing left to take.
@@ -1501,11 +1743,15 @@ mod tests {
 
     #[test]
     fn a_usage_limit_says_when_it_lifts_and_who_has_room() {
-        let limit = SessionLimit { meter: Some("session".into()), resets_at: Some(5_000), spend_capped: false, at: 1, move_to: Some("claude2".into()), model: None };
+        let limit = SessionLimit { meter: Some("session".into()), resets_at: Some(5_000), spend_capped: false, at: 1, move_to: Some("claude2".into()), continues: false, model: None };
         assert_eq!(limit_words("claude", &limit, 1_000), "It stopped at claude\u{2019}s 5-hour limit. It lifts {in:5000}. claude2 has room: move it there on its Mac to go on now.");
         assert_eq!(limit_words("claude", &limit, 9_000), "It stopped at claude\u{2019}s 5-hour limit. It has lifted since: send it something to go on.");
-        let week = SessionLimit { meter: Some("model:Opus".into()), resets_at: None, spend_capped: true, move_to: None, ..limit };
+        let week = SessionLimit { meter: Some("model:Opus".into()), resets_at: None, spend_capped: true, move_to: None, ..limit.clone() };
         assert_eq!(limit_words("claude", &week, 1_000), "It stopped at claude\u{2019}s weekly Opus limit, with no extra usage to carry it. No other account has room.");
+        // Its Mac tells it to carry on once the limit lifts.
+        let carries = SessionLimit { continues: true, ..limit };
+        assert_eq!(limit_words("claude", &carries, 1_000), "It stopped at claude\u{2019}s 5-hour limit. It lifts {in:5000}, and Codealong tells it to carry on then. claude2 has room: move it there on its Mac to go on now.");
+        assert_eq!(limit_words("claude", &carries, 9_000), "It stopped at claude\u{2019}s 5-hour limit. It has lifted since: Codealong tells it to carry on.");
     }
 
     #[test]
@@ -1625,6 +1871,11 @@ pub struct StartAccount {
     pub resume: Option<String>,
     /// Its running sessions that its Mac types into can be switched to another of `models`.
     pub switches_model: bool,
+    /// Its running sessions that its Mac types into can be switched to another of `efforts`.
+    pub switches_effort: bool,
+    /// Its sessions that go on in its app (the Codex app) can be switched to another of `models`
+    /// and `efforts` there, running or not, from their next turn.
+    pub switches_in_app: bool,
 }
 
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
@@ -2050,6 +2301,8 @@ fn start_choices(o: api::StartOptions) -> StartChoices {
                 resumes: a.resumes.iter().filter_map(|p| place(*p)).collect(),
                 resume: resume_place(a),
                 switches_model: a.switches_model,
+                switches_effort: a.switches_effort,
+                switches_in_app: a.switches_in_app,
             }
         })
         .collect();
@@ -2158,6 +2411,15 @@ mod order_tests {
             stoppable: false,
             steerable: false,
             model: None,
+            effort: None,
+            mode: None,
+            modes: vec![],
+            queued: vec![],
+            queued_at: None,
+            flagged: false,
+            cut_off: None,
+            remote_control: None,
+            edits: false,
             name: None,
             origin: None,
             limit: None,
@@ -2279,6 +2541,10 @@ mod start_tests {
             worktree: false,
             resumes: vec![],
             switches_model: false,
+            switches_effort: false,
+            switches_in_app: false,
+            usage_cap: None,
+            buffer: None,
         }
     }
 
@@ -2305,7 +2571,7 @@ mod start_tests {
         codex.name = "codex".into();
         codex.harness = Harness::Codex;
         codex.models = vec![api::ModelOption { id: "gpt-5.5".into(), label: "GPT-5.5".into() }];
-        let o = api::StartOptions { accounts: vec![claude, codex], codex_projects: vec![], claude_models: vec![api::ModelOption { id: "opus".into(), label: "Opus".into() }], claude_efforts: vec![] };
+        let o = api::StartOptions { accounts: vec![claude, codex], codex_projects: vec![], claude_models: vec![api::ModelOption { id: "opus".into(), label: "Opus".into() }], claude_efforts: vec![], groups: vec![], auto_group: String::new() };
         let c = start_choices(o);
         // A Mac that lists no models for Claude Code's account lists them for all of Claude Code.
         assert_eq!((c.accounts[0].models[0].id.as_str(), c.accounts[0].worktree), ("opus", true));

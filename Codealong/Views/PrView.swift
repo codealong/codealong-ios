@@ -396,6 +396,20 @@ private struct PrHeader: View {
             if let words = mergeWords {
                 Text(words).font(.caption).foregroundStyle(.secondary)
             }
+            if !pr.labels.isEmpty {
+                PrLabels(labels: pr.labels)
+            }
+            if let stale = pr.stale {
+                Label {
+                    Text(stale)
+                } icon: {
+                    Image(systemName: "clock.badge.exclamationmark").foregroundStyle(.orange)
+                }
+                .font(.footnote)
+            }
+            if let review = pr.agentReview {
+                AgentReviewLabel(review: review)
+            }
             if pr.waits {
                 Label {
                     Text(pr.requestedBy.map { "\($0) asked for your review" } ?? "Your review is asked for")
@@ -480,6 +494,130 @@ private struct SessionsSection: View {
                 .background(.background.secondary, in: .rect(cornerRadius: 12))
             }
             .padding(.top, 10)
+        }
+    }
+}
+
+/// A PR's labels from GitHub, each with a dot in its color, as the Mac shows them: all of them on
+/// its page, wrapping, and on a row as many as fit on its line.
+struct PrLabels: View {
+    let labels: [PrLabelRow]
+    var compact = false
+
+    var body: some View {
+        if compact {
+            HStack(spacing: 8) {
+                ForEach(labels, id: \.name) { chip($0) }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        } else {
+            FlowLayout(spacing: 6) {
+                ForEach(labels, id: \.name) { label in
+                    chip(label)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(.background.secondary, in: .capsule)
+                        .accessibilityHint(label.description ?? "")
+                }
+            }
+            .font(.caption)
+        }
+    }
+
+    private func chip(_ label: PrLabelRow) -> some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(label.color.map { Color(red: Double($0.red), green: Double($0.green), blue: Double($0.blue)) } ?? .secondary)
+                .frame(width: 7, height: 7)
+            Text(label.name).lineLimit(1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Label: \(label.name)")
+    }
+}
+
+/// Lays its views out in rows, going on to the next row where one doesn't fit.
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let rows = rows(subviews, width: proposal.width ?? .infinity)
+        let height = rows.map(\.height).reduce(0, +) + spacing * CGFloat(max(rows.count - 1, 0))
+        let width = rows.map(\.width).max() ?? 0
+        return CGSize(width: proposal.width ?? width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for row in rows(subviews, width: bounds.width) {
+            var x = bounds.minX
+            for i in row.items {
+                let size = subviews[i].sizeThatFits(.unspecified)
+                subviews[i].place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(width: min(size.width, bounds.width), height: size.height))
+                x += min(size.width, bounds.width) + spacing
+            }
+            y += row.height + spacing
+        }
+    }
+
+    private struct Row {
+        var items: [Int] = []
+        var width: CGFloat = 0
+        var height: CGFloat = 0
+    }
+
+    private func rows(_ subviews: Subviews, width: CGFloat) -> [Row] {
+        var rows: [Row] = []
+        var row = Row()
+        for (i, view) in subviews.enumerated() {
+            let size = view.sizeThatFits(.unspecified)
+            let w = min(size.width, width)
+            if !row.items.isEmpty && row.width + spacing + w > width {
+                rows.append(row)
+                row = Row()
+            }
+            row.width += (row.items.isEmpty ? 0 : spacing) + w
+            row.height = max(row.height, size.height)
+            row.items.append(i)
+        }
+        if !row.items.isEmpty { rows.append(row) }
+        return rows
+    }
+}
+
+/// Where Codealong's own review of a PR stands on its Mac, as the line over the Mac's review box
+/// says it: the latest round, and what its agent suggests until its review goes as yours.
+struct AgentReviewLabel: View {
+    let review: AgentReviewLine
+
+    var body: some View {
+        Label {
+            Text(review.suggests.map { "\(review.says) · \($0)" } ?? review.says)
+        } icon: {
+            Image(systemName: icon).foregroundStyle(tint)
+        }
+        .font(.footnote)
+        .foregroundStyle(.secondary)
+    }
+
+    private var icon: String {
+        switch review.stage {
+        case "queued": "hourglass"
+        case "reviewing": "eye"
+        case "posted": "text.bubble"
+        case "drafted": "note.text"
+        case "skipped": "circle.dashed"
+        case "failed": "exclamationmark.triangle"
+        default: "checkmark.circle"
+        }
+    }
+
+    private var tint: Color {
+        switch review.stage {
+        case "failed": .orange
+        case "reviewing", "queued": .blue
+        default: .secondary
         }
     }
 }

@@ -75,13 +75,18 @@ need you, as on the Mac.
 **Act on a session**, on any Mac that has remote control turned on:
 
 - reply to it, or slip a message into the turn it's taking right now, with photos or a pasted
-  image (screenshots and the like) attached, which the agent gets as the Mac's paste does;
+  image (screenshots and the like) attached, which the agent gets as the Mac's paste does; a
+  message its harness holds until the turn ends (the Codex app's queue) shows at the end of the
+  conversation, with *Send now* to put it in the turn at once;
 - allow or deny what it wants to run (or deny it and say what to do instead), and answer its
   questions;
 - stop its turn, with the square that takes send's place while it runs;
-- switch a running session's model;
+- switch a running session's model, effort or mode (a Codex app thread's from its next turn);
 - resume one that isn't running, where and on what model you pick;
-- fork it, or mark it done (closing it where its Mac can).
+- fork it, go on from before one of your prompts with an edit of it (hold the prompt, *Edit from
+  here*), or mark it done (closing it where its Mac can).
+
+A running Claude Code session with Remote Control on opens in the Claude app from its menu.
 
 Renaming, archiving, marking seen, *Mark as unread*, *Snooze* (off what waits on you until the time
 you pick, on every device) and *Quiet* (its turns stop waiting on you; it comes to you only when it
@@ -92,7 +97,7 @@ turn ended (*Review requested*), longest waiting first. The menu's *PRs* page li
 Macs know: pinned ones, the reviews asked of you, yours, the other open ones, snoozed reviews, and
 the last week's merged and closed ones folded away. Yours are the ones opened by the GitHub account
 most of your Macs are signed in as; when one is signed in as another (a bot your agents open PRs
-as, or a work account), the menu's *Your GitHub accounts* picks which count as you. Open one to see where it stands (checks, whether it can merge, its size, who asked you), the
+as, or a work account), the menu's *Your GitHub accounts* picks which count as you. Open one to see where it stands (checks, whether it can merge, its size, who asked you, its labels, an approval of earlier commits, and Codealong's own review of it), the
 sessions that worked on it (tap one to open it), your draft review of it if you began one, its description, reviews, comments and changed files with
 their diffs. The box at its foot reviews it, as the Mac's does: write what to say, then *Request
 changes*, *Comment* or *Approve* (only *Comment* on your own PR or a closed one), submitting your

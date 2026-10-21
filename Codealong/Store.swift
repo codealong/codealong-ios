@@ -727,15 +727,16 @@ final class Store {
         outgoing[key]?[i].state = .sending
         Task {
             do {
-                let message = try await Task.detached {
+                let sent = try await Task.detached {
                     let conv = try core.conversation(key: key)
                     switch next.how {
                     case .send(let now): return try conv.send(text: next.text, now: now)
                     case .resume(let place, let model, let effort): return try conv.resume(place: place, model: model, effort: effort, prompt: next.text)
+                    case .steer(let id): return SendOutcome(message: try conv.steer(id: id), queued: nil, uncertain: false)
                     }
                 }.value
                 if let j = outgoing[key]?.firstIndex(where: { $0.id == next.id }) {
-                    outgoing[key]?[j].state = .sent(message, at: .now)
+                    outgoing[key]?[j].state = .sent(sent.message, at: .now, held: sent.queued)
                 }
             } catch {
                 failed(key, title: title, from: next.id, why: words(error))
@@ -749,7 +750,12 @@ final class Store {
     /// before what's written there now.
     private func failed(_ key: String, title: String, from id: String, why: String) {
         guard let list = outgoing[key], let i = list.firstIndex(where: { $0.id == id }) else { return }
-        let back = list[i...].filter { if case .sent = $0.state { false } else { true } }
+        // A queued message sent into the turn (`steer`) went its own way, and waits on nothing.
+        let back = list[i...].filter { o in
+            if case .sent = o.state { return false }
+            if case .steer = o.how { return false }
+            return true
+        }
         outgoing[key] = list.filter { o in !back.contains { $0.id == o.id } }
         let draft = drafts[key] ?? ""
         drafts[key] = (back.map(\.text) + (draft.isEmpty ? [] : [draft])).joined(separator: "\n\n")
@@ -759,14 +765,36 @@ final class Store {
         }
     }
 
-    /// The session's conversation shows these now (`sends_in_record`): they go.
+    /// The session's conversation shows these now (`sends_in_record`): they go. One its harness
+    /// still holds can't be in the record yet, however long the turn it waits on goes on.
     func shown(_ key: String, items: [Item]) {
         guard let list = outgoing[key], !list.isEmpty else { return }
-        let going = list.filter { $0.state != .queued }.map { SentAt(id: $0.id, at: Int64($0.at.timeIntervalSince1970 * 1000)) }
+        let row = sessions.first { $0.key == key }
+        let going = list.filter { $0.state != .queued && !$0.held(in: row) }.map { SentAt(id: $0.id, at: Int64($0.at.timeIntervalSince1970 * 1000)) }
         let found = Set(sendsInRecord(sends: going, items: items))
         // A message goes after a while whatever the record says: its bubble has said what it knows.
-        let kept = list.filter { !found.contains($0.id) && Date.now.timeIntervalSince($0.at) < Outgoing.longest }
+        let kept = list.filter { !found.contains($0.id) && ($0.held(in: row) || Date.now.timeIntervalSince($0.at) < Outgoing.longest) }
         if kept != list { outgoing[key] = kept }
+    }
+
+    /// Sends a message the session's harness holds until its turn ends into the turn it's taking
+    /// now (Send now beside it, as Steer in the Codex app): it shows in its place as sent until the
+    /// session's record has it. Says why when it couldn't.
+    func steer(_ key: String, message: HeldMessage) async -> String? {
+        let core: Core
+        do { core = try running() } catch { return words(error) }
+        let o = Outgoing(id: UUID().uuidString, text: message.text, at: .now, how: .steer(message.id), state: .sending)
+        outgoing[key, default: []].append(o)
+        do {
+            let said = try await Task.detached { try core.conversation(key: key).steer(id: message.id) }.value
+            if let j = outgoing[key]?.firstIndex(where: { $0.id == o.id }) {
+                outgoing[key]?[j].state = .sent(said, at: .now)
+            }
+            return nil
+        } catch {
+            outgoing[key]?.removeAll { $0.id == o.id }
+            return words(error)
+        }
     }
 
     /// Puts a message that went away: the session didn't show it, and you've seen that.
@@ -845,15 +873,32 @@ struct Outgoing: Identifiable, Equatable {
         case send(now: Bool)
         /// Going on with a session that isn't running, where and on what you picked.
         case resume(place: String, model: String?, effort: String?)
+        /// A message the session's harness held (by its id there), sent into the turn now.
+        case steer(String)
     }
 
     enum State: Equatable {
         /// Waiting for one before it to go.
         case queued
         case sending
-        /// Its Mac took it, and said this.
-        case sent(String, at: Date)
+        /// Its Mac took it, and said this; `held` is the id the session's harness holds it under
+        /// until its turn ends, where its send said one (the Codex app's queue).
+        case sent(String, at: Date, held: String? = nil)
     }
+
+    /// The session's harness holds it until its turn ends, as the Mac's thread reads the board
+    /// (ahead.ts `settle`): while the session lists the id its send said it went under, or, where
+    /// it lists none, while something it holds came after it went.
+    func held(in row: SessionRow?) -> Bool {
+        guard case .sent(_, _, let id) = state, let row else { return false }
+        if id != nil || !row.queued.isEmpty {
+            return id.map { id in row.queued.contains { $0.id == id } } ?? false
+        }
+        return row.queuedAt.map { Double($0) >= at.timeIntervalSince1970 * 1000 - Self.slack } ?? false
+    }
+
+    /// Something held a little before it went still counts as it: the Mac's clock may be behind.
+    static let slack: Double = 1_000
 
     /// One the session shows no sign of this long after it went says it may not have reached it.
     static let confirm: TimeInterval = 20
