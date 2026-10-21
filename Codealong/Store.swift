@@ -399,6 +399,13 @@ final class Store {
         }
     }
 
+    /// `shot`, the picture of the screen kept on the Mac improving began with, kept on `device` as
+    /// well, for a prompt to a session there: a Mac reads only the images it keeps.
+    func keepImproveShot(_ shot: ImproveShot, picture: UIImage?, on device: String) async throws -> ImproveShot {
+        guard let data = picture?.pngData() else { throw CoreError.Failed(message: "The picture of the screen is gone.") }
+        return ImproveShot(name: shot.name, reference: try await keepScreenshot(data, on: device))
+    }
+
     /// Keeps a picture of this phone's screen on `device` for the prompt of a session that
     /// improves Codealong, answering how the prompt refers to it.
     private func keepScreenshot(_ data: Data, on device: String) async throws -> String {

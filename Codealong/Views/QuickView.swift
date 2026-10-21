@@ -985,16 +985,17 @@ struct QuickView: View {
             guard let row = s.session, !acting else { return }
             // What's typed as it's tapped: the box stays open while the photos go to the Mac.
             let asked = query
-            // The photos attached go with it, kept on its Mac first.
+            let improving = store.improving
             acting = true
             problem = nil
-            let images = await keptPhotos(on: row.device)
+            let prompt = await makePrompt(asked, improving: improving, on: row.device)
             acting = false
-            guard let images else { return }
-            store.post(row.key, title: row.title, text: ImagePrep.prompt(images: images, text: asked), how: .send(now: false))
+            guard let prompt else { return }
+            store.post(row.key, title: row.title, text: prompt, how: .send(now: false))
             // Words written meanwhile didn't go, so they stay.
             if query == asked { text = "" }
             photos = []
+            leaveImproving(improving)
             store.dealtWith(row.key)
             path.append(row.key)
         case .start:
@@ -1012,22 +1013,13 @@ struct QuickView: View {
         // while the photos go to the Mac.
         let asked = query
         let (model, effort) = composer.takesModel ? (composer.model, composer.effort) : (nil, nil)
-        let shots = store.improving.map { $0.shot.map { [$0] } ?? [] }
-        // The picture is still on its way to the Mac: the prompt would go without it.
-        if store.improving?.keeping == true {
-            problem = "The picture of the screen is still on its way to the Mac. Try again in a moment."
-            return
-        }
+        let improving = store.improving
         acting = true
         problem = nil
-        guard let images = await keptPhotos(on: worktree.device) else {
+        guard let prompt = await makePrompt(asked, improving: improving, on: worktree.device) else {
             acting = false
             return
         }
-        let typed = ImagePrep.prompt(images: images, text: asked)
-        // Improving Codealong: the picture of the screen goes after what you wrote, as the Mac's
-        // panel writes it (the core's rule).
-        let prompt = shots.map { improvePrompt(text: typed, shots: $0) } ?? typed
         do {
             let begun = try await store.startSession(device: worktree.device, worktree: worktree.id, account: account, place: place, prompt: prompt, model: model, effort: effort, newWorktree: newTree)
             acting = false
@@ -1036,7 +1028,7 @@ struct QuickView: View {
             if query == asked { text = "" }
             photos = []
             typing = false
-            store.improving = nil
+            leaveImproving(improving)
             // It opens once its Mac lists it; a start whose id the Mac doesn't know yet says what's next.
             if let key = begun.key {
                 store.openWhenListed = key
@@ -1044,8 +1036,7 @@ struct QuickView: View {
                 // says so, still opening if it turns up.
                 try? await Task.sleep(for: .seconds(30))
                 if store.openWhenListed == key {
-                    let name = store.devices.first { $0.key == worktree.device }.map { Names.short($0.name) } ?? "the Mac"
-                    problem = "It started, but \(name) hasn’t listed it yet. It opens once it does."
+                    problem = "It started, but \(macName(worktree.device)) hasn’t listed it yet. It opens once it does."
                 }
             } else if let message = begun.message {
                 store.notice = message
@@ -1054,6 +1045,38 @@ struct QuickView: View {
             acting = false
             problem = words(error)
         }
+    }
+
+    /// What's typed as the prompt of a start or a send on `mac`: the photos attached, kept there
+    /// first, and improving Codealong, the picture of the screen after them, as the Mac's panel
+    /// writes it for either (the core's rule). That picture is kept on the Mac improving began
+    /// with, whose reference means nothing to another, so a prompt for another gets a copy kept
+    /// there. Nil, saying why, when something can't go yet or can't be kept.
+    private func makePrompt(_ asked: String, improving: Store.Improving?, on mac: String) async -> String? {
+        // The picture is still on its way to the Mac: the prompt would go without it.
+        if improving?.keeping == true {
+            problem = "The picture of the screen is still on its way to the Mac. Try again in a moment."
+            return nil
+        }
+        guard let images = await keptPhotos(on: mac) else { return nil }
+        let typed = ImagePrep.prompt(images: images, text: asked)
+        guard let improving else { return typed }
+        var shots = improving.shot.map { [$0] } ?? []
+        if let shot = improving.shot, mac != improving.target.device {
+            do {
+                shots = [try await store.keepImproveShot(shot, picture: improving.thumb, on: mac)]
+            } catch {
+                problem = "The picture of the screen couldn’t be kept on \(macName(mac)): \(words(error))"
+                return nil
+            }
+        }
+        return improvePrompt(text: typed, shots: shots)
+    }
+
+    /// Improving done with once its prompt went: the lightbulb pressed again while it was on its
+    /// way began another, which stays.
+    private func leaveImproving(_ improving: Store.Improving?) {
+        if let improving, store.improving?.id == improving.id { store.improving = nil }
     }
 
     /// The photos attached, kept on `mac` for the prompt, in order; nil, saying why, when they
@@ -1066,10 +1089,14 @@ struct QuickView: View {
         do {
             return try await store.keep(photos, on: mac)
         } catch {
-            let name = store.devices.first { $0.key == mac }.map { Names.short($0.name) } ?? "the Mac"
-            problem = "The photos couldn’t be kept on \(name): \(words(error))"
+            problem = "The photos couldn’t be kept on \(macName(mac)): \(words(error))"
             return nil
         }
+    }
+
+    /// A Mac's short name, for what's said about it.
+    private func macName(_ key: String) -> String {
+        store.devices.first { $0.key == key }.map { Names.short($0.name) } ?? "the Mac"
     }
 
     private var mac: DeviceRow? { store.devices.first { $0.key == composer.device } }
