@@ -39,6 +39,9 @@ struct PrView: View {
     @State private var said: String?
     /// You reviewed or merged it here: going on leaves it as it is.
     @State private var acted = false
+    /// You're going through what waits on you here (`Store.goingThrough`), as you were once: with
+    /// nothing else waiting, going on goes to the end of it, still after you've reviewed it here.
+    @State private var goingThrough = false
     /// A swipe across the page, while it goes, and what's beside it.
     @State private var swipe = Swipe()
 
@@ -56,6 +59,8 @@ struct PrView: View {
     private var before: Waiting? { store.previous(of: page) }
     /// What waits on you after this one, sessions and PRs; the first is next.
     private var after: [Waiting] { store.queue(after: page, project: project) }
+    /// Where going on goes: the next, or on the last, the end of what waits.
+    private var onward: Onward? { Onward.of(after, goingThrough: goingThrough) }
     /// What going on to the next does to this one, as the bar over the box says it.
     private var going: Going { Going.of(reviewOn, pr: pr, acted: acted) }
     /// Its Mac is connected.
@@ -72,14 +77,14 @@ struct PrView: View {
     }
 
     var body: some View {
-        Paged(swipe: swipe, key: page, next: after.first, back: before, leaves: false, ready: detail != nil || problem != nil) {
+        Paged(swipe: swipe, key: page, next: onward, back: before, leaves: false, ready: detail != nil || problem != nil) {
             content
         }
         // What's next is in the menu and a swipe away; on a keyboard, ⌘] as on the Mac.
         .background {
-            if let next = after.first {
+            if let onward {
                 // Unseen, at no size: one that takes no touches takes no keys either.
-                Button("Next") { goOn(to: next) }
+                Button("Next") { goOn(to: onward) }
                     .keyboardShortcut("]", modifiers: .command)
                     .frame(width: 0, height: 0)
                     .opacity(0)
@@ -92,6 +97,9 @@ struct PrView: View {
         // Again once its Mac connects (one opened before, as from a link, read nothing), when the
         // PR changes, and when another Mac is the one asked.
         .task(id: "\(key) \(macOnline) \(pr?.updatedAt ?? 0) \(pr?.device ?? "")") { await load() }
+        .onChange(of: store.goingThrough(page, project: project), initial: true) { _, now in
+            if now { goingThrough = true }
+        }
         .onAppear {
             store.showing = page
             // Gone on to from another: say how that one went.
@@ -124,8 +132,8 @@ struct PrView: View {
             .safeAreaBar(edge: .bottom) {
                 VStack(spacing: 8) {
                     // Not while you write your review: the box needs the room, and what's next waits.
-                    if let next = after.first, !drafted {
-                        GoOnBar(next: next, more: after.count - 1, showDevice: store.devices.count > 1, showProject: project.isEmpty, going: going, picked: reviewOn.label, choices: { ReviewSwipeOn.picker($reviewOn) }) { goOn(to: next) }
+                    if let onward, !drafted {
+                        GoOnBar(next: onward, more: after.count - 1, showDevice: store.devices.count > 1, showProject: project.isEmpty, going: going, picked: reviewOn.label, choices: { ReviewSwipeOn.picker($reviewOn) }) { goOn(to: onward) }
                             .padding(.horizontal)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
@@ -181,10 +189,15 @@ struct PrView: View {
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
                 // A swipe across the page does it too, and what the bar says goes with it.
-                if let next = after.first {
-                    Button { goOn(to: next) } label: {
-                        Label("Go to next", systemImage: "arrow.forward")
-                        Text(next.title)
+                if let onward {
+                    Button { goOn(to: onward) } label: {
+                        if let next = onward.waiting {
+                            Label("Go to next", systemImage: "arrow.forward")
+                            Text(next.title)
+                        } else {
+                            Label("Finish", systemImage: "checkmark.circle")
+                            Text("Nothing else waits on you")
+                        }
                     }
                     Divider()
                 }
@@ -231,11 +244,11 @@ struct PrView: View {
     /// A swipe let go: far or fast enough toward what's that way, it slides there; otherwise the
     /// page settles back.
     private func swiped(_ distance: CGFloat, _ speed: CGFloat) {
-        let target = distance < 0 ? after.first : distance > 0 ? before : nil
-        guard swipe.letGo(distance, speed, toward: target != nil), let target else { return }
-        if distance < 0 {
-            goOn(to: target, speed: speed)
-        } else {
+        let ahead = distance < 0
+        guard swipe.letGo(distance, speed, toward: ahead ? onward != nil : distance > 0 && before != nil) else { return }
+        if ahead, let onward {
+            goOn(to: onward, speed: speed)
+        } else if let target = before {
             // Back is a step by hand: this one isn't passed over for it.
             store.outcome = acted ? said : nil
             slide(to: target.key, back: true, speed: speed) { store.back(to: target.key) }
@@ -246,7 +259,7 @@ struct PrView: View {
     /// Mac, which the swipe doesn't: it goes after the rest meanwhile, and leaves what waits on you
     /// once its Mac has it snoozed; it isn't kept as dealt with, so it's back when the snooze ends,
     /// as the Mac's queue has it. One its Mac didn't snooze says why (`Store.snoozeLater`).
-    private func goOn(to next: Waiting, speed: CGFloat = 0) {
+    private func goOn(to next: Onward, speed: CGFloat = 0) {
         guard swipe.to == nil else { return }
         if case .snooze = going, let pr, let snooze = reviewOn.snoozeChoice() {
             store.passedOver(page)
@@ -259,7 +272,7 @@ struct PrView: View {
 
     /// Shows `next` in this one's place, saying there how this one went once you've acted here.
     /// Left without a review while it waits on one, this one comes round again after the rest.
-    private func moveOn(to next: Waiting, outcome: String? = nil, speed: CGFloat = 0) {
+    private func moveOn(to next: Onward, outcome: String? = nil, speed: CGFloat = 0) {
         guard swipe.to == nil else { return }
         if !acted && outcome == nil { store.passedOver(page) }
         if next.key != page { store.trail.append(page) }
@@ -349,7 +362,9 @@ struct PrGlance: View {
             .safeAreaInset(edge: .bottom) {
                 VStack(spacing: 8) {
                     let after = waitingAfter(PrView.prefix + key, from: from, store: store, project: project)
-                    if let next = after.first, (store.drafts[PrView.prefix + key] ?? "").isEmpty {
+                    // As its page will have it: gone on to, it's part of what you're going through.
+                    let onward = Onward.of(after, goingThrough: from != nil || store.goingThrough(PrView.prefix + key, project: project))
+                    if let next = onward, (store.drafts[PrView.prefix + key] ?? "").isEmpty {
                         GoOnBar(next: next, more: after.count - 1, showDevice: store.devices.count > 1, showProject: project.isEmpty, going: Going.of(.later, pr: pr, acted: false), picked: ReviewSwipeOn.later.label, choices: { EmptyView() }) {}
                             .padding(.horizontal)
                     }

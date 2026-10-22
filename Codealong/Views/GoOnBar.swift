@@ -167,12 +167,12 @@ enum Going: Equatable {
     }
 }
 
-/// Over a session's reply box or a PR's review box while something else waits on you: what going
-/// on to it does to this one, and what it goes to. The first line says what a swipe does here, and
+/// Over a session's reply box or a PR's review box while you go through what waits on you: what
+/// going on does to this one, and where it goes. The first line says what a swipe does here, and
 /// its menu picks what going on does to this one (`SwipeOn`, `ReviewSwipeOn`); under it, the
-/// next session or PR, which a tap goes on to as the swipe does.
+/// next session or PR, or on the last one Finish, which a tap goes on to as the swipe does.
 struct GoOnBar<Choices: View>: View {
-    let next: Waiting
+    let next: Onward
     let more: Int
     let showDevice: Bool
     /// The inbox shows every project, so it says which it's in.
@@ -180,6 +180,8 @@ struct GoOnBar<Choices: View>: View {
     let going: Going
     /// What's picked now, for VoiceOver.
     let picked: String
+    /// What going on does can be picked here: the end of what waits has nothing to do to itself.
+    var picks = true
     /// The menu's choices.
     @ViewBuilder let choices: () -> Choices
     let action: () -> Void
@@ -192,17 +194,17 @@ struct GoOnBar<Choices: View>: View {
                 HStack(spacing: 8) {
                     choice.fixedSize()
                     Spacer(minLength: 8)
-                    placeText.fixedSize()
+                    if !place.isEmpty { placeText.fixedSize() }
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     choice
-                    placeText
+                    if !place.isEmpty { placeText }
                 }
             }
             Button(action: action) {
                 HStack(spacing: 10) {
                     switch next {
-                    case .session(let row):
+                    case .to(.session(let row)):
                         StatusMark(status: row.status, stalled: row.stalled, waiting: row.waitsInBackground)
                         HStack(spacing: 5) {
                             if let emblem = row.emblem {
@@ -212,7 +214,7 @@ struct GoOnBar<Choices: View>: View {
                                 .font(.subheadline.weight(.semibold))
                                 .lineLimit(1)
                         }
-                    case .pr(let pr):
+                    case .to(.pr(let pr)):
                         // Waiting on your review, in the color of what needs you.
                         Image(systemName: "arrow.triangle.pull")
                             .font(.system(size: 11, weight: .semibold))
@@ -221,9 +223,18 @@ struct GoOnBar<Choices: View>: View {
                         Text(pr.title)
                             .font(.subheadline.weight(.semibold))
                             .lineLimit(1)
+                    case .end:
+                        Image(systemName: "checkmark.circle")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.green)
+                            .accessibilityHidden(true)
+                        Text("Nothing else waits on you")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
                     Spacer(minLength: 8)
-                    Text("Next")
+                    Text(next == .end ? "Finish" : "Next")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(Color.accentColor)
                     Image(systemName: "chevron.forward")
@@ -235,7 +246,7 @@ struct GoOnBar<Choices: View>: View {
             .buttonStyle(.plain)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(nextWords)
-            .accessibilityHint([going.spoken, more > 0 ? "\(more) more wait on you after it" : "The last that waits on you"].compactMap { $0 }.joined(separator: ". "))
+            .accessibilityHint([going.spoken, next == .end ? nil : more > 0 ? "\(more) more wait on you after it" : "The last that waits on you"].compactMap { $0 }.joined(separator: ". "))
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -244,30 +255,42 @@ struct GoOnBar<Choices: View>: View {
 
     private var nextWords: String {
         switch next {
-        case .session(let row): "Next: \(row.title)"
-        case .pr(let pr): "Next: your review of #\(pr.number), \(pr.title)"
+        case .to(.session(let row)): "Next: \(row.title)"
+        case .to(.pr(let pr)): "Next: your review of #\(pr.number), \(pr.title)"
+        case .end: "Finish: nothing else waits on you"
         }
     }
 
     /// What a swipe does here, and the menu that picks what going on does.
+    @ViewBuilder
     private var choice: some View {
-        Menu {
-            choices()
-        } label: {
-            HStack(spacing: 5) {
-                Image(systemName: going.symbol)
-                Text(going.words)
+        if picks {
+            Menu {
+                choices()
+            } label: {
+                swipeWords(menu: true)
+            }
+            // Gray, under the session it goes to: a menu's label takes the tint, which washed out.
+            .tint(.secondary)
+            .accessibilityLabel(going.words)
+            .accessibilityHint("Picks what going on to the next does. Now: \(picked)")
+        } else {
+            swipeWords(menu: false).foregroundStyle(.secondary)
+        }
+    }
+
+    private func swipeWords(menu: Bool) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: going.symbol)
+            Text(going.words)
+            if menu {
                 Image(systemName: "chevron.down")
                     .font(.caption2.weight(.semibold))
             }
-            .font(.caption.weight(.medium))
-            .lineLimit(1)
-            .contentShape(.rect)
         }
-        // Gray, under the session it goes to: a menu's label takes the tint, which washed out.
-        .tint(.secondary)
-        .accessibilityLabel(going.words)
-        .accessibilityHint("Picks what going on to the next does. Now: \(picked)")
+        .font(.caption.weight(.medium))
+        .lineLimit(1)
+        .contentShape(.rect)
     }
 
     private var placeText: some View {
@@ -277,14 +300,17 @@ struct GoOnBar<Choices: View>: View {
             .lineLimit(1)
     }
 
-    /// What the next is, where it is, and how many wait after it.
+    /// What the next is, where it is, and how many wait after it; nothing for the end, which its
+    /// line says.
     private var place: String {
         var parts: [String] = []
-        let (device, project): (String, String) = switch next {
-        case .session(let row): (row.deviceName, row.project)
-        case .pr(let pr): (pr.deviceName, pr.project)
+        let (device, project): (String, String)
+        switch next {
+        case .to(.session(let row)): (device, project) = (row.deviceName, row.project)
+        case .to(.pr(let pr)): (device, project) = (pr.deviceName, pr.project)
+        case .end: return ""
         }
-        if case .pr(let pr) = next { parts.append("Review #\(pr.number)") }
+        if case .to(.pr(let pr)) = next { parts.append("Review #\(pr.number)") }
         if showDevice { parts.append(Names.short(device)) }
         if showProject { parts.append(project) }
         if more > 0 { parts.append("\(more) more after it") }

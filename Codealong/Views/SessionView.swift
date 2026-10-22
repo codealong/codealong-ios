@@ -7,8 +7,8 @@ import SwiftUI
 /// It also works through what waits on you, as the Mac's session panel does with ⌘⏎, PRs waiting
 /// on your review among the sessions, in the Mac's order (`Store.queue`): while something else
 /// waits on you, a bar over the box names it and says what going on to it does to this one, and a
-/// swipe or a tap on it goes on, to a PR's page as to a session's screen; holding Send sends and
-/// goes on at once. Going on marks it seen, so a turn that ended leaves Your turn and a reply that
+/// swipe or a tap on it goes on, to a PR's page as to a session's screen; on the last, it offers
+/// Finish instead. Holding Send sends and goes on at once. Going on marks it seen, so a turn that ended leaves Your turn and a reply that
 /// asks you something leaves Needs you, as it always did, unless the bar's menu picks marking it
 /// done, archiving it or snoozing it instead, for this session only (`SwipeOn`). One you replied to here, or one at work, is
 /// left as it is, and one skipped while it waits on a call to allow comes round again after the
@@ -29,8 +29,8 @@ import SwiftUI
 /// the end of the conversation as sending, then sent, until the session's record has it, so you
 /// can go on writing the next; messages to one session go in the order you sent them. One that
 /// doesn't go is back in the box, with why. Swiping across the conversation goes along what waits
-/// on you (`Paged`): to the left the next, as the Mac's ⌘] does, doing what the bar says, and to
-/// the right back to what you came from. The screen follows the finger, with what it goes to
+/// on you (`Paged`): to the left the next, as the Mac's ⌘] does, doing what the bar says, or from
+/// the last, the end of what waits (`EndView`), and to the right back to what you came from. The screen follows the finger, with what it goes to
 /// beside it, drawn from what the phone keeps (the next is read ahead); let go, it slides the rest
 /// of the way, and Next slides the same way. Dragging the conversation, or tapping it, puts the
 /// keyboard away.
@@ -52,6 +52,10 @@ struct SessionView: View {
     @State private var swipeOn = SwipeOn.seen
     /// You replied or answered here: going on leaves it to the turn you gave it.
     @State private var acted = false
+    /// You're going through what waits on you here (`Store.goingThrough`), as you were once: with
+    /// nothing else waiting, going on goes to the end of it, still after you've answered it here
+    /// and it no longer waits.
+    @State private var goingThrough = false
     @Environment(\.dismiss) private var dismiss
     @State private var conversation: Conversation?
     @State private var items: [Item] = []
@@ -150,17 +154,19 @@ struct SessionView: View {
     private var before: Waiting? { store.previous(of: key) }
     /// What waits on you after this one, sessions and PRs; the first is next.
     private var after: [Waiting] { store.queue(after: key, project: project) }
+    /// Where going on goes: the next, or on the last, the end of what waits.
+    private var onward: Onward? { Onward.of(after, goingThrough: goingThrough) }
 
     var body: some View {
         // The screen follows a swipe, and what it goes to comes in beside it.
-        Paged(swipe: swipe, key: key, next: after.first, back: before, leaves: [.done, .archive].contains(going), ready: opened) {
+        Paged(swipe: swipe, key: key, next: onward, back: before, leaves: [.done, .archive].contains(going), ready: opened) {
             page.environment(\.imageMac, row?.device)
         }
         // What's next is in the menu and a swipe away; on a keyboard, ⌘] as on the Mac.
         .background {
-            if let next = after.first {
+            if let onward {
                 // Unseen, at no size: one that takes no touches takes no keys either.
-                Button("Next") { goOn(to: next) }
+                Button("Next") { goOn(to: onward) }
                     .keyboardShortcut("]", modifiers: .command)
                     .frame(width: 0, height: 0)
                     .opacity(0)
@@ -185,6 +191,9 @@ struct SessionView: View {
             }
         }
         .task(id: key) { await open() }
+        .onChange(of: store.goingThrough(key, project: project), initial: true) { _, now in
+            if now { goingThrough = true }
+        }
         // How a message gets there changes as it starts and stops running somewhere.
         .task(id: "\(row?.live == true)\(row?.inApp == true)\(online)") { await readWay() }
         .sheet(item: $editing) { prompt in
@@ -377,10 +386,15 @@ struct SessionView: View {
     @ViewBuilder
     private var sessionMenu: some View {
         // A swipe across the screen does it too, and what the bar says goes with it.
-        if let next = after.first {
-            Button { goOn(to: next) } label: {
-                Label("Go to next", systemImage: "arrow.forward")
-                Text(next.title)
+        if let onward {
+            Button { goOn(to: onward) } label: {
+                if let next = onward.waiting {
+                    Label("Go to next", systemImage: "arrow.forward")
+                    Text(next.title)
+                } else {
+                    Label("Finish", systemImage: "checkmark.circle")
+                    Text("Nothing else waits on you")
+                }
             }
             Divider()
         }
@@ -485,8 +499,8 @@ struct SessionView: View {
                 Text(said).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
             }
             // Not while you write here: the box needs the room, and what's next waits.
-            if let next = after.first, draft.isEmpty && attached.isEmpty {
-                GoOnBar(next: next, more: after.count - 1, showDevice: store.devices.count > 1, showProject: project.isEmpty, going: going, picked: swipeOn.label, choices: { SwipeOn.picker($swipeOn) }) { goOn(to: next) }
+            if let onward, draft.isEmpty && attached.isEmpty {
+                GoOnBar(next: onward, more: after.count - 1, showDevice: store.devices.count > 1, showProject: project.isEmpty, going: going, picked: swipeOn.label, choices: { SwipeOn.picker($swipeOn) }) { goOn(to: onward) }
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
             if let suggestions = row?.suggestions {
@@ -605,12 +619,17 @@ struct SessionView: View {
                 }
                 .disabled(!canSend)
             }
-            if let next = after.first {
+            if let onward {
                 Button {
                     Task { await send(thenNext: true) }
                 } label: {
-                    Label("Send and go to next", systemImage: "arrow.forward")
-                    Text(next.title)
+                    if let next = onward.waiting {
+                        Label("Send and go to next", systemImage: "arrow.forward")
+                        Text(next.title)
+                    } else {
+                        Label("Send and finish", systemImage: "checkmark.circle")
+                        Text("Nothing else waits on you")
+                    }
                 }
                 .disabled(!canSend)
             }
@@ -1010,8 +1029,8 @@ struct SessionView: View {
             said = nil
             store.post(key, title: title, text: ImagePrep.prompt(images: images, text: text), how: how)
             store.dealtWith(key)
-            if thenNext, let next = after.first {
-                moveOn(to: next, outcome: "Sending to “\(title)”…")
+            if thenNext, let onward {
+                moveOn(to: onward, outcome: "Sending to “\(title)”…")
                 return
             }
             if after.isEmpty { said = "Nothing else waits on you." }
@@ -1038,11 +1057,11 @@ struct SessionView: View {
     /// A swipe let go: far or fast enough toward what's that way, it slides there; otherwise the
     /// screen settles back.
     private func swiped(_ distance: CGFloat, _ speed: CGFloat) {
-        let target = distance < 0 ? after.first : distance > 0 ? before : nil
-        guard swipe.letGo(distance, speed, toward: target != nil), let target else { return }
-        if distance < 0 {
-            goOn(to: target, speed: speed)
-        } else {
+        let ahead = distance < 0
+        guard swipe.letGo(distance, speed, toward: ahead ? onward != nil : distance > 0 && before != nil) else { return }
+        if ahead, let onward {
+            goOn(to: onward, speed: speed)
+        } else if let target = before {
             // Back is a step by hand: this one isn't passed over for it. The trail is cut back once
             // it's there, so what's beside it stays put while it slides.
             store.outcome = acted ? said : nil
@@ -1132,8 +1151,8 @@ struct SessionView: View {
             }
             heldAt = nil
             store.dealtWith(key)
-            if let next = after.first {
-                moveOn(to: next, outcome: outcome.message)
+            if let onward {
+                moveOn(to: onward, outcome: outcome.message)
             } else {
                 if outcome.noted { store.notice = outcome.message }
                 dismiss()
@@ -1159,9 +1178,9 @@ struct SessionView: View {
         }
         let outcome = "Snoozed “\(title)” until \(Snooze.words(until))."
         store.dealtWith(key)
-        if let next = after.first {
+        if let onward {
             // Left as it was: it comes back as Your turn when the snooze ends.
-            moveOn(to: next, outcome: outcome, seen: false)
+            moveOn(to: onward, outcome: outcome, seen: false)
         } else {
             store.notice = outcome
             dismiss()
@@ -1254,8 +1273,8 @@ struct SessionView: View {
     /// next is offered, or gone on to.
     private func done(_ result: String, outcome: String, thenNext: Bool = false) {
         store.dealtWith(key)
-        if thenNext, let next = after.first {
-            moveOn(to: next, outcome: outcome)
+        if thenNext, let onward {
+            moveOn(to: onward, outcome: outcome)
             return
         }
         said = after.isEmpty ? "\(result) Nothing else waits on you." : result
@@ -1273,7 +1292,7 @@ struct SessionView: View {
     /// (`Store.doneLater`, `Store.archiveLater`). Done marks it seen on its Mac, so the slide
     /// doesn't: one that work under way held stays as it was, rather than leaving Your turn
     /// though it wasn't done.
-    private func goOn(to next: Waiting, speed: CGFloat = 0) {
+    private func goOn(to next: Onward, speed: CGFloat = 0) {
         guard swipe.to == nil else { return }
         switch going {
         case .done:
@@ -1305,7 +1324,7 @@ struct SessionView: View {
 
     /// Shows `next` in this one's place, saying there how this one went once you've acted here.
     /// Left without a reply while it needs you, this one comes round again after the rest.
-    private func moveOn(to next: Waiting, outcome: String? = nil, speed: CGFloat = 0, seen: Bool = true) {
+    private func moveOn(to next: Onward, outcome: String? = nil, speed: CGFloat = 0, seen: Bool = true) {
         guard swipe.to == nil else { return }
         if !acted && outcome == nil { store.passedOver(key) }
         if next.key != key { store.trail.append(key) }
@@ -2507,6 +2526,9 @@ struct SessionGlance: View {
     }
     /// What waits on you after it, as its screen will have it once the swipe has gone on.
     private var after: [Waiting] { waitingAfter(key, from: from, store: store, project: project) }
+    /// Where going on from it goes, as its screen will have it: gone on to, it's part of what
+    /// you're going through.
+    private var onward: Onward? { Onward.of(after, goingThrough: from != nil || store.goingThrough(key, project: project)) }
 
     var body: some View {
         glance.environment(\.imageMac, row?.device)
@@ -2605,7 +2627,7 @@ struct SessionGlance: View {
             if let said {
                 Text(said).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
             }
-            if let next = after.first, !open {
+            if let next = onward, !open {
                 GoOnBar(next: next, more: after.count - 1, showDevice: store.devices.count > 1, showProject: project.isEmpty, going: Going.of(.seen, row: row, pending: pending, acted: !(store.outgoing[key] ?? []).isEmpty), picked: SwipeOn.seen.label, choices: { EmptyView() }) {}
             }
             if let suggestions = row?.suggestions {

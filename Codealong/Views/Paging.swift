@@ -9,8 +9,8 @@ struct Paged<Page: View>: View {
     let swipe: Swipe
     /// The page's key in the list's path.
     let key: String
-    /// What waits on you next, and what you came from: where a swipe goes.
-    let next: Waiting?
+    /// Where going on goes, and what you came from: where a swipe goes.
+    let next: Onward?
     let back: Waiting?
     /// Going on takes this page out of what waits on you (marked done or archived, say), so the
     /// next page's own next leaves it out; otherwise it comes round again after the rest.
@@ -57,7 +57,7 @@ struct Paged<Page: View>: View {
     /// What `read` reads for: what's beside the page, and when the next last moved.
     private var reads: String {
         guard ready else { return "" }
-        return "\(next.map { "\($0.key)@\($0.stamp)" } ?? "")|\(back?.key ?? "")"
+        return "\(next?.waiting.map { "\($0.key)@\($0.stamp)" } ?? "")|\(back?.key ?? "")"
     }
 
     /// Reads what's beside the page: the next from its Mac first when it hasn't been lately, so it
@@ -65,7 +65,7 @@ struct Paged<Page: View>: View {
     private func read() async {
         guard ready else { return }
         var kept: [String: Kept] = [:]
-        for (waiting, fresh) in [(back, false), (next, true)] {
+        for (waiting, fresh) in [(back, false), (next?.waiting, true)] {
             switch waiting {
             case .session(let row): kept[row.key] = await store.kept(row.key, read: fresh)
             case .pr(let pr): if fresh { await store.readAhead(pr) }
@@ -91,7 +91,9 @@ struct Glance: View {
     var from: (key: String, leaves: Bool)?
 
     var body: some View {
-        if key.hasPrefix(PrView.prefix) {
+        if key == EndView.key {
+            EndGlance(said: said, from: from?.key)
+        } else if key.hasPrefix(PrView.prefix) {
             PrGlance(key: String(key.dropFirst(PrView.prefix.count)), said: said, from: from)
         } else {
             SessionGlance(key: key, kept: kept ?? Kept(), said: said, from: from)
@@ -110,9 +112,36 @@ func waitingAfter(_ key: String, from: (key: String, leaves: Bool)?, store: Stor
     return from.leaves ? rest : rest + queue.filter { $0.key == from.key }
 }
 
+/// Where going on from a page goes: the next that waits on you, or once nothing else does, the
+/// end of what waits (`EndView`).
+enum Onward: Equatable {
+    case to(Waiting)
+    case end
+
+    /// Its page's key in the list's path.
+    var key: String {
+        switch self {
+        case .to(let next): next.key
+        case .end: EndView.key
+        }
+    }
+
+    var waiting: Waiting? {
+        if case .to(let next) = self { return next }
+        return nil
+    }
+
+    /// Where going on from a page goes: the next of what waits on you after it, else the end of
+    /// what waits while you're going through it there (`Store.goingThrough`), so the last one
+    /// swipes on to the page that says nothing else waits rather than nowhere.
+    static func of(_ after: [Waiting], goingThrough: Bool) -> Onward? {
+        after.first.map(Onward.to) ?? (goingThrough ? .end : nil)
+    }
+}
+
 /// What a page is called in its bar: a session's title with its emblem, and its Mac and project
-/// under it; a PR's number. Sliding to another, the page names that one: its own takes a moment to
-/// draw once the slide is over.
+/// under it; a PR's number; nothing for the end of what waits. Sliding to another, the page names
+/// that one: its own takes a moment to draw once the slide is over.
 struct TitleBlock: View {
     let key: String
     @Environment(Store.self) private var store
@@ -132,6 +161,8 @@ struct TitleBlock: View {
                 }
                 Text("\(Names.short(row.deviceName)) · \(row.project)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
             }
+        case nil where key == EndView.key:
+            EmptyView()
         case nil:
             Text(key.hasPrefix(PrView.prefix) ? "PR" : "Session").font(.headline)
         }

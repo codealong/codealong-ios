@@ -66,7 +66,10 @@ for a while. Swipe left (or tap *Next*) to go on and do it, and right to go back
 came from. One you replied to, one still working, and one waiting on you to allow something are
 left as they are, and holding *Send* sends and goes straight on. A PR's page has the same bar over
 its review box: going on from a review you haven't given brings it round again later, or snoozes
-it, picked there for that PR alone. The next one is read ahead, so it shows at once. Replies an
+it, picked there for that PR alone. The next one is read ahead, so it shows at once. On the last
+one the bar says nothing else waits, and swiping (or *Finish*) goes on to a page that says so,
+with how many sessions are working; whatever comes to wait on you while it's open shows up there,
+a swipe away. Replies an
 agent suggested for a session (a supervisor going over what waits on you, with `codealong session
 suggest`) show above its box: tap one to send it, or hold it to change it first. Helper sessions
 (ones an agent started to help it, and automatic PR reviews) stay out of your lists unless they

@@ -256,7 +256,9 @@ final class Store {
     /// on you anew. `project` narrows it as the inbox is.
     func queue(after key: String, project: String) -> [Waiting] {
         if let fixed = testQueue {
-            // Those after it in the list, as a real queue has gone past the ones before.
+            // Those after it in the list, as a real queue has gone past the ones before; none
+            // after the end of them.
+            if key == EndView.key { return [] }
             let rest = fixed.firstIndex(of: key).map { fixed[($0 + 1)...] } ?? fixed[...]
             return rest.compactMap { waiting($0) }
         }
@@ -275,6 +277,15 @@ final class Store {
         }
         let all = rows.filter { $0.section == .needsYou }.map(Waiting.session) + asked.map(Waiting.pr) + rows.filter { $0.section == .yourTurn }.map(Waiting.session)
         return all.filter { !passed.contains($0.key) } + passed.compactMap { key in all.first { $0.key == key } }
+    }
+
+    /// `key` (a page's key in the list's path) is part of what you're going through: it waits on
+    /// you, or you came to it going on from another. Going back to it, what's before it on the
+    /// trail is what will be once you're there. Going on from the last of what waits goes to the
+    /// end of it (`EndView`) only then, not from a session opened from the list to read.
+    func goingThrough(_ key: String, project: String) -> Bool {
+        let before = trail.lastIndex(of: key).map { trail[..<$0] } ?? trail[...]
+        return !before.isEmpty || queue(after: "", project: project).contains { $0.key == key }
     }
 
     /// The PRs waiting on your review, pinned or not, the longest wait first, as the Mac's queue
