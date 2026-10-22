@@ -183,9 +183,9 @@ struct QuickView: View {
         // puts what's next, a session or a PR, in this one's place, so Back is still this list.
         // A session a swipe slid in starts as the swipe drew it, and a PR's page with what was
         // last read of it. A PR's is `pr:` and its key. Going on from the last that waits goes to
-        // the end of it, which leaves out the page gone on from (the trail's last) as it was then.
+        // the end of it.
         if key == EndView.key {
-            EndView(left: store.trail.last.flatMap { store.waiting($0) }, go: { next in path = [next] }).id(key)
+            EndView(go: { next in path = [next] }).id(key)
         } else if key.hasPrefix(PrView.prefix) {
             let pr = String(key.dropFirst(PrView.prefix.count))
             PrView(key: pr, kept: store.prDetails[pr], go: { next in path = [next] }).id(key)

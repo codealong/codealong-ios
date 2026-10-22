@@ -276,6 +276,7 @@ struct PrView: View {
         guard swipe.to == nil else { return }
         if !acted && outcome == nil { store.passedOver(page) }
         if next.key != page { store.trail.append(page) }
+        if next == .end { store.goingToEnd(from: page) }
         store.outcome = outcome ?? (acted ? said : nil)
         slide(to: next.key, back: false, speed: speed)
     }

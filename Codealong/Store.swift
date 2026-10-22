@@ -47,6 +47,11 @@ final class Store {
     private var handled: [String: Int64] = [:]
     /// Sessions you went on from without replying, in the order you left them.
     private var passed: [String] = []
+    /// The page gone on from to the end of what waits (`EndView`), as it was then, which the end
+    /// doesn't offer straight back: marked seen, it waits until its Mac has that, and skipped, it
+    /// would come round at once. It's offered again once it changes, once it's left what waits and
+    /// come back (a snooze that ends), or when what going on did to it didn't go (`comeRound`).
+    private var endedFrom: (key: String, stamp: Int64)?
     /// The sessions and PRs you went on from to the one shown, by their keys in the list's path,
     /// the latest last: swiping back goes to them in turn. Back at the list it starts again.
     var trail: [String] = []
@@ -121,6 +126,9 @@ final class Store {
         if snap.projects != projects { projects = snap.projects }
         if snap.prProjects != prProjects { prProjects = snap.prProjects }
         if snap.github != github { github = snap.github }
+        if let ended = endedFrom, !queue(after: EndView.key, project: "").contains(where: { $0.key == ended.key }) {
+            endedFrom = nil
+        }
         // Asked at every change, so what came meanwhile isn't news later; behind another app with
         // none on, so a sound that wouldn't play doesn't hold back the next one.
         if let sound = core.sound(on: inFront ? Sounds.on : []) { Sounds.play(sound) }
@@ -286,6 +294,18 @@ final class Store {
     func goingThrough(_ key: String, project: String) -> Bool {
         let before = trail.lastIndex(of: key).map { trail[..<$0] } ?? trail[...]
         return !before.isEmpty || queue(after: "", project: project).contains { $0.key == key }
+    }
+
+    /// Going on from `key` to the end of what waits: it's left out there as it is now, taken as
+    /// you go on rather than once the end shows, so what comes to it during the slide still is.
+    func goingToEnd(from key: String) {
+        endedFrom = waiting(key).map { ($0.key, $0.stamp) }
+    }
+
+    /// What the end of what waits offers: what waits on you, less the page gone on from to it
+    /// while it's as it was (`endedFrom`).
+    func atEnd(project: String) -> [Waiting] {
+        queue(after: EndView.key, project: project).filter { !($0.key == endedFrom?.key && $0.stamp == endedFrom?.stamp) }
     }
 
     /// The PRs waiting on your review, pinned or not, the longest wait first, as the Mac's queue
@@ -656,6 +676,7 @@ final class Store {
     private func comeRound(_ key: String) {
         handled[key] = nil
         passedOver(key)
+        if endedFrom?.key == key { endedFrom = nil }
     }
 
     /// Names a session on its Mac, where its harness keeps its name.

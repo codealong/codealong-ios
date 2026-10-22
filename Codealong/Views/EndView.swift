@@ -5,9 +5,8 @@ import SwiftUI
 /// through. It says how the last one went, as the screen gone on to always does, and how many
 /// sessions are at work. It isn't the end for long: what comes to wait on you while it's open is
 /// offered over its foot, and a swipe or a tap goes on to it, as on any page. The one you went on
-/// from to it isn't offered until it changes (a new turn, a new call to allow), though: marked
-/// seen, it still waits until its Mac has that, and skipped, it would come straight back. Swiping
-/// back goes to it.
+/// from to it isn't offered straight back (`Store.atEnd`): marked seen, it still waits until its
+/// Mac has that, and skipped, it would come round at once. Swiping back goes to it.
 struct EndView: View {
     /// Its key in the list's path, which no session's (`@<Mac>:<key>`) or PR's (`pr:`) can be.
     nonisolated static let key = "end"
@@ -18,25 +17,16 @@ struct EndView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The inbox's project: what's offered stays in it.
     @AppStorage("project") private var project = ""
-    /// The page gone on from to this one, as it was then.
-    @State private var left: Waiting?
     /// How the page gone on from went, and what a swipe did to it once its Mac answered.
     @State private var said: String?
     @State private var swipe = Swipe()
     /// The check has drawn in: it draws as the page takes the swipe's place.
     @State private var drawn = false
 
-    init(left: Waiting?, go: @escaping (String) -> Void = { _ in }) {
-        self.go = go
-        _left = State(initialValue: left)
-    }
-
     /// The page you went on from to this one, or before it, while it's still listed.
     private var before: Waiting? { store.previous(of: Self.key) }
     /// What's come to wait on you since, the next first.
-    private var offer: [Waiting] {
-        store.queue(after: Self.key, project: project).filter { !($0.key == left?.key && $0.stamp == left?.stamp) }
-    }
+    private var offer: [Waiting] { store.atEnd(project: project) }
 
     var body: some View {
         Paged(swipe: swipe, key: Self.key, next: offer.first.map(Onward.to), back: before, leaves: false, ready: true) {
@@ -129,7 +119,7 @@ struct EndView: View {
 }
 
 /// The end of what waits beside the page shown, as a swipe brings it in: drawn as its page first
-/// draws it, the check not yet drawn in.
+/// draws it, the check not yet drawn in, leaving out the page it's gone on to from as the page will.
 struct EndGlance: View {
     /// How the page gone on from went, as this one will say it.
     let said: String?

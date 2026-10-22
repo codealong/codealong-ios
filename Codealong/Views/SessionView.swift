@@ -1328,6 +1328,7 @@ struct SessionView: View {
         guard swipe.to == nil else { return }
         if !acted && outcome == nil { store.passedOver(key) }
         if next.key != key { store.trail.append(key) }
+        if next == .end { store.goingToEnd(from: key) }
         store.outcome = outcome ?? (acted ? said : nil)
         slide(to: next.key, back: false, speed: speed, seen: seen)
     }
