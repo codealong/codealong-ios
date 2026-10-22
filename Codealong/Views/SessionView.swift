@@ -39,7 +39,8 @@ import SwiftUI
 /// place. The prompt behind what's in view, once it's gone off the top, stays pinned there, two
 /// lines of it, so what you asked stays in mind while you read what came of it; a tap brings it
 /// up. A long turn can write more than a page, so when the first page doesn't start with a prompt,
-/// the core reads back for the one before it, and it's pinned from the start.
+/// the core reads back for the one before it, and it's pinned from the start. Scrolled up more
+/// than half a screen, a button over the foot goes back down to the newest.
 struct SessionView: View {
     let key: String
     /// Shows another session in this one's place.
@@ -97,6 +98,8 @@ struct SessionView: View {
     @State private var stopping = false
     /// Scrolled to the newest: new items keep it there. Scrolled up to read, it stays put.
     @State private var atBottom = true
+    /// Scrolled up more than half a screen from the newest: a button over the foot goes back to it.
+    @State private var scrolledUp = false
     /// How a message gets to it, as its Mac last said.
     @State private var way: Way?
     /// Where it goes on, and on what, while it isn't running: nil for what its Mac offers first.
@@ -334,7 +337,7 @@ struct SessionView: View {
             // The top of what's in view, below the bars, in the conversation's coordinates. Its
             // height goes with it: a page too short to scroll is near the top without moving.
             .onScrollGeometryChange(for: ScrollSpot.Place.self) { geo in
-                .init(offset: geo.contentOffset.y, inset: geo.contentInsets.top, bottom: geo.contentInsets.bottom, height: geo.contentSize.height, atEnd: geo.atEnd)
+                .init(offset: geo.contentOffset.y, inset: geo.contentInsets.top, bottom: geo.contentInsets.bottom, height: geo.contentSize.height, atEnd: geo.atEnd, scrolledUp: geo.scrolledUp)
             } action: { was, place in
                 scrolled(from: was, to: place, proxy: proxy)
             }
@@ -373,6 +376,15 @@ struct SessionView: View {
                 }
                 .animation(.snappy, value: pinned)
             }
+            // Over the foot of the conversation, above the box, while you read back up it.
+            .overlay(alignment: .bottom) {
+                if scrolledUp {
+                    ToNewest(size: sendSize + 8) { toNewest(proxy: proxy) }
+                        .padding(.bottom, 10)
+                        .transition(.scale(scale: 0.6).combined(with: .opacity))
+                }
+            }
+            .animation(.snappy, value: scrolledUp)
             // A bar, as a PR's review box is, with a hard edge: the conversation goes under it
             // rather than reading through what's over the box (how the last one went, which has
             // no glass of its own, was written over its words).
@@ -828,6 +840,9 @@ struct SessionView: View {
             guard place.atEnd else { return }
             scroll.backToEnd = false
         }
+        // After the bars' inset is dealt with, so the top it flashes to as the screen comes in
+        // doesn't show the button.
+        if place.scrolledUp != scrolledUp { scrolledUp = place.scrolledUp }
         // What's over the box grew while the newest was in view (how the last one went, said once
         // its Mac answered; a card; the keyboard): the newest stays in view rather than going under
         // it. However little it grew: at the end is within a few lines of it, and a line said
@@ -962,6 +977,20 @@ struct SessionView: View {
         scroll.settling = false
         scroll.backToEnd = false
         withAnimation(.snappy) { proxy.scrollTo(id, anchor: .top) }
+    }
+
+    /// Back down to the newest from reading up the conversation. By the mark at its end, as new
+    /// items keep it there.
+    private func toNewest(proxy: ScrollViewProxy) {
+        // A page going in above would hold what was in view and take it back up there; at the
+        // end, there's nothing to hold.
+        if scroll.hold != .none {
+            scroll.hold = .none
+            repin()
+        }
+        scroll.settling = false
+        scroll.backToEnd = false
+        withAnimation(.snappy) { proxy.scrollTo("end", anchor: .bottom) }
     }
 
     /// Why a message to it didn't go, once: it's back in the box.
@@ -1879,6 +1908,7 @@ private struct SuggestedRepliesView: View {
         var bottom: CGFloat = 0
         var height: CGFloat
         var atEnd = false
+        var scrolledUp = false
         var top: CGFloat { offset + inset }
     }
 }
@@ -1888,6 +1918,9 @@ private extension ScrollGeometry {
     /// by the container's height, which leaves out the bars' insets: with them it said a
     /// conversation at its end was scrolled up, and new messages didn't keep it there.
     var atEnd: Bool { visibleRect.maxY - contentInsets.bottom >= contentSize.height - 60 }
+    /// Scrolled far enough up that the newest is out of sight: more than half a screen, so reading
+    /// the last reply a little way up doesn't bring the button over it.
+    var scrolledUp: Bool { contentSize.height - (visibleRect.maxY - contentInsets.bottom) > containerSize.height / 2 }
 }
 
 /// Where one of your prompts is against the top of what's in view.
@@ -1906,6 +1939,24 @@ private enum PromptPlace: Equatable {
         } else {
             self = .below
         }
+    }
+}
+
+/// Down to the newest, over the foot of the conversation while you've scrolled up from it.
+private struct ToNewest: View {
+    let size: CGFloat
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "arrow.down")
+                .font(.body.weight(.semibold))
+                .frame(width: size, height: size)
+                .contentShape(.circle)
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: .circle)
+        .accessibilityLabel("Go to the newest")
     }
 }
 

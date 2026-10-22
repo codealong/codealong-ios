@@ -55,7 +55,8 @@ either off in the Macs sheet; neither plays with the phone silenced).
 **Read any conversation.** Each session's conversation shows as it does on the Mac: replies as
 formatted text with tables, nested lists and code you can copy, your prompts with their images, the commands that ran and
 what they printed, and the questions an agent asked with what you picked. Scroll up to read
-further back, with the prompt you're reading the answer to pinned at the top. A session running
+further back, with the prompt you're reading the answer to pinned at the top and a button at the
+foot that goes back down to the newest. A session running
 inside Codealong on your Mac streams its reply as it's written.
 
 **Work through what's waiting.** Sessions that need you, PRs waiting on your review and finished
