@@ -964,15 +964,19 @@ struct SessionView: View {
     /// Brings one of your prompts to the top of the view, reading back to it when it's before the
     /// pages read.
     private func bringUp(_ id: String, proxy: ScrollViewProxy) async {
+        scroll.trip += 1
+        let trip = scroll.trip
         while !items.contains(where: { $0.id == id }) || scroll.hold != .none {
             // A page already on its way, waiting for the scroll to stop or being held comes first.
             if loadingOlder || scroll.waiting != nil || scroll.hold != .none {
                 try? await Task.sleep(for: .milliseconds(50))
-                continue
+            } else {
+                let had = items.count
+                await older()
+                if items.count == had && scroll.waiting == nil { return }
             }
-            let had = items.count
-            await older()
-            if items.count == had && scroll.waiting == nil { return }
+            // Gone down to the newest meanwhile, or to another prompt: that's where it stays.
+            guard scroll.trip == trip else { return }
         }
         scroll.settling = false
         scroll.backToEnd = false
@@ -982,6 +986,8 @@ struct SessionView: View {
     /// Back down to the newest from reading up the conversation. By the mark at its end, as new
     /// items keep it there.
     private func toNewest(proxy: ScrollViewProxy) {
+        // A prompt still being read back to isn't gone to once it's read.
+        scroll.trip += 1
         // A page going in above would hold what was in view and take it back up there; at the
         // end, there's nothing to hold.
         if scroll.hold != .none {
@@ -1892,6 +1898,9 @@ private struct SuggestedRepliesView: View {
     /// The bars came in and moved it off the newest: it's going back, and no page is read above
     /// until it's there.
     var backToEnd = false
+    /// Counts the places it's been sent to, a prompt or the newest: a prompt being read back to
+    /// goes there only if it's still the last one asked for.
+    var trip = 0
 
     enum Hold: Equatable {
         case none
