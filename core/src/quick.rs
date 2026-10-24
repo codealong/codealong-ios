@@ -119,6 +119,8 @@ pub struct PrRow {
     pub stale: Option<String>,
     /// Where Codealong's own review of it stands on its Mac, once it's had one.
     pub agent_review: Option<AgentReviewLine>,
+    /// Whose move it is, where its review state doesn't say; none from Macs before 2026-10-23.
+    pub turn: Option<PrTurn>,
 }
 
 /// A label on a PR, as its repo on GitHub defines it.
@@ -196,17 +198,55 @@ fn agent_review_line(r: &codealong_peer::pr::AutoReview) -> AgentReviewLine {
     AgentReviewLine { stage: stage.into(), says, suggests }
 }
 
+/// Whose move an open PR is, where its review state doesn't say, as the Mac's pill says it in place
+/// of that state (prStatus.ts `turnPill`): GitHub keeps a request for changes until its reviewer
+/// approves, so a PR whose fixes are in, or whose author answered your review, would still read as
+/// Changes requested.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct PrTurn {
+    /// `reply-needed`, `rereview-asked`, `reviewer-replied` or `author-replied`, for its icon.
+    pub kind: String,
+    /// The pill's words: "Author replied".
+    pub words: String,
+    /// It's your move, which the Mac draws in amber, not theirs.
+    pub yours: bool,
+    /// What it means, in a sentence, its time as `{ago:<ms>}`.
+    pub says: String,
+}
+
+/// What a PR's card says of whose move it is, from the `turn` its Mac sends: none for a kind a later
+/// Mac names, where its state says what it can.
+fn turn_line(t: &codealong_peer::pr::Turn) -> Option<PrTurn> {
+    use codealong_peer::pr::TurnKind;
+    let who = listed(&[std::slice::from_ref(&t.who), t.also.as_slice()].concat());
+    // " 4m ago", where the Mac says since when.
+    let ago = t.since.map(|at| format!(" {{ago:{at}}}")).unwrap_or_default();
+    let stands = "GitHub keeps a request for changes until its reviewer approves.";
+    let (kind, words, yours, says) = match t.kind {
+        TurnKind::ReplyNeeded => ("reply-needed", "Reply needed", true, format!("Commits came{ago} after {who} asked for changes, and nobody has said so on it. GitHub tells a reviewer of a comment or a review request, not of a push: say what changed, or ask for a review again.")),
+        TurnKind::RereviewAsked => ("rereview-asked", "Re-review asked", false, format!("Waiting on {who}, who asked for changes: asked to review it again or written to{ago}. {stands}")),
+        TurnKind::ReviewerReplied => ("reviewer-replied", "Reviewer replied", true, format!("{who} asked for changes, then wrote again{ago}: your move. {stands}")),
+        TurnKind::AuthorReplied => ("author-replied", "Author replied", true, format!("{who} wrote{ago} after your last review or comment: your move.")),
+        TurnKind::Other => return None,
+    };
+    Some(PrTurn { kind: kind.into(), words: words.into(), yours, says })
+}
+
+/// Names as a sentence lists them: `ana`, `ana and ken`, `ana, ken and sam`.
+fn listed(names: &[String]) -> String {
+    match names {
+        [rest @ .., last] if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => names.join(""),
+    }
+}
+
 /// A PR approved only before its latest commits, in a sentence (prStatus.ts `staleWords`): who
 /// approved which commit, and that GitHub still counts it, which is why it can read as ready to
 /// merge. None for one that isn't approved, or is approved as it is.
 fn stale_words(state: PrState, stale: Option<&codealong_peer::model::StaleApproval>) -> Option<String> {
     let s = stale.filter(|_| state == PrState::Approved)?;
     let at = s.commit.get(..7).unwrap_or(&s.commit);
-    let who = match s.by.as_slice() {
-        [] => "A reviewer".to_string(),
-        [one] => one.clone(),
-        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
-    };
+    let who = if s.by.is_empty() { "A reviewer".to_string() } else { listed(&s.by) };
     Some(if s.by.len() > 1 {
         format!("Approved before its latest commits: {who} approved earlier ones, the latest {at}. GitHub still counts the approvals, as the repo doesn\u{2019}t dismiss them when commits come.")
     } else {
@@ -522,6 +562,7 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                 // A PR card doesn't carry it: its worktree's PR on the same Mac does.
                 stale: stale_words(p.state, replica.lanes.iter().filter_map(|l| l.pr.as_ref()).find(|w| !w.url.is_empty() && w.url == p.url).and_then(|w| w.stale_approval.as_ref())),
                 agent_review: p.auto_review.as_ref().map(agent_review_line),
+                turn: p.turn.as_ref().and_then(turn_line),
             });
         }
     }
@@ -579,6 +620,7 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                 labels: Vec::new(),
                 stale: stale_words(pr.state, pr.stale_approval.as_ref()),
                 agent_review: None,
+                turn: None,
             });
         }
     }
@@ -956,6 +998,7 @@ pub(crate) mod tests {
             labels: Vec::new(),
             stale: None,
             agent_review: None,
+            turn: None,
         }
     }
 
@@ -981,9 +1024,26 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn whose_move_a_pr_is_says_what_its_macs_pill_does() {
+        use codealong_peer::pr::{Turn, TurnKind};
+        let turn = |kind: TurnKind, also: &[&str], since: Option<i64>| turn_line(&Turn { kind, who: "ana".into(), also: also.iter().map(|s| s.to_string()).collect(), since });
+        let replied = turn(TurnKind::AuthorReplied, &[], Some(9)).unwrap();
+        assert_eq!((replied.kind.as_str(), replied.words.as_str(), replied.yours), ("author-replied", "Author replied", true));
+        assert_eq!(replied.says, "ana wrote {ago:9} after your last review or comment: your move.");
+        // Theirs to do, each reviewer it holds for named.
+        let asked = turn(TurnKind::RereviewAsked, &["ken", "sam"], None).unwrap();
+        assert_eq!((asked.words.as_str(), asked.yours), ("Re-review asked", false));
+        assert!(asked.says.starts_with("Waiting on ana, ken and sam, who asked for changes: asked to review it again or written to. "), "{}", asked.says);
+        assert!(turn(TurnKind::ReplyNeeded, &[], Some(9)).unwrap().says.starts_with("Commits came {ago:9} after ana asked for changes,"));
+        assert_eq!(turn(TurnKind::ReviewerReplied, &["ken"], None).unwrap().words, "Reviewer replied");
+        // A kind a later Mac names leaves the PR's state to say it.
+        assert_eq!(turn(TurnKind::Other, &[], None), None);
+    }
+
+    #[test]
     fn an_agent_review_says_where_its_round_stands_and_what_went_as_yours() {
         use codealong_peer::pr::{AutoReview, ReviewStage, Verdict};
-        let round = |stage: ReviewStage| AutoReview { stage, head: "9f8e7d6c5b".into(), suggests: Some(Verdict::Approve), submitted: None };
+        let round = |stage: ReviewStage| AutoReview { stage, head: "9f8e7d6c5b".into(), suggests: Some(Verdict::Approve), submitted: None, at: 0 };
         let posted = agent_review_line(&round(ReviewStage::Posted));
         assert_eq!((posted.stage.as_str(), posted.says.as_str(), posted.suggests.as_deref()), ("posted", "Agent reviewed 9f8e7d6 and commented", Some("Suggests approving")));
         // Under way, it suggests nothing yet.

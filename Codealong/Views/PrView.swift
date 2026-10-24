@@ -398,7 +398,7 @@ private struct PrHeader: View {
                     .lineLimit(1)
             }
             HStack(spacing: 8) {
-                StateChip(state: pr.state)
+                StateChip(state: pr.state, turn: pr.turn)
                 ChecksLine(passed: pr.passed, failed: pr.failing, pending: pr.pending)
                 if pr.additions + pr.deletions > 0 {
                     // The first to give way, short of room.
@@ -422,6 +422,9 @@ private struct PrHeader: View {
                     Image(systemName: "clock.badge.exclamationmark").foregroundStyle(.orange)
                 }
                 .font(.footnote)
+            }
+            if let turn = pr.turn {
+                TurnLabel(turn: turn)
             }
             if let review = pr.agentReview {
                 AgentReviewLabel(review: review)
@@ -638,12 +641,50 @@ struct AgentReviewLabel: View {
     }
 }
 
-/// A PR's state, as a chip.
-struct StateChip: View {
-    let state: String
+/// Whose move a PR is, where its review state doesn't say, in a sentence: what the Mac's pill says
+/// when you hover it.
+struct TurnLabel: View {
+    let turn: PrTurn
 
     var body: some View {
-        let (word, color): (String, Color) = switch state {
+        Label {
+            TimelineView(.periodic(from: .now, by: 30)) { context in
+                Text(Clock.text(turn.says, now: context.date))
+            }
+        } icon: {
+            Image(systemName: Self.symbol(turn)).foregroundStyle(turn.yours ? Color.orange : Color.secondary)
+        }
+        .font(.footnote)
+    }
+
+    static func symbol(_ turn: PrTurn) -> String {
+        switch turn.kind {
+        case "reply-needed": "arrowshape.turn.up.left"
+        case "rereview-asked": "hourglass"
+        default: "text.bubble"
+        }
+    }
+}
+
+/// A PR's state, as a chip, or whose move it is in its place where the Mac says, as its pill has
+/// it: GitHub keeps Changes requested after the fixes are in or the author has answered.
+struct StateChip: View {
+    let state: String
+    var turn: PrTurn? = nil
+
+    var body: some View {
+        let (word, color) = said
+        Text(word)
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .foregroundStyle(color)
+            .background(color.opacity(0.14), in: .capsule)
+    }
+
+    private var said: (String, Color) {
+        if let turn { return (turn.words, turn.yours ? .orange : .gray) }
+        return switch state {
         case "draft": ("Draft", .gray)
         case "approved": ("Approved", .green)
         case "changes": ("Changes requested", .red)
@@ -651,12 +692,6 @@ struct StateChip: View {
         case "closed": ("Closed", .red)
         default: ("Open", .green)
         }
-        Text(word)
-            .font(.caption.weight(.semibold))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .foregroundStyle(color)
-            .background(color.opacity(0.14), in: .capsule)
     }
 }
 
@@ -1019,7 +1054,7 @@ private struct ReviewBoxView: View {
     /// The PR's state and checks, as the top of the page has them.
     private var standing: some View {
         HStack(spacing: 8) {
-            StateChip(state: pr.state)
+            StateChip(state: pr.state, turn: pr.turn)
             ChecksLine(passed: pr.passed, failed: pr.failing, pending: pr.pending)
         }
         .fixedSize()

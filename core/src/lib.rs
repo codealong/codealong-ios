@@ -2531,7 +2531,7 @@ mod start_tests {
         api::StartAccount {
             name: "claude".into(),
             harness: codealong_peer::model::Harness::Claude,
-            places: places.iter().map(|p| api::PlaceOption { place: *p, label: p.word().into(), behind: false }).collect(),
+            places: places.iter().map(|p| api::PlaceOption { place: *p, label: p.word().into(), behind: false, service: false }).collect(),
             chosen,
             unavailable: None,
             default_model: None,

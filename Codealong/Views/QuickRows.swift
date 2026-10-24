@@ -169,6 +169,8 @@ struct QuickPrRow: View {
         }
         if pr.failing > 0 { return ("xmark", pr.failing == 1 ? "1 check failing" : "\(pr.failing) checks failing", .red) }
         if pr.state == "draft" { return (nil, "Draft", .secondary) }
+        // Whose move it is says more than GitHub's state, as the Mac's pill has it in its place.
+        if let turn = pr.turn { return (TurnLabel.symbol(turn), turn.words, turn.yours ? .orange : .secondary) }
         if pr.state == "changes" { return ("exclamationmark.bubble", "Changes asked for", .orange) }
         if pr.merge == "conflicts" { return ("exclamationmark.triangle", "Conflicts", .orange) }
         if pr.pending > 0 { return ("clock", "Checks running", .secondary) }
