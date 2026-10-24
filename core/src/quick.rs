@@ -516,18 +516,25 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
     macs.sort_by_key(|(d, _)| (!d.online, !d.remote_control, !you.signs_in(&d.key)));
     for (d, replica) in macs {
         // Whose move a PR is, as this Mac works it out for the account it's signed in as: none from
-        // a Mac signed in as another (a bot your agents open PRs as), whose move isn't yours.
-        let turn = |p: &codealong_peer::pr::PrCard| p.turn.as_ref().filter(|_| !you.signs_in_as_another(&d.key)).and_then(turn_line);
+        // a Mac signed in as another (a bot your agents open PRs as), whose move isn't yours; and
+        // none while Codealong's agent reviews it, which holds it out of what waits on you though
+        // your review is asked for and not snoozed, where the Mac's pill says Agent reviewing ahead
+        // of it (prStatus.ts `agentPill`): it isn't your move until that's done.
+        let turn = |p: &codealong_peer::pr::PrCard| {
+            let held = p.review_requested && !p.waits && p.snoozed_until.is_none();
+            p.turn.as_ref().filter(|_| !held && !you.signs_in_as_another(&d.key)).and_then(turn_line)
+        };
         for p in &replica.prs {
             let key = pr_key(&p.url, &p.key);
             let sessions: Vec<String> = p.sessions.iter().map(|k| remote_key(&d.short, k)).collect();
             if !first_seen(&mut seen, &key, &p.key) {
-                // Another Mac lists it too: the sessions there worked on it as well, and it can say
-                // whose move it is where the Mac it's asked of didn't (of another account, or a
-                // build from before).
+                // Another Mac lists it too: the sessions there worked on it as well, and where the
+                // Mac it's asked of is signed in as another account, it can say whose move it is
+                // while that Mac has it open.
                 if let Some(i) = place(&mut at, &key, &p.key, None) {
                     add_sessions(&mut out[i].sessions, sessions);
-                    if out[i].turn.is_none() {
+                    let open = !matches!(out[i].state.as_str(), "draft" | "merged" | "closed");
+                    if open && out[i].turn.is_none() && you.signs_in_as_another(&out[i].device) {
                         out[i].turn = turn(p);
                     }
                 }
@@ -632,19 +639,7 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
             });
         }
     }
-    // While Codealong's agent reviews a PR, which holds it out of what waits on you, the Mac's pill
-    // says so in place of whose move it is (prStatus.ts `agentPill`, ahead of `turnPill`): it isn't
-    // your move until that's done, and its agent's line says where it stands.
-    for p in out.iter_mut().filter(|p| held_for_agent(p)) {
-        p.turn = None;
-    }
     out
-}
-
-/// Codealong's agent hasn't finished reviewing the PR: its Mac holds it out of what waits on you
-/// though your review is asked for and not snoozed (`PrCard::waits`), or its own round is under way.
-fn held_for_agent(p: &PrRow) -> bool {
-    (p.review_requested && !p.waits && p.snoozed_until.is_none()) || p.agent_review.as_ref().is_some_and(|a| matches!(a.stage.as_str(), "queued" | "reviewing"))
 }
 
 /// Where a PR is in `all_prs`'s list, by its key or its Mac's own for it, `to` putting it there;
@@ -1104,15 +1099,28 @@ pub(crate) mod tests {
         let replied = |kind: &str| serde_json::json!({"turn": {"kind": kind, "who": "ken", "since": 9}});
         // The mini, asked first as it takes remote control, is signed in as the bot its agents open
         // PRs as, and works out whose move #7 is for the bot; the laptop is signed in as you.
-        let mini = Replica { prs: vec![card(1, "ann-bot", true, serde_json::json!({})), card(7, "ken", false, replied("reviewerReplied")), card(8, "ken", false, replied("authorReplied"))], ..Replica::default() };
+        let held = serde_json::json!({"turn": {"kind": "authorReplied", "who": "ken"}, "reviewRequested": true, "waits": false});
+        let mini = Replica {
+            prs: vec![
+                card(1, "ann-bot", true, serde_json::json!({})),
+                card(7, "ken", false, replied("reviewerReplied")),
+                card(8, "ken", false, replied("authorReplied")),
+                card(12, "ken", false, serde_json::json!({"state": "merged"})),
+                card(13, "ken", false, serde_json::json!({})),
+            ],
+            ..Replica::default()
+        };
         let laptop = Replica {
             prs: vec![
                 card(2, "ann", true, serde_json::json!({})),
                 card(7, "ken", false, replied("authorReplied")),
-                // Its agent reviews #9 and #10, the first held by another of your Macs' round.
-                card(9, "ken", false, serde_json::json!({"turn": {"kind": "authorReplied", "who": "ken"}, "reviewRequested": true, "waits": false})),
-                card(10, "ken", false, serde_json::json!({"turn": {"kind": "authorReplied", "who": "ken"}, "autoReview": {"stage": "reviewing", "head": "abc1234"}})),
-                card(11, "ken", false, serde_json::json!({"turn": {"kind": "authorReplied", "who": "ken"}, "reviewRequested": true, "waits": true})),
+                // Held out of what waits on you while the agent reviews it.
+                card(9, "ken", false, held.clone()),
+                // A round under way that holds nothing (a PR of yours, or a hold that ran out).
+                card(10, "ken", false, serde_json::json!({"turn": {"kind": "authorReplied", "who": "ken"}, "reviewRequested": true, "waits": true, "autoReview": {"stage": "reviewing", "head": "abc1234"}})),
+                // Merged on the mini since the laptop last said.
+                card(12, "ken", false, replied("authorReplied")),
+                card(13, "ken", false, held),
             ],
             ..Replica::default()
         };
@@ -1126,8 +1134,11 @@ pub(crate) mod tests {
         assert_eq!(turn(7).as_deref(), Some("Author replied"));
         // Only the bot's Mac lists it: its state says what it can.
         assert_eq!(turn(8), None);
-        // Not your move while the agent reviews it; once it waits on you, it is.
-        assert_eq!((turn(9), turn(10), turn(11).as_deref()), (None, None, Some("Author replied")));
+        // Not your move while the agent's review holds it, by the Mac that says so; a round that
+        // holds nothing doesn't stand in its way.
+        assert_eq!((turn(9), turn(13), turn(10).as_deref()), (None, None, Some("Author replied")));
+        // Nor does an older word from another Mac outlast the PR.
+        assert_eq!(turn(12), None);
     }
 
     #[test]
