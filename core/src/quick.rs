@@ -514,33 +514,46 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
     // and reviewed and merged as you.
     let mut macs: Vec<&(codealong_peer::client::Device, &codealong_peer::feed::Replica)> = feeds.iter().collect();
     macs.sort_by_key(|(d, _)| (!d.online, !d.remote_control, !you.signs_in(&d.key)));
+    // The PRs, by their place in `out`, that a Mac of your account has said whose move they are,
+    // or that it's no one's: a Mac after it, which can be behind, has no say.
+    let mut told = std::collections::HashSet::new();
     for (d, replica) in macs {
-        // Whose move a PR is, as this Mac works it out for the account it's signed in as: none from
-        // a Mac signed in as another (a bot your agents open PRs as), whose move isn't yours; and
-        // none while Codealong's agent reviews it, which holds it out of what waits on you though
-        // your review is asked for and not snoozed, where the Mac's pill says Agent reviewing ahead
-        // of it (prStatus.ts `agentPill`): it isn't your move until that's done.
+        // Whose move a PR is, as this Mac works it out for the account it's signed in as (a Mac
+        // signed in as another, a bot your agents open PRs as, has no say): none while Codealong's
+        // agent reviews it, which holds it out of what waits on you though your review is asked
+        // for, where the Mac's pill says Agent reviewing ahead of it (prStatus.ts `agentPill`): it
+        // isn't your move until that's done. A review you snoozed doesn't wait either way, so then
+        // the Mac's own round under way says it.
+        let ours = !you.signs_in_as_another(&d.key);
         let turn = |p: &codealong_peer::pr::PrCard| {
-            let held = p.review_requested && !p.waits && p.snoozed_until.is_none();
-            p.turn.as_ref().filter(|_| !held && !you.signs_in_as_another(&d.key)).and_then(turn_line)
+            use codealong_peer::pr::ReviewStage;
+            let held = p.review_requested
+                && match p.snoozed_until {
+                    None => !p.waits,
+                    Some(_) => p.auto_review.as_ref().is_some_and(|a| matches!(a.stage, ReviewStage::Queued | ReviewStage::Reviewing)),
+                };
+            p.turn.as_ref().filter(|_| !held).and_then(turn_line)
         };
         for p in &replica.prs {
             let key = pr_key(&p.url, &p.key);
             let sessions: Vec<String> = p.sessions.iter().map(|k| remote_key(&d.short, k)).collect();
             if !first_seen(&mut seen, &key, &p.key) {
-                // Another Mac lists it too: the sessions there worked on it as well, and where the
-                // Mac it's asked of is signed in as another account, it can say whose move it is
-                // while that Mac has it open.
+                // Another Mac lists it too: the sessions there worked on it as well, and where no Mac
+                // of your account has said whose move it is, it can, while the Mac it's asked of
+                // has it open.
                 if let Some(i) = place(&mut at, &key, &p.key, None) {
                     add_sessions(&mut out[i].sessions, sessions);
                     let open = !matches!(out[i].state.as_str(), "draft" | "merged" | "closed");
-                    if open && out[i].turn.is_none() && you.signs_in_as_another(&out[i].device) {
+                    if ours && open && told.insert(i) {
                         out[i].turn = turn(p);
                     }
                 }
                 continue;
             }
             place(&mut at, &key, &p.key, Some(out.len()));
+            if ours {
+                told.insert(out.len());
+            }
             out.push(PrRow {
                 key,
                 device: d.key.clone(),
@@ -577,7 +590,7 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                 // A PR card doesn't carry it: its worktree's PR on the same Mac does.
                 stale: stale_words(p.state, replica.lanes.iter().filter_map(|l| l.pr.as_ref()).find(|w| !w.url.is_empty() && w.url == p.url).and_then(|w| w.stale_approval.as_ref())),
                 agent_review: p.auto_review.as_ref().map(agent_review_line),
-                turn: turn(p),
+                turn: if ours { turn(p) } else { None },
             });
         }
     }
@@ -1107,6 +1120,7 @@ pub(crate) mod tests {
                 card(8, "ken", false, replied("authorReplied")),
                 card(12, "ken", false, serde_json::json!({"state": "merged"})),
                 card(13, "ken", false, serde_json::json!({})),
+                card(16, "ken", false, serde_json::json!({})),
             ],
             ..Replica::default()
         };
@@ -1121,11 +1135,19 @@ pub(crate) mod tests {
                 // Merged on the mini since the laptop last said.
                 card(12, "ken", false, replied("authorReplied")),
                 card(13, "ken", false, held),
+                // Snoozed: held only while its round is under way.
+                card(14, "ken", false, serde_json::json!({"turn": {"kind": "authorReplied", "who": "ken"}, "reviewRequested": true, "snoozedUntil": 99, "autoReview": {"stage": "queued", "head": "abc1234"}})),
+                card(15, "ken", false, serde_json::json!({"turn": {"kind": "authorReplied", "who": "ken"}, "reviewRequested": true, "snoozedUntil": 99})),
+                // Said to be no one's move here, which a Mac behind it doesn't undo.
+                card(16, "ken", false, serde_json::json!({})),
             ],
             ..Replica::default()
         };
-        let feeds = vec![(mac("mini", true), &mini), (mac("laptop", false), &laptop)];
-        let signed_in: HashMap<String, String> = [("mini".to_string(), "ann-bot".to_string()), ("laptop".to_string(), "ann".to_string())].into_iter().collect();
+        let studio = Replica { prs: vec![card(16, "ken", false, replied("authorReplied"))], ..Replica::default() };
+        let mut asleep = mac("studio", false);
+        asleep.online = false;
+        let feeds = vec![(mac("mini", true), &mini), (mac("laptop", false), &laptop), (asleep, &studio)];
+        let signed_in: HashMap<String, String> = [("mini".to_string(), "ann-bot".to_string()), ("laptop".to_string(), "ann".to_string()), ("studio".to_string(), "ann".to_string())].into_iter().collect();
         let you = crate::github::You::of(&feeds, &signed_in, &["ann".to_string()]);
         let prs = all_prs(&feeds, &you);
         let turn = |n: u64| prs.iter().find(|p| p.number == n).and_then(|p| p.turn.as_ref()).map(|t| t.words.clone());
@@ -1137,8 +1159,9 @@ pub(crate) mod tests {
         // Not your move while the agent's review holds it, by the Mac that says so; a round that
         // holds nothing doesn't stand in its way.
         assert_eq!((turn(9), turn(13), turn(10).as_deref()), (None, None, Some("Author replied")));
-        // Nor does an older word from another Mac outlast the PR.
-        assert_eq!(turn(12), None);
+        assert_eq!((turn(14), turn(15).as_deref()), (None, Some("Author replied")));
+        // Nor does an older word from another Mac outlast the PR, or what a Mac ahead of it said.
+        assert_eq!((turn(12), turn(16)), (None, None));
     }
 
     #[test]
