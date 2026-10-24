@@ -146,6 +146,12 @@ impl You {
     pub(crate) fn signs_in(&self, device: &str) -> bool {
         self.macs.get(device).is_some_and(|l| self.yours.contains(l))
     }
+
+    /// Whether the Mac `device` is known to be signed in as an account that isn't yours, so what
+    /// it works out for that account, whose move a PR is, isn't yours.
+    pub(crate) fn signs_in_as_another(&self, device: &str) -> bool {
+        self.macs.get(device).is_some_and(|l| !self.yours.contains(l))
+    }
 }
 
 #[cfg(test)]

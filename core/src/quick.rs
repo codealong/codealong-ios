@@ -515,13 +515,21 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
     let mut macs: Vec<&(codealong_peer::client::Device, &codealong_peer::feed::Replica)> = feeds.iter().collect();
     macs.sort_by_key(|(d, _)| (!d.online, !d.remote_control, !you.signs_in(&d.key)));
     for (d, replica) in macs {
+        // Whose move a PR is, as this Mac works it out for the account it's signed in as: none from
+        // a Mac signed in as another (a bot your agents open PRs as), whose move isn't yours.
+        let turn = |p: &codealong_peer::pr::PrCard| p.turn.as_ref().filter(|_| !you.signs_in_as_another(&d.key)).and_then(turn_line);
         for p in &replica.prs {
             let key = pr_key(&p.url, &p.key);
             let sessions: Vec<String> = p.sessions.iter().map(|k| remote_key(&d.short, k)).collect();
             if !first_seen(&mut seen, &key, &p.key) {
-                // Another Mac lists it too: the sessions there worked on it as well.
+                // Another Mac lists it too: the sessions there worked on it as well, and it can say
+                // whose move it is where the Mac it's asked of didn't (of another account, or a
+                // build from before).
                 if let Some(i) = place(&mut at, &key, &p.key, None) {
                     add_sessions(&mut out[i].sessions, sessions);
+                    if out[i].turn.is_none() {
+                        out[i].turn = turn(p);
+                    }
                 }
                 continue;
             }
@@ -562,7 +570,7 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                 // A PR card doesn't carry it: its worktree's PR on the same Mac does.
                 stale: stale_words(p.state, replica.lanes.iter().filter_map(|l| l.pr.as_ref()).find(|w| !w.url.is_empty() && w.url == p.url).and_then(|w| w.stale_approval.as_ref())),
                 agent_review: p.auto_review.as_ref().map(agent_review_line),
-                turn: p.turn.as_ref().and_then(turn_line),
+                turn: turn(p),
             });
         }
     }
@@ -624,7 +632,19 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
             });
         }
     }
+    // While Codealong's agent reviews a PR, which holds it out of what waits on you, the Mac's pill
+    // says so in place of whose move it is (prStatus.ts `agentPill`, ahead of `turnPill`): it isn't
+    // your move until that's done, and its agent's line says where it stands.
+    for p in out.iter_mut().filter(|p| held_for_agent(p)) {
+        p.turn = None;
+    }
     out
+}
+
+/// Codealong's agent hasn't finished reviewing the PR: its Mac holds it out of what waits on you
+/// though your review is asked for and not snoozed (`PrCard::waits`), or its own round is under way.
+fn held_for_agent(p: &PrRow) -> bool {
+    (p.review_requested && !p.waits && p.snoozed_until.is_none()) || p.agent_review.as_ref().is_some_and(|a| matches!(a.stage.as_str(), "queued" | "reviewing"))
 }
 
 /// Where a PR is in `all_prs`'s list, by its key or its Mac's own for it, `to` putting it there;
@@ -1069,6 +1089,45 @@ pub(crate) mod tests {
         let prs = all_prs(&feeds, &crate::github::You::default());
         assert_eq!(prs.len(), 1);
         assert_eq!((prs[0].device.as_str(), prs[0].project.as_str()), ("driving", "Apps"));
+    }
+
+    #[test]
+    fn whose_move_a_pr_is_is_your_accounts_and_waits_for_the_agent() {
+        use codealong_peer::client::Device;
+        use codealong_peer::feed::Replica;
+        let mac = |key: &str, remote_control: bool| Device { key: key.into(), short: key.into(), name: key.into(), online: true, since: None, last_seen: None, remote_control, app: String::new(), loading: false, linked_back: true };
+        let card = |number: u64, author: &str, mine: bool, extra: serde_json::Value| {
+            let mut v = serde_json::json!({"key": format!("o/app#{number}"), "repo": "o/app", "project": "App", "number": number, "title": "T", "url": format!("https://github.com/o/app/pull/{number}"), "state": "changes", "author": author, "mine": mine, "head": "b"});
+            v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            serde_json::from_value::<codealong_peer::pr::PrCard>(v).unwrap()
+        };
+        let replied = |kind: &str| serde_json::json!({"turn": {"kind": kind, "who": "ken", "since": 9}});
+        // The mini, asked first as it takes remote control, is signed in as the bot its agents open
+        // PRs as, and works out whose move #7 is for the bot; the laptop is signed in as you.
+        let mini = Replica { prs: vec![card(1, "ann-bot", true, serde_json::json!({})), card(7, "ken", false, replied("reviewerReplied")), card(8, "ken", false, replied("authorReplied"))], ..Replica::default() };
+        let laptop = Replica {
+            prs: vec![
+                card(2, "ann", true, serde_json::json!({})),
+                card(7, "ken", false, replied("authorReplied")),
+                // Its agent reviews #9 and #10, the first held by another of your Macs' round.
+                card(9, "ken", false, serde_json::json!({"turn": {"kind": "authorReplied", "who": "ken"}, "reviewRequested": true, "waits": false})),
+                card(10, "ken", false, serde_json::json!({"turn": {"kind": "authorReplied", "who": "ken"}, "autoReview": {"stage": "reviewing", "head": "abc1234"}})),
+                card(11, "ken", false, serde_json::json!({"turn": {"kind": "authorReplied", "who": "ken"}, "reviewRequested": true, "waits": true})),
+            ],
+            ..Replica::default()
+        };
+        let feeds = vec![(mac("mini", true), &mini), (mac("laptop", false), &laptop)];
+        let signed_in: HashMap<String, String> = [("mini".to_string(), "ann-bot".to_string()), ("laptop".to_string(), "ann".to_string())].into_iter().collect();
+        let you = crate::github::You::of(&feeds, &signed_in, &["ann".to_string()]);
+        let prs = all_prs(&feeds, &you);
+        let turn = |n: u64| prs.iter().find(|p| p.number == n).and_then(|p| p.turn.as_ref()).map(|t| t.words.clone());
+        // Asked of the mini, whose move it is as the laptop has it.
+        assert_eq!(prs.iter().find(|p| p.number == 7).map(|p| p.device.as_str()), Some("mini"));
+        assert_eq!(turn(7).as_deref(), Some("Author replied"));
+        // Only the bot's Mac lists it: its state says what it can.
+        assert_eq!(turn(8), None);
+        // Not your move while the agent reviews it; once it waits on you, it is.
+        assert_eq!((turn(9), turn(10), turn(11).as_deref()), (None, None, Some("Author replied")));
     }
 
     #[test]
