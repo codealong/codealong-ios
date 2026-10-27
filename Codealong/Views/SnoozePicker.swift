@@ -18,27 +18,32 @@ struct SnoozePicker: View {
     @State private var until = Snooze.For.morning.picked().until
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    DatePicker("Until", selection: $until, in: Date.now..., displayedComponents: [.date, .hourAndMinute])
-                        .datePickerStyle(.graphical)
-                } footer: {
-                    Text(until > .now ? "Until \(Snooze.words(until))" : "That time has passed.")
-                }
-            }
-            .navigationTitle(pick.title)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Snooze") {
-                        pick.run(until)
-                        dismiss()
+        // Each minute again, so a time that passes while it's open says so and can't be sent: one
+        // gone by would end the snooze at once, and any it had before.
+        TimelineView(.everyMinute) { context in
+            NavigationStack {
+                Form {
+                    Section {
+                        DatePicker("Until", selection: $until, in: context.date..., displayedComponents: [.date, .hourAndMinute])
+                            .datePickerStyle(.graphical)
+                    } footer: {
+                        Text(until > context.date ? "Until \(Snooze.words(until, now: context.date))" : "That time has passed.")
                     }
-                    .disabled(until <= .now)
+                }
+                .navigationTitle(pick.title)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { dismiss() }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Snooze") {
+                            guard until > .now else { return }
+                            pick.run(until)
+                            dismiss()
+                        }
+                        .disabled(until <= context.date)
+                    }
                 }
             }
         }
