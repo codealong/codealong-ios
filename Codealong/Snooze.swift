@@ -1,9 +1,10 @@
 import Foundation
 
 /// The times a snooze can run to, as the Mac's menus offer them (snooze.ts `snoozeChoices`): a few
-/// from now, the next morning at nine (still this morning before five), and the Monday morning
-/// after it. A snoozed session stays off Needs you and Your turn on every device until then, and
-/// comes back as Your turn.
+/// from now, 5 PM while it's an hour off or more, the next morning at nine (still this morning
+/// before five), and the Monday morning after it; Pick a time… asks for any other
+/// (`SnoozePicker`). A snoozed session stays off Needs you and Your turn on every device until
+/// then, and comes back as Your turn.
 enum Snooze {
     struct Choice: Identifiable {
         let label: String
@@ -12,29 +13,48 @@ enum Snooze {
     }
 
     static func choices(now: Date = .now) -> [Choice] {
-        For.allCases.map { $0.choice(now: now) }
+        For.allCases.compactMap { $0.choice(now: now) }
     }
 
     /// Which of the times offered a snooze runs to, kept as which it is rather than when, so a
     /// pick made now is worked out when it's used. In the order the menus offer them.
     enum For: CaseIterable, Hashable {
-        case quarter, half, hour, hours, morning, week
+        case quarter, half, hour, hours, evening, morning, week
 
-        /// It as the menus offer it now.
-        func choice(now: Date = .now) -> Choice {
+        /// It as the menus offer it now, or nil while they don't: 5 PM, from an hour before it
+        /// until the morning.
+        func choice(now: Date = .now) -> Choice? {
             switch self {
             case .quarter: return Choice(label: "For 15 minutes", until: now.addingTimeInterval(15 * 60))
             case .half: return Choice(label: "For 30 minutes", until: now.addingTimeInterval(30 * 60))
             case .hour: return Choice(label: "For 1 hour", until: now.addingTimeInterval(3600))
             case .hours: return Choice(label: "For 3 hours", until: now.addingTimeInterval(3 * 3600))
-            case .morning:
-                let morning = Snooze.morning(now: now)
-                return Choice(label: "Until \(words(morning, now: now))", until: morning)
+            case .evening: return Snooze.evening(now: now).map { Choice(label: "Until \(words($0, now: now))", until: $0) }
+            case .morning: return Snooze.morningChoice(now: now)
             case .week:
                 let week = Snooze.week(now: now)
                 return Choice(label: "Until \(words(week, now: now))", until: week)
             }
         }
+
+        /// It as a pick made earlier runs now: 5 PM, picked while it was offered, runs to the next
+        /// morning once it isn't.
+        func picked(now: Date = .now) -> Choice {
+            choice(now: now) ?? Snooze.morningChoice(now: now)
+        }
+    }
+
+    private static func morningChoice(now: Date) -> Choice {
+        let morning = morning(now: now)
+        return Choice(label: "Until \(words(morning, now: now))", until: morning)
+    }
+
+    /// Five in the afternoon today, from the morning until it's less than an hour off: before
+    /// five in the morning, the next morning comes first.
+    private static func evening(now: Date) -> Date? {
+        let calendar = Calendar.current
+        guard calendar.component(.hour, from: now) >= 5, let evening = calendar.date(bySettingHour: 17, minute: 0, second: 0, of: now), evening.timeIntervalSince(now) >= 3600 else { return nil }
+        return evening
     }
 
     /// Nine the next morning, or this morning's in the small hours.

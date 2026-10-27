@@ -13,6 +13,8 @@ struct QuickView: View {
     @Environment(Store.self) private var store
     @Environment(\.openURL) private var openURL
     @State private var showingMacs = false
+    /// Pick a time… in a row's Snooze menu, asking for the time.
+    @State private var snoozing: SnoozePick?
     @State private var path: [String] = []
     @AppStorage("page") private var page = Page.sessions
     @AppStorage("order") private var order = Order.needs
@@ -107,6 +109,7 @@ struct QuickView: View {
             }
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: String.self) { key in destination(key) }
+            .sheet(item: $snoozing) { SnoozePicker(pick: $0) }
             .sheet(isPresented: $showingMacs) {
                 DevicesView()
             }
@@ -755,6 +758,9 @@ struct QuickView: View {
                 ForEach(Snooze.choices()) { c in
                     Button(c.label) { act { try await store.snooze(r.key, until: c.until) } }
                 }
+                Button("Pick a time…", systemImage: "calendar") {
+                    snoozing = SnoozePick(id: r.key, title: "Snooze") { until in act { try await store.snooze(r.key, until: until) } }
+                }
                 if r.snoozedUntil != nil {
                     Button("Wake now", systemImage: "sun.max") { act { try await store.snooze(r.key, until: nil) } }
                 }
@@ -803,6 +809,9 @@ struct QuickView: View {
                 Menu("Snooze review", systemImage: "moon.zzz") {
                     ForEach(Snooze.choices()) { c in
                         Button(c.label) { act { try await store.prSnooze(pr, until: c.until) } }
+                    }
+                    Button("Pick a time…", systemImage: "calendar") {
+                        snoozing = SnoozePick(id: pr.key, title: "Snooze review") { until in act { try await store.prSnooze(pr, until: until) } }
                     }
                     if pr.snoozedUntil != nil {
                         Button("Wake now", systemImage: "sun.max") { act { try await store.prSnooze(pr, until: nil) } }

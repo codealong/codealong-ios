@@ -109,6 +109,8 @@ struct SessionView: View {
     @State private var switching = false
     /// A prompt of yours being edited, to go on from just before it (Edit from here).
     @State private var editing: Item?
+    /// Pick a time… in its Snooze menu, asking for the time.
+    @State private var snoozing: SnoozePick?
     /// The mode picked here, until its Mac's feed says the one it's in.
     @State private var modePicked: String?
     /// A queued message Send now didn't send into the turn, and why.
@@ -204,6 +206,7 @@ struct SessionView: View {
                 Task { await editFrom(prompt, text) }
             }
         }
+        .sheet(item: $snoozing) { SnoozePicker(pick: $0) }
         .alert("Rename", isPresented: $renaming) {
             TextField("Name", text: $newName)
             Button("Rename") { Task { await rename() } }
@@ -436,6 +439,9 @@ struct SessionView: View {
         Menu("Snooze", systemImage: "moon.zzz") {
             ForEach(Snooze.choices()) { c in
                 Button(c.label) { Task { await snooze(until: c.until) } }
+            }
+            Button("Pick a time…", systemImage: "calendar") {
+                snoozing = SnoozePick(id: key, title: "Snooze") { until in Task { await snooze(until: until) } }
             }
             if row?.snoozedUntil != nil {
                 Button("Wake now", systemImage: "sun.max") { Task { await snooze(until: nil) } }
@@ -1340,7 +1346,7 @@ struct SessionView: View {
             moveOn(to: next, outcome: "Archived “\(title)”.", speed: speed)
         case .snooze:
             guard case .snooze(let time) = swipeOn else { return moveOn(to: next, speed: speed) }
-            let until = time.choice().until
+            let until = time.picked().until
             store.snoozeLater(key, title: title, until: until)
             // Left as it was: it comes back as Your turn when the snooze ends.
             moveOn(to: next, outcome: "Snoozed “\(title)” until \(Snooze.words(until)).", speed: speed, seen: false)

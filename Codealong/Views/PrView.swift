@@ -35,6 +35,8 @@ struct PrView: View {
     /// Which read is the latest: an earlier one that answers after it is let go.
     @State private var reads = 0
     @State private var merging = false
+    /// Pick a time… in its Snooze review menu, asking for the time.
+    @State private var snoozing: SnoozePick?
     /// How the last thing done here went.
     @State private var said: String?
     /// You reviewed or merged it here: going on leaves it as it is.
@@ -153,6 +155,7 @@ struct PrView: View {
                     Task { await load() }
                 }
             }
+            .sheet(item: $snoozing) { SnoozePicker(pick: $0) }
         } else {
             ContentUnavailableView("No longer listed", systemImage: "arrow.triangle.pull", description: Text("Its Mac doesn't list this PR now."))
         }
@@ -208,6 +211,9 @@ struct PrView: View {
                     Menu("Snooze review", systemImage: "moon.zzz") {
                         ForEach(Snooze.choices()) { c in
                             Button(c.label) { Task { await snooze(pr, until: c.until) } }
+                        }
+                        Button("Pick a time…", systemImage: "calendar") {
+                            snoozing = SnoozePick(id: pr.key, title: "Snooze review") { until in Task { await snooze(pr, until: until) } }
                         }
                         if pr.snoozedUntil != nil {
                             Button("Wake now", systemImage: "sun.max") { Task { await snooze(pr, until: nil) } }
