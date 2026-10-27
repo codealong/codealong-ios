@@ -19,7 +19,7 @@ struct QuickSessionRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     if let emblem = row.emblem {
-                        EmblemView(emblem: emblem, size: 18)
+                        EmblemView(emblem: emblem, mac: row.device, size: 18)
                             .onCapitals(of: .body)
                             .padding(.trailing, -2)
                     }

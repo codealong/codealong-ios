@@ -208,7 +208,7 @@ struct GoOnBar<Choices: View>: View {
                         StatusMark(status: row.status, stalled: row.stalled, waiting: row.waitsInBackground)
                         HStack(spacing: 5) {
                             if let emblem = row.emblem {
-                                EmblemView(emblem: emblem, size: 15)
+                                EmblemView(emblem: emblem, mac: row.device, size: 15)
                             }
                             Text(row.title)
                                 .font(.subheadline.weight(.semibold))

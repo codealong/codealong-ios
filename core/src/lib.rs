@@ -236,8 +236,8 @@ pub struct SessionRow {
     /// Replies another session suggested for it, to send with a tap, until something is sent to
     /// it or a turn of its starts.
     pub suggestions: Option<SuggestedReplies>,
-    /// The small icon in two colors beside its title, as its Mac gave it. None until its Mac
-    /// has given it one, and from Macs that don't give them.
+    /// The emoji or small picture beside its title, as its Mac gave it. None until its Mac has
+    /// given it one, and from Macs that don't give them.
     pub emblem: Option<Emblem>,
     /// The id its harness gives it (Claude Code's session id, Codex's thread id), which its menu's
     /// Copy session ID copies, as the Mac's does. Its resume command, which the Mac's menu copies
@@ -254,31 +254,26 @@ pub struct WorktreePr {
     pub url: String,
 }
 
-/// A session's emblem, as the Mac draws it (its primitives.tsx `SessionEmblem`): the icon Jev
-/// picked for what it works on, on a radial gradient of two colors that go together, the accent
-/// where its light falls and its main color over the rest, so sessions side by side read apart.
+/// A session's emblem, as its Mac gives it (the Mac's emblems.rs, drawn by its primitives.tsx
+/// `SessionEmblem`): something you can name that stands for what it works on, an emoji Jev picked
+/// or a small picture an account drew, so sessions side by side read apart and one is remembered
+/// as "the dinosaur".
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
 pub struct Emblem {
-    /// The icon's name in Tabler's set, as the Mac's emblems.rs `ICONS` lists them.
-    pub icon: String,
-    /// The color over most of it, one of the thirteen the Mac's `--emblem-<color>` tokens name:
-    /// red, rose, pink, magenta, violet, purple, indigo, blue, sky, teal, mint, green or lime.
-    pub color: String,
-    /// The color where the light falls, from the same thirteen.
-    pub accent: String,
-    /// Where the light falls, as fractions of its width and height from its top left.
-    pub light_x: f32,
-    pub light_y: f32,
+    /// The emoji, when it's one, or when it has one beside its picture: shown while the picture
+    /// is on its way and when its Mac can't send it.
+    pub emoji: Option<String>,
+    /// The picture, where its Mac keeps it (`images/<hash>.png`), which `Core::read_image`
+    /// reads from there.
+    pub picture: Option<String>,
+    /// What it shows, in a word or two.
+    pub name: String,
 }
-
-/// Where an emblem's light falls for each of the eight places a Mac gives, clockwise around its
-/// edge from the top left corner (primitives.tsx `EMBLEM_LIGHTS`). One past them is the first.
-const EMBLEM_LIGHTS: [(f32, f32); 8] = [(0.28, 0.26), (0.50, 0.16), (0.72, 0.26), (0.84, 0.50), (0.72, 0.74), (0.50, 0.84), (0.28, 0.74), (0.16, 0.50)];
 
 impl From<&codealong_peer::model::Emblem> for Emblem {
     fn from(e: &codealong_peer::model::Emblem) -> Emblem {
-        let (light_x, light_y) = EMBLEM_LIGHTS.get(e.light as usize).copied().unwrap_or(EMBLEM_LIGHTS[0]);
-        Emblem { icon: e.icon.clone(), color: e.color.clone(), accent: e.accent.clone(), light_x, light_y }
+        // The Mac names a kept picture by itself; an image is read by its path.
+        Emblem { emoji: e.emoji.clone(), picture: e.picture.as_ref().map(|p| format!("images/{p}")), name: e.name.clone() }
     }
 }
 
@@ -1576,16 +1571,19 @@ mod tests {
         assert_eq!(listed.iter().map(|p| p.key.as_str()).collect::<Vec<_>>(), [pr.key.as_str()]);
     }
 
+    /// An emoji as its Mac sent it; a picture by the path its Mac reads it from, with the emoji
+    /// it has beside it.
     #[test]
-    fn an_emblem_is_lit_where_its_mac_says_and_from_the_top_left_past_the_eight() {
-        let emblem = |light: u8| Emblem::from(&codealong_peer::model::Emblem { color: "teal".into(), accent: "blue".into(), light, icon: "bug".into() });
-        let lit = emblem(3);
-        assert_eq!((lit.icon.as_str(), lit.color.as_str(), lit.accent.as_str(), lit.light_x, lit.light_y), ("bug", "teal", "blue", 0.84, 0.50));
-        assert_eq!((emblem(8).light_x, emblem(8).light_y), (0.28, 0.26));
+    fn an_emblem_is_an_emoji_or_a_picture_read_from_its_mac() {
+        let sent = |emoji: Option<&str>, picture: Option<&str>| codealong_peer::model::Emblem { emoji: emoji.map(String::from), picture: picture.map(String::from), name: "t rex".into() };
+        assert_eq!(Emblem::from(&sent(Some("🦖"), None)), Emblem { emoji: Some("🦖".into()), picture: None, name: "t rex".into() });
+        let drawn = Emblem::from(&sent(Some("🦖"), Some("0123456789abcdef.png")));
+        assert_eq!((drawn.emoji.as_deref(), drawn.picture.as_deref()), (Some("🦖"), Some("images/0123456789abcdef.png")));
+        assert_eq!(Emblem::from(&sent(None, Some("0123456789abcdef.png"))).emoji, None);
     }
 
     fn item(kind: &str, cursor: u64, id: Option<&str>, output: Option<&str>) -> api::Item {
-        api::Item { at: cursor as i64, kind: kind.into(), text: format!("{kind} {cursor}"), from: None, id: id.map(String::from), input: None, output: output.map(String::from), failed: false, withdrawn: false, questions: vec![], answers: Default::default(), link: None, sent: None, cursor, n: 0 }
+        api::Item { at: cursor as i64, kind: kind.into(), text: format!("{kind} {cursor}"), from: None, id: id.map(String::from), input: None, output: output.map(String::from), failed: false, withdrawn: false, stop: false, questions: vec![], answers: Default::default(), link: None, sent: None, cursor, n: 0 }
     }
 
     #[test]

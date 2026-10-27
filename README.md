@@ -47,8 +47,8 @@ was said in them too, and PRs. The menu at the top left orders the sessions *By 
 worktree by worktree (tap a worktree to fold it away, or its ✎ to start a session in it), or
 *Recent*, the last active first. The pills under the box narrow the list to one project; a
 project that lives on two Macs is one project here. Each session has the emblem its Mac gave it
-beside its title, a small icon for what it works on in two colors, so you know it at a glance as
-you do there. While the app is open, a short sound says when a session on any of your Macs starts
+beside its title, an emoji or a small drawn picture for what it works on, so you know it at a
+glance as you do there. While the app is open, a short sound says when a session on any of your Macs starts
 to wait on you, as the Mac's do: a pop when it needs you, a lighter tink when its turn ends (turn
 either off in the Macs sheet; neither plays with the phone silenced).
 
@@ -250,7 +250,7 @@ so the two can't drift apart.
 ```
 Codealong/          SwiftUI: the quick search, a session, the Macs sheet, the store
 core/               Rust: a thin layer over codealong-peer's client, exported with UniFFI
-scripts/            build-core.sh (core → XCFramework + Swift bindings, then build-emblems.sh), build.sh, run.sh, install-device.sh
+scripts/            build-core.sh (core → XCFramework + Swift bindings), build.sh, run.sh, install-device.sh
 project.yml         XcodeGen's spec; Codealong.xcodeproj is generated from it
 ```
 
@@ -272,7 +272,7 @@ Mac app's repo, `design/plans/ios.md`.
 ## License
 
 Copyright 2026 Gordon L. Hempton. The code is under the [Apache License 2.0](LICENSE), as the Mac
-app's is; copies carry the [NOTICE](NOTICE). The emblems' icons are Tabler's, under their own
-license ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)). The Codealong name and logo are
+app's is; copies carry the [NOTICE](NOTICE). The crates its Rust core is built with are under
+their own licenses ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)). The Codealong name and logo are
 trademarks, and the license doesn't grant rights to them: a fork should go by its own name and
 icon.

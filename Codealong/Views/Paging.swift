@@ -155,7 +155,7 @@ struct TitleBlock: View {
             VStack(spacing: 0) {
                 HStack(spacing: 6) {
                     if let emblem = row.emblem {
-                        EmblemView(emblem: emblem, size: 18)
+                        EmblemView(emblem: emblem, mac: row.device, size: 18)
                     }
                     Text(row.title).font(.headline).lineLimit(1)
                 }

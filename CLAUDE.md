@@ -11,7 +11,6 @@ projects or naming.
 
 ```bash
 scripts/build-core.sh          # Rust core → build/CodealongCore.xcframework + Codealong/Generated (SIM_ONLY=1: simulator only)
-scripts/build-emblems.sh       # the Mac's emblem icons and colors → Codealong/Assets.xcassets/Emblems, from the pinned commit (build-core.sh runs it)
 swift scripts/make-sounds.swift  # the app's sounds → Codealong/Sounds (made from sine waves; checked in)
 scripts/build.sh               # core if core/ changed since it was built (CORE=1 forces it), xcodegen, then the app for the simulator
 scripts/run.sh                 # install and launch on the booted simulator; LINK_CODE=<code> links it at launch
