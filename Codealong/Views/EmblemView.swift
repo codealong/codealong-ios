@@ -51,6 +51,9 @@ struct EmblemView: View {
             // only once that Mac is here.
             guard picture == nil || pictureOf != path else { return }
             let read = await store.image(mac: mac, path: path)
+            // The cache reads on after this task is cancelled, as a row comes to show another
+            // session: what it brings late isn't this one's any more.
+            guard !Task.isCancelled else { return }
             (picture, pictureOf, failed) = (read, path, read == nil)
         }
     }
