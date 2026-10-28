@@ -4,13 +4,16 @@ import SwiftUI
 /// across the conversation, Next over the box, Go to next in the menu and ⌘] all do it. You pick it
 /// over the reply box for the session you're on: each starts at Mark as seen, what going on did
 /// before there was a choice, so marking one done or snoozing one doesn't carry over to the next.
-/// A snooze runs for a time the menus offer, as the session's own Snooze does (`Snooze`).
+/// Leave as it is goes on without marking it anything, so one that asks you something stays in
+/// Needs you and comes round again after the rest. A snooze runs for a time the menus offer, as the
+/// session's own Snooze does (`Snooze`).
 enum SwipeOn: Hashable {
-    case seen, done, archive
+    case keep, seen, done, archive
     case snooze(Snooze.For)
 
     var label: String {
         switch self {
+        case .keep: "Leave as it is"
         case .seen: "Mark as seen"
         case .done: "Mark as done"
         case .archive: "Archive"
@@ -21,6 +24,7 @@ enum SwipeOn: Hashable {
     /// As the session's menu draws the same.
     var symbol: String {
         switch self {
+        case .keep: Going.later.symbol
         case .seen: "eye"
         case .done: "checkmark.circle"
         case .archive: "archivebox"
@@ -33,7 +37,7 @@ enum SwipeOn: Hashable {
     @ViewBuilder
     static func picker(_ pick: Binding<SwipeOn>) -> some View {
         Picker("When you go on to the next", selection: pick) {
-            ForEach([SwipeOn.seen, .done, .archive], id: \.self) { c in
+            ForEach([SwipeOn.keep, .seen, .done, .archive], id: \.self) { c in
                 Label(c.label, systemImage: c.symbol).tag(c)
             }
         }
@@ -118,6 +122,8 @@ enum Going: Equatable {
         // good, and its Mac snoozes a session at any stage, as its own Snooze does.
         case .snooze(let time): return .snooze(Snooze.phrase(time.picked()))
         case _ where waits: return .later
+        // Left as it is, one there was something to mark seen in still waits on you.
+        case .keep: return row.seenable ? .later : .on
         case .seen: return row.seenable ? .seen : .on
         case .done: return row.status == .working ? .working : .done
         case .archive: return row.status == .working ? .working : .archive

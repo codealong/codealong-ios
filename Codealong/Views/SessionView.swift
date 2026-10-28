@@ -9,8 +9,8 @@ import SwiftUI
 /// waits on you, a bar over the box names it and says what going on to it does to this one, and a
 /// swipe or a tap on it goes on, to a PR's page as to a session's screen; on the last, it offers
 /// Finish instead. Holding Send sends and goes on at once. Going on marks it seen, so a turn that ended leaves Your turn and a reply that
-/// asks you something leaves Needs you, as it always did, unless the bar's menu picks marking it
-/// done, archiving it or snoozing it instead, for this session only (`SwipeOn`). One you replied to here, or one at work, is
+/// asks you something leaves Needs you, as it always did, unless the bar's menu picks leaving it as
+/// it is, marking it done, archiving it or snoozing it instead, for this session only (`SwipeOn`). One you replied to here, or one at work, is
 /// left as it is, and one skipped while it waits on a call to allow comes round again after the
 /// rest (`Going`).
 ///
@@ -1351,7 +1351,8 @@ struct SessionView: View {
             // Left as it was: it comes back as Your turn when the snooze ends.
             moveOn(to: next, outcome: "Snoozed “\(title)” until \(Snooze.words(until)).", speed: speed, seen: false)
         case .seen, .on, .working, .later:
-            moveOn(to: next, speed: speed)
+            // Left as it is, it isn't marked seen as it slides either.
+            moveOn(to: next, speed: speed, seen: swipeOn != .keep)
         }
     }
 

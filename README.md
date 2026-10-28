@@ -62,8 +62,8 @@ inside Codealong on your Mac streams its reply as it's written.
 **Work through what's waiting.** Sessions that need you, PRs waiting on your review and finished
 turns come one after another, in the Mac's order. While something else waits on you, a bar over the
 reply box names it and says what going on to it does to the session you're reading: marks it seen,
-or, picked from the bar's menu for that session alone, marks it done, archives it, or snoozes it
-for a while. Swipe left (or tap *Next*) to go on and do it, and right to go back to the one you
+or, picked from the bar's menu for that session alone, leaves it as it is (to come round again
+after the rest), marks it done, archives it, or snoozes it for a while. Swipe left (or tap *Next*) to go on and do it, and right to go back to the one you
 came from. One you replied to, one still working, and one waiting on you to allow something are
 left as they are, and holding *Send* sends and goes straight on. A PR's page has the same bar over
 its review box: going on from a review you haven't given brings it round again later, or snoozes
