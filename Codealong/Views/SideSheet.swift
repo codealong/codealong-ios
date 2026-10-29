@@ -174,7 +174,9 @@ struct SideSheet: View {
                 Label("Close", systemImage: "xmark.circle")
                 Text("Kept on \(mac) to read. What you ask next starts another")
             }
-            .disabled(!online)
+            // Not while a question is on its way, which would go on in what's closed, or start
+            // another that knows none of it.
+            .disabled(!online || asking)
         } else if open != nil {
             Button("Back to the open one", systemImage: "arrow.uturn.backward") { shown = .open }
         }
@@ -183,7 +185,7 @@ struct SideSheet: View {
         }
         if case .past(let id) = showing {
             Button("Delete", systemImage: "trash", role: .destructive) { Task { await forget(id) } }
-                .disabled(!online)
+                .disabled(!online || asking)
         }
     }
 
