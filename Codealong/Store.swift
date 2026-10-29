@@ -45,10 +45,12 @@ final class Store {
     /// left out of what's next until it waits on you anew, since the Mac's feed takes a moment to
     /// show an answer.
     private var handled: [String: Int64] = [:]
-    /// Where each session and PR stood the last time it waited on you, by its key in the list's
-    /// path: answered, a page can stop waiting before you go on from it, and what's next goes on
-    /// from where it stood rather than from the top (the core's `leftAfter`).
-    @ObservationIgnored private var was: [String: QueuePlace] = [:]
+    /// Where the page shown stood the last time it waited on you (queue.ts `QueueView.was`):
+    /// answered, it can stop waiting before you go on from it, and what's next goes on from where
+    /// it stood rather than from the top (the core's `leftAfter`). Only the page shown's, as the
+    /// Mac keeps only the shown session's: one opened from the list that waited once, and doesn't
+    /// now, goes from the top.
+    @ObservationIgnored private var was: QueuePlace?
     /// The page gone on from to the end of what waits (`EndView`), as it was then, which the end
     /// doesn't offer straight back: marked seen, it waits until its Mac has that, and skipped, it
     /// would come round at once. It's offered again once it changes, once it's left what waits and
@@ -79,7 +81,9 @@ final class Store {
     var sendProblems: [String: String] = [:]
     /// The session shown now, if one is, or a PR's page (its key after `PrView.prefix`): a message
     /// that fails elsewhere is said in an alert.
-    var showing: String?
+    var showing: String? {
+        didSet { keepPlace() }
+    }
     /// Sessions whose messages are going now: one at a time each, so they arrive in order.
     @ObservationIgnored private var pumping: Set<String> = []
 
@@ -126,9 +130,7 @@ final class Store {
             prs = snap.prs
             reviews = reviewsWaiting()
         }
-        if waits {
-            for w in waitingNow(project: "") { was[w.key] = w.place }
-        }
+        if waits { keepPlace() }
         if snap.projects != projects { projects = snap.projects }
         if snap.prProjects != prProjects { prProjects = snap.prProjects }
         if snap.github != github { github = snap.github }
@@ -278,7 +280,13 @@ final class Store {
         }
         let all = waitingNow(project: project)
         let byKey = Dictionary(all.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
-        return leftAfter(places: all.map(\.place), key: key, handled: handled, was: was[key]).compactMap { byKey[$0] }
+        return leftAfter(places: all.map(\.place), key: key, handled: handled, was: was).compactMap { byKey[$0] }
+    }
+
+    /// Keeps where the page shown stands while it waits on you (`was`).
+    private func keepPlace() {
+        guard let showing, let shown = waitingNow(project: "").first(where: { $0.key == showing }) else { return }
+        was = shown.place
     }
 
     /// What waits on you in `project` (empty for all), in no order: the sessions that need you or
