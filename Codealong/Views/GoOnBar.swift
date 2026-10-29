@@ -194,6 +194,7 @@ struct GoOnBar<Choices: View>: View {
     var body: some View {
         // Next goes under what the swipe does when the line can't hold both in full, as a long
         // snooze's can't: a menu's label otherwise gave up its room, and its words were cut short.
+        // Fixed beside Next, it stays on one line.
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -255,10 +256,13 @@ struct GoOnBar<Choices: View>: View {
         }
     }
 
+    /// On one line beside Next; wrapping under it when that line can't hold it, as at a large text
+    /// size, so a snooze's time isn't cut off.
     private func swipeWords(menu: Bool) -> some View {
-        HStack(spacing: 6) {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
             Image(systemName: going.symbol)
             Text(going.words)
+                .multilineTextAlignment(.leading)
             if menu {
                 Image(systemName: "chevron.down")
                     .font(.caption.weight(.semibold))
@@ -266,7 +270,6 @@ struct GoOnBar<Choices: View>: View {
             }
         }
         .font(.subheadline.weight(.semibold))
-        .lineLimit(1)
         .contentShape(.rect)
     }
 
