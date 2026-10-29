@@ -1,13 +1,21 @@
 import SwiftUI
 
-/// What going on to the next session that waits on you does to the one you go on from: a swipe
-/// across the conversation, Next over the box, Go to next in the menu and ⌘] all do it. You pick it
-/// over the reply box for the session you're on: each starts at Mark as seen, what going on did
-/// before there was a choice, so marking one done or snoozing one doesn't carry over to the next.
-/// Leave as it is goes on without marking it anything, so one that asks you something stays in
-/// Needs you and comes round again after the rest. A snooze runs for a time the menus offer, as the
-/// session's own Snooze does (`Snooze`).
-enum SwipeOn: Hashable {
+/// What a tap on the bar over the box can do to a page on the way on, besides what a swipe does to
+/// it (`SwipeOn` on a session's screen, `ReviewSwipeOn` on a PR's page).
+protocol GoOnPick: Hashable {
+    var label: String { get }
+    var symbol: String { get }
+    /// The time it snoozes to: it goes under Snooze in the bar's menu.
+    var time: Snooze.For? { get }
+}
+
+/// What going on from a session's screen to the next that waits on you can do to it. A swipe, Go
+/// to next in the menu and ⌘] mark it seen, as going on always did; a tap on the bar over the box
+/// offers the rest, and the one picked is done as it goes on. Leave as it is goes on without
+/// marking it anything, so one that asks you something stays in Needs you and comes round again
+/// after the rest. A snooze runs for a time the menus offer, as the session's own Snooze does
+/// (`Snooze`), or for one picked.
+enum SwipeOn: GoOnPick {
     case keep, seen, done, archive
     case snooze(Snooze.For)
 
@@ -32,25 +40,24 @@ enum SwipeOn: Hashable {
         }
     }
 
-    /// The bar's menu on a session's screen: what to mark it, then its times to snooze to, as the
-    /// session's own menu has them.
-    @ViewBuilder
-    static func picker(_ pick: Binding<SwipeOn>) -> some View {
-        Picker("When you go on to the next", selection: pick) {
-            ForEach([SwipeOn.keep, .seen, .done, .archive], id: \.self) { c in
-                Label(c.label, systemImage: c.symbol).tag(c)
-            }
+    var time: Snooze.For? {
+        if case .snooze(let time) = self { return time }
+        return nil
+    }
+
+    /// What the bar's menu offers besides marking it seen, as it is now (`Going.offered`).
+    static func offers(row: SessionRow?, pending: Pending?, acted: Bool) -> [SwipeOn] {
+        Going.offered([.keep, .done, .archive] + Snooze.For.offered.map(SwipeOn.snooze), besides: .seen) {
+            Going.of($0, row: row, pending: pending, acted: acted)
         }
-        .pickerStyle(.inline)
-        snoozes(pick) { SwipeOn.snooze($0) }
     }
 }
 
-/// What going on from a PR waiting on your review does to it, picked over its review box for the
-/// PR you're on, each starting at the first: it comes round again after the rest, as the Mac's ⌘E
-/// skips it, or your review of it is snoozed, as its Snooze review does, for a time the menus
-/// offer (`Snooze`).
-enum ReviewSwipeOn: Hashable {
+/// What going on from a PR waiting on your review can do to it: a swipe skips it, so it comes
+/// round again after the rest, as the Mac's ⌘E does, and a tap on the bar offers snoozing your
+/// review of it instead, as its Snooze review does, for a time the menus offer (`Snooze`) or one
+/// picked.
+enum ReviewSwipeOn: GoOnPick {
     case later
     case snooze(Snooze.For)
 
@@ -66,38 +73,30 @@ enum ReviewSwipeOn: Hashable {
 
     var symbol: String { self == .later ? Going.later.symbol : "moon.zzz" }
 
-    /// The bar's menu on a PR's page.
-    @ViewBuilder
-    static func picker(_ pick: Binding<ReviewSwipeOn>) -> some View {
-        Picker("When you go on to the next", selection: pick) {
-            Label(ReviewSwipeOn.later.label, systemImage: ReviewSwipeOn.later.symbol).tag(ReviewSwipeOn.later)
-        }
-        .pickerStyle(.inline)
-        snoozes(pick) { ReviewSwipeOn.snooze($0) }
+    var time: Snooze.For? {
+        if case .snooze(let time) = self { return time }
+        return nil
+    }
+
+    /// What the bar's menu offers besides coming back to it later, as it is now.
+    static func offers(pr: PrRow?, acted: Bool) -> [ReviewSwipeOn] {
+        Going.offered(Snooze.For.offered.map(ReviewSwipeOn.snooze), besides: .later) { Going.of($0, pr: pr, acted: acted) }
     }
 }
 
-/// Snooze in the bar's menu, opening on the times a snooze can run to now, as the Snooze in a
-/// session's or a PR's own menu does; the one picked is checked.
-private func snoozes<Pick: Hashable>(_ pick: Binding<Pick>, _ as: @escaping (Snooze.For) -> Pick) -> some View {
-    Menu("Snooze", systemImage: "moon.zzz") {
-        Picker("Snooze", selection: pick) {
-            ForEach(Snooze.For.allCases.filter { $0.choice() != nil }, id: \.self) { time in
-                Text(time.picked().label).tag(`as`(time))
-            }
-        }
-        .pickerStyle(.inline)
-    }
+extension Snooze.For {
+    /// The times the menus offer now, in their order.
+    static var offered: [Snooze.For] { allCases.filter { $0.choice() != nil } }
 }
 
-/// What going on from a page does to what it shows: what you picked (`SwipeOn` on a session's
-/// screen, `ReviewSwipeOn` on a PR's page), where that applies. A session you've replied to or
-/// answered here is left to the turn you gave it, one at work is left to its work (Mark as done
-/// would only be held by it), and one that waits on you to allow a call or answer its questions
-/// comes round again after the rest, as it did before there was a choice; a snooze picked for one
-/// is done whatever it waits on. A PR you reviewed here, or one that doesn't wait on your review, is
-/// left as it is.
-enum Going: Equatable {
+/// What going on from a page does to what it shows: what a swipe does, or what was picked from the
+/// bar's menu (`SwipeOn` on a session's screen, `ReviewSwipeOn` on a PR's page), where that
+/// applies. A session you've replied to or answered here is left to the turn you gave it, one at
+/// work is left to its work (Mark as done would only be held by it), and one that waits on you to
+/// allow a call or answer its questions comes round again after the rest, as it did before there
+/// was a choice; a snooze picked for one is done whatever it waits on. A PR you reviewed here, or
+/// one that doesn't wait on your review, is left as it is.
+enum Going: Hashable {
     case seen, done, archive
     /// Nothing more is done to it: you've replied here, or there's nothing in it to mark seen.
     case on
@@ -159,125 +158,117 @@ enum Going: Equatable {
         }
     }
 
-    /// What going on does to this one, for VoiceOver on Next.
-    var spoken: String? {
+    /// It in the bar's menu, where picking it goes on.
+    var title: String {
         switch self {
-        case .seen: "Marks this one seen"
-        case .done: "Marks this one done"
-        case .archive: "Archives this one"
-        case .on: nil
-        case .working: "Leaves this one to its work"
-        case .later: "This one comes round again after the rest"
-        case .snooze(let phrase): "Snoozes this one \(phrase)"
+        case .seen: SwipeOn.seen.label
+        case .done: SwipeOn.done.label
+        case .archive: SwipeOn.archive.label
+        case .on, .working: "Go on"
+        case .later: "Come back to it later"
+        case .snooze(let phrase): "Snooze \(phrase)"
+        }
+    }
+
+    /// Of `picks`, what the bar's menu offers besides `swipe`, what a swipe does: the ones that do
+    /// something else to it, each once, in their order. Mark as done or Archive on one at work, or
+    /// any pick on one you've replied to here, would only go on as the swipe does.
+    static func offered<Pick>(_ picks: [Pick], besides swipe: Pick, _ going: (Pick) -> Going) -> [Pick] {
+        var does = [going(swipe)]
+        return picks.filter { pick in
+            let it = going(pick)
+            guard it != .working, !does.contains(it) else { return false }
+            does.append(it)
+            return true
         }
     }
 }
 
 /// Over a session's reply box or a PR's review box while you go through what waits on you: what a
-/// swipe does to this one, first and largest, with the menu that picks it (`SwipeOn`,
-/// `ReviewSwipeOn`); under it, how many more wait on you; and Next, or on the last one Finish,
-/// which a tap goes on with as the swipe does. It doesn't name the next one: the swipe slides it
-/// in, and its title only took the room from what the swipe does.
-struct GoOnBar<Choices: View>: View {
+/// swipe does to this one, and how many more wait on you. The whole bar is one control: a tap
+/// opens a menu of what can be done to it on the way, what a swipe does nearest, and picking one
+/// does it and goes on, to the next or on the last to the end of what waits. With nothing else to
+/// do to it (you've replied here, say), a tap goes on as a swipe does.
+struct GoOnBar<Pick: GoOnPick>: View {
     let next: Onward
     /// How many wait on you after this one, the next among them.
     let left: Int
+    /// What a swipe does to this one.
     let going: Going
-    /// What's picked now, for VoiceOver.
-    let picked: String
-    /// What going on does can be picked here: the end of what waits has nothing to do to itself.
-    var picks = true
-    /// The menu's choices.
-    @ViewBuilder let choices: () -> Choices
-    let action: () -> Void
+    /// What else can be done to it on the way, in the menu's order (`Going.offered`).
+    var offers: [Pick] = []
+    /// Pick a time… under Snooze: asks for a time to snooze it to, then goes on.
+    var pickTime: (() -> Void)?
+    /// Does a pick to it and goes on; nil for what a swipe does.
+    let go: (Pick?) -> Void
+    @ScaledMetric(relativeTo: .subheadline) private var symbolWidth: CGFloat = 22
 
     var body: some View {
-        // Next goes under what the swipe does when the line can't hold both in full, as a long
-        // snooze's can't: a menu's label otherwise gave up its room, and its words were cut short.
-        // Fixed beside Next, it stays on one line.
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    choice.fixedSize()
-                    countText
+        Group {
+            if offers.isEmpty {
+                Button { go(nil) } label: { pill(menu: false) }
+                    .buttonStyle(.plain)
+                    .accessibilityHint(next == .end ? "Goes on to the end of what waits on you" : "Goes on to the next")
+            } else {
+                Menu {
+                    menu
+                } label: {
+                    pill(menu: true)
                 }
-                Spacer(minLength: 8)
-                nextButton
+                // What a swipe does nearest the finger, the menu opening up from the bar.
+                .menuOrder(.priority)
+                // A menu's label takes the tint: this one reads as the bar's words.
+                .tint(.primary)
+                .accessibilityHint("Opens what to do to it on the way to the next")
             }
+        }
+        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22))
+    }
+
+    @ViewBuilder
+    private var menu: some View {
+        Button(going.title, systemImage: going.symbol) { go(nil) }
+        Divider()
+        ForEach(offers.filter { $0.time == nil }, id: \.self) { pick in
+            Button(pick.label, systemImage: pick.symbol) { go(pick) }
+        }
+        let snoozes = offers.filter { $0.time != nil }
+        if !snoozes.isEmpty {
+            Menu("Snooze", systemImage: "moon.zzz") {
+                ForEach(snoozes, id: \.self) { pick in
+                    Button(pick.time?.picked().label ?? pick.label) { go(pick) }
+                }
+                if let pickTime {
+                    Button("Pick a time…", systemImage: "calendar", action: pickTime)
+                }
+            }
+        }
+    }
+
+    private func pill(menu: Bool) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: going.symbol)
+                .font(.subheadline.weight(.semibold))
+                .frame(width: symbolWidth)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
-                choice
-                HStack(spacing: 8) {
-                    countText
-                    Spacer(minLength: 8)
-                    nextButton
-                }
+                Text(going.words)
+                    .font(.subheadline.weight(.semibold))
+                Text(count)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
+            .multilineTextAlignment(.leading)
+            Spacer(minLength: 8)
+            // Up, where the menu opens; on, where a tap goes on.
+            Image(systemName: menu ? "chevron.up" : "chevron.forward")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        .glassEffect(.regular, in: .rect(cornerRadius: 22))
-    }
-
-    private var nextButton: some View {
-        Button(action: action) {
-            HStack(spacing: 4) {
-                Text(next == .end ? "Finish" : "Next")
-                    .font(.subheadline.weight(.semibold))
-                Image(systemName: "chevron.forward")
-                    .font(.footnote.weight(.semibold))
-            }
-            .foregroundStyle(Color.accentColor)
-            .padding(.vertical, 6)
-            .padding(.leading, 8)
-            .contentShape(.rect)
-        }
-        .buttonStyle(.plain)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(next == .end ? "Finish" : "Next")
-        .accessibilityHint([going.spoken, count].compactMap { $0 }.joined(separator: ". "))
-    }
-
-    /// What a swipe does here, and the menu that picks what going on does.
-    @ViewBuilder
-    private var choice: some View {
-        if picks {
-            Menu {
-                choices()
-            } label: {
-                swipeWords(menu: true)
-            }
-            // A menu's label takes the tint, and this is what the bar is for, so it's drawn as
-            // text is rather than as a button.
-            .tint(.primary)
-            .accessibilityLabel(going.words)
-            .accessibilityHint("Picks what going on to the next does. Now: \(picked)")
-        } else {
-            swipeWords(menu: false)
-        }
-    }
-
-    /// On one line beside Next; wrapping under it when that line can't hold it, as at a large text
-    /// size, so a snooze's time isn't cut off.
-    private func swipeWords(menu: Bool) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Image(systemName: going.symbol)
-            Text(going.words)
-                .multilineTextAlignment(.leading)
-            if menu {
-                Image(systemName: "chevron.down")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .font(.subheadline.weight(.semibold))
-        .contentShape(.rect)
-    }
-
-    private var countText: some View {
-        Text(count)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
+        .contentShape(.rect(cornerRadius: 22))
     }
 
     /// How many wait on you after this one.

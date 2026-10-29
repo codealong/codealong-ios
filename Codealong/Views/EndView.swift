@@ -194,7 +194,7 @@ private struct EndFoot: View {
                 Text(said).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
             }
             if let next = offer.first {
-                GoOnBar(next: .to(next), left: offer.count, going: .on, picked: "", picks: false, choices: { EmptyView() }) { goOn(next) }
+                GoOnBar<SwipeOn>(next: .to(next), left: offer.count, going: .on) { _ in goOn(next) }
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }

@@ -8,12 +8,12 @@ import SwiftUI
 /// Mac.
 ///
 /// It goes along what waits on you as a session's screen does, PRs waiting on your review among
-/// the sessions, in the Mac's order (`Store.queue`): a bar over the review box names what's next
-/// and says what going on to it does to this PR, and a swipe across the page, or a tap on the bar,
-/// goes on; a swipe the other way goes back to what you came from. Going on from one waiting on
-/// your review skips it, so it comes round again after the rest, as the Mac's ⌘E does, or snoozes
-/// your review of it, as the bar's menu picks for this PR (`ReviewSwipeOn`). One you reviewed here
-/// goes on as it is.
+/// the sessions, in the Mac's order (`Store.queue`): a bar over the review box says what a swipe
+/// does to this PR and how many more wait, and a swipe across the page goes on; a swipe the other
+/// way goes back to what you came from. Going on from one waiting on your review skips it, so it
+/// comes round again after the rest, as the Mac's ⌘E does; a tap on the bar offers snoozing your
+/// review of it instead, and goes on as it does it (`ReviewSwipeOn`). One you reviewed here goes on
+/// as it is.
 struct PrView: View {
     /// What a PR's place in the list's path starts with, before its key.
     nonisolated static let prefix = "pr:"
@@ -26,9 +26,6 @@ struct PrView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The inbox's project: what's next stays in it.
     @AppStorage("project") private var project = ""
-    /// What going on to the next does to this PR, as picked over the box: for this PR only, so
-    /// each starts at coming back to it later.
-    @State private var reviewOn = ReviewSwipeOn.later
     @State private var detail: PrDetail?
     @State private var problem: String?
     @State private var loading = false
@@ -63,8 +60,8 @@ struct PrView: View {
     private var after: [Waiting] { store.queue(after: page, project: project) }
     /// Where going on goes: the next, or on the last, the end of what waits.
     private var onward: Onward? { Onward.of(after, goingThrough: goingThrough) }
-    /// What going on to the next does to this one, as the bar over the box says it.
-    private var going: Going { Going.of(reviewOn, pr: pr, acted: acted) }
+    /// What going on to the next with `pick` does to this one.
+    private func going(_ pick: ReviewSwipeOn) -> Going { Going.of(pick, pr: pr, acted: acted) }
     /// Its Mac is connected.
     private var macOnline: Bool { store.devices.first { $0.key == pr?.device }?.online == true }
     /// Your review as you've written it and not sent.
@@ -135,7 +132,7 @@ struct PrView: View {
                 VStack(spacing: 8) {
                     // Not while you write your review: the box needs the room, and what's next waits.
                     if let onward, !drafted {
-                        GoOnBar(next: onward, left: after.count, going: going, picked: reviewOn.label, choices: { ReviewSwipeOn.picker($reviewOn) }) { goOn(to: onward) }
+                        GoOnBar(next: onward, left: after.count, going: going(.later), offers: ReviewSwipeOn.offers(pr: pr, acted: acted), pickTime: pickSnooze) { goOn(to: onward, doing: $0 ?? .later) }
                             .padding(.horizontal)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
@@ -261,18 +258,33 @@ struct PrView: View {
         }
     }
 
-    /// Goes on to `next` as a swipe does, doing to this PR what the bar says. Snoozing waits on its
-    /// Mac, which the swipe doesn't: it goes after the rest meanwhile, and leaves what waits on you
-    /// once its Mac has it snoozed; it isn't kept as dealt with, so it's back when the snooze ends,
-    /// as the Mac's queue has it. One its Mac didn't snooze says why (`Store.snoozeLater`).
-    private func goOn(to next: Onward, speed: CGFloat = 0) {
+    /// Goes on to `next`, doing `pick` to this PR: coming back to it later, as a swipe does, or a
+    /// snooze picked from the bar's menu, where that applies (`Going`).
+    private func goOn(to next: Onward, doing pick: ReviewSwipeOn = .later, speed: CGFloat = 0) {
         guard swipe.to == nil else { return }
-        if case .snooze = going, let pr, let snooze = reviewOn.snoozeChoice() {
-            store.snoozeLater(pr, until: snooze.until)
-            moveOn(to: next, outcome: "Snoozed your review of #\(pr.number) until \(Snooze.words(snooze.until)).", speed: speed)
+        if case .snooze = going(pick), let choice = pick.snoozeChoice() {
+            snooze(until: choice.until, goingOn: next, speed: speed)
         } else {
             moveOn(to: next, speed: speed)
         }
+    }
+
+    /// Pick a time… in the bar's menu: snoozes your review until the time picked, then goes on.
+    private func pickSnooze() {
+        guard let pr else { return }
+        snoozing = SnoozePick(id: pr.key, title: "Snooze review") { until in
+            if let onward { snooze(until: until, goingOn: onward) }
+        }
+    }
+
+    /// Snoozes your review of it until `until` as it goes on to `next`. That waits on its Mac, which
+    /// going on doesn't: it goes after the rest meanwhile, and leaves what waits on you once its Mac
+    /// has it snoozed; it isn't kept as dealt with, so it's back when the snooze ends, as the Mac's
+    /// queue has it. One its Mac didn't snooze says why (`Store.snoozeLater`).
+    private func snooze(until: Date, goingOn next: Onward, speed: CGFloat = 0) {
+        guard swipe.to == nil, let pr else { return }
+        store.snoozeLater(pr, until: until)
+        moveOn(to: next, outcome: "Snoozed your review of #\(pr.number) until \(Snooze.words(until)).", speed: speed)
     }
 
     /// Shows `next` in this one's place, saying there how this one went once you've acted here.
@@ -370,7 +382,7 @@ struct PrGlance: View {
                     // As its page will have it: gone on to, it's part of what you're going through.
                     let onward = Onward.of(after, goingThrough: from != nil || store.goingThrough(PrView.prefix + key, project: project))
                     if let next = onward, (store.drafts[PrView.prefix + key] ?? "").isEmpty {
-                        GoOnBar(next: next, left: after.count, going: Going.of(.later, pr: pr, acted: false), picked: ReviewSwipeOn.later.label, choices: { EmptyView() }) {}
+                        GoOnBar(next: next, left: after.count, going: Going.of(.later, pr: pr, acted: false), offers: ReviewSwipeOn.offers(pr: pr, acted: false)) { _ in }
                             .padding(.horizontal)
                     }
                     ReviewBoxView(pr: pr, draft: detail?.draft, reviews: detail?.reviews ?? [], read: detail != nil, whyNot: whyNot, said: said) { _ in }

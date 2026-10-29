@@ -6,13 +6,13 @@ import SwiftUI
 ///
 /// It also works through what waits on you, as the Mac's session panel does with ⌘⏎, PRs waiting
 /// on your review among the sessions, in the Mac's order (`Store.queue`): while something else
-/// waits on you, a bar over the box names it and says what going on to it does to this one, and a
-/// swipe or a tap on it goes on, to a PR's page as to a session's screen; on the last, it offers
-/// Finish instead. Holding Send sends and goes on at once. Going on marks it seen, so a turn that ended leaves Your turn and a reply that
-/// asks you something leaves Needs you, as it always did, unless the bar's menu picks leaving it as
-/// it is, marking it done, archiving it or snoozing it instead, for this session only (`SwipeOn`). One you replied to here, or one at work, is
-/// left as it is, and one skipped while it waits on a call to allow comes round again after the
-/// rest (`Going`).
+/// waits on you, a bar over the box says what a swipe does to this one and how many more wait, and
+/// a swipe goes on, to a PR's page as to a session's screen, or on the last to the end of what
+/// waits. Holding Send sends and goes on at once. Going on marks it seen, so a turn that ended
+/// leaves Your turn and a reply that asks you something leaves Needs you, as it always did; a tap on
+/// the bar offers leaving it as it is, marking it done, archiving it or snoozing it instead, and
+/// goes on as it does it (`SwipeOn`). One you replied to here, or one at work, is left as it is, and
+/// one skipped while it waits on a call to allow comes round again after the rest (`Going`).
 ///
 /// The box says how a message gets there, as its Mac says (typed into its terminal, its
 /// background job, a message from Codealong), once you write: until then it's folded to a line
@@ -50,9 +50,9 @@ struct SessionView: View {
     @Environment(Store.self) private var store
     /// The inbox's project: what's next stays in it.
     @AppStorage("project") private var project = ""
-    /// What going on to the next does to this one, as picked over the box: for this session only,
-    /// so each starts at marking it seen.
-    @State private var swipeOn = SwipeOn.seen
+    /// What going on does to this one: marking it seen, as a swipe does, unless the bar's menu
+    /// picked something else to do as it went on.
+    @State private var doing = SwipeOn.seen
     /// You replied or answered here: going on leaves it to the turn you gave it.
     @State private var acted = false
     /// You're going through what waits on you here (`Store.goingThrough`), as you were once: with
@@ -168,7 +168,7 @@ struct SessionView: View {
 
     var body: some View {
         // The screen follows a swipe, and what it goes to comes in beside it.
-        Paged(swipe: swipe, key: key, next: onward, back: before, leaves: [.done, .archive].contains(going), ready: opened) {
+        Paged(swipe: swipe, key: key, next: onward, back: before, leaves: [.done, .archive].contains(going(doing)), ready: opened) {
             page.environment(\.imageMac, row?.device)
         }
         // What's next is in the menu and a swipe away; on a keyboard, ⌘] as on the Mac.
@@ -527,7 +527,7 @@ struct SessionView: View {
             }
             // Not while you write here: the box needs the room, and what's next waits.
             if let onward, draft.isEmpty && attached.isEmpty {
-                GoOnBar(next: onward, left: after.count, going: going, picked: swipeOn.label, choices: { SwipeOn.picker($swipeOn) }) { goOn(to: onward) }
+                GoOnBar(next: onward, left: after.count, going: going(.seen), offers: SwipeOn.offers(row: row, pending: pending, acted: replied), pickTime: pickSnooze) { goOn(to: onward, doing: $0 ?? .seen) }
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
             if let suggestions = row?.suggestions {
@@ -1348,10 +1348,21 @@ struct SessionView: View {
         withAnimation(.snappy) { acted = true }
     }
 
-    /// What going on to the next does to this one, as the bar over the box says it.
-    private var going: Going { Going.of(swipeOn, row: row, pending: pending, acted: acted || !(store.outgoing[key] ?? []).isEmpty) }
+    /// What going on to the next with `pick` does to this one.
+    private func going(_ pick: SwipeOn) -> Going { Going.of(pick, row: row, pending: pending, acted: replied) }
 
-    /// Goes on to `next` as a swipe does, doing to this one what the bar says. Marked seen as it
+    /// You replied or answered here, or a message to it is on its way: going on leaves it to that.
+    private var replied: Bool { acted || !(store.outgoing[key] ?? []).isEmpty }
+
+    /// Pick a time… in the bar's menu: snoozes it until the time picked, then goes on.
+    private func pickSnooze() {
+        snoozing = SnoozePick(id: key, title: "Snooze") { until in
+            if let onward { snooze(until: until, goingOn: onward) }
+        }
+    }
+
+    /// Goes on to `next`, doing `pick` to this one: marking it seen, as a swipe does, or what was
+    /// picked from the bar's menu, where that applies (`Going`). Marked seen as it
     /// slides, as it always was (`slide`), it comes round after the rest until its Mac's feed has
     /// it seen, so one whose Mac didn't take that comes round again. Marking it done or archiving it waits on
     /// its Mac, which the swipe doesn't: it's out of what's next meanwhile, how it went is said on
@@ -1359,9 +1370,10 @@ struct SessionView: View {
     /// (`Store.doneLater`, `Store.archiveLater`). Done marks it seen on its Mac, so the slide
     /// doesn't: one that work under way held stays as it was, rather than leaving Your turn
     /// though it wasn't done.
-    private func goOn(to next: Onward, speed: CGFloat = 0) {
+    private func goOn(to next: Onward, doing pick: SwipeOn = .seen, speed: CGFloat = 0) {
         guard swipe.to == nil else { return }
-        switch going {
+        doing = pick
+        switch going(pick) {
         case .done:
             store.dealtWith(key)
             store.doneLater(key, title: title)
@@ -1371,15 +1383,20 @@ struct SessionView: View {
             store.archiveLater(key, title: title)
             moveOn(to: next, outcome: "Archived “\(title)”.", speed: speed)
         case .snooze:
-            guard case .snooze(let time) = swipeOn else { return moveOn(to: next, speed: speed) }
-            let until = time.picked().until
-            store.snoozeLater(key, title: title, until: until)
-            // Left as it was: it comes back as Your turn when the snooze ends.
-            moveOn(to: next, outcome: "Snoozed “\(title)” until \(Snooze.words(until)).", speed: speed, seen: false)
+            guard let time = pick.time else { return moveOn(to: next, speed: speed) }
+            snooze(until: time.picked().until, goingOn: next, speed: speed)
         case .seen, .on, .working, .later:
             // Left as it is, it isn't marked seen as it slides either.
-            moveOn(to: next, speed: speed, seen: swipeOn != .keep)
+            moveOn(to: next, speed: speed, seen: pick != .keep)
         }
+    }
+
+    /// Snoozes it until `until` as it goes on to `next`, leaving it as it was: it comes back as Your
+    /// turn when the snooze ends.
+    private func snooze(until: Date, goingOn next: Onward, speed: CGFloat = 0) {
+        guard swipe.to == nil else { return }
+        store.snoozeLater(key, title: title, until: until)
+        moveOn(to: next, outcome: "Snoozed “\(title)” until \(Snooze.words(until)).", speed: speed, seen: false)
     }
 
     /// Says how what a swipe did to the sessions gone on from went, once their Macs have answered,
@@ -2749,7 +2766,8 @@ struct SessionGlance: View {
                 Text(said).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
             }
             if let next = onward, !open {
-                GoOnBar(next: next, left: after.count, going: Going.of(.seen, row: row, pending: pending, acted: !(store.outgoing[key] ?? []).isEmpty), picked: SwipeOn.seen.label, choices: { EmptyView() }) {}
+                let replied = !(store.outgoing[key] ?? []).isEmpty
+                GoOnBar(next: next, left: after.count, going: Going.of(.seen, row: row, pending: pending, acted: replied), offers: SwipeOn.offers(row: row, pending: pending, acted: replied)) { _ in }
             }
             if let suggestions = row?.suggestions {
                 SuggestedRepliesView(suggestions: suggestions, blocked: canAct && pending?.cannot == nil ? nil : why ?? "It waits on you where it runs: answer that there first") { _ in } edit: { _ in } dismiss: {}

@@ -62,14 +62,14 @@ inside Codealong on your Mac streams its reply as it's written.
 **Work through what's waiting.** Sessions that need you, PRs waiting on your review and finished
 turns come one after another, in the Mac's order: each kind the longest waiting first, and the ones
 you go on from come round again after the rest. While something else waits on you, a bar over the
-reply box says how many more do and what going on does to the session you're reading: marks it seen,
-or, picked from the bar's menu for that session alone, leaves it as it is (to come round again
-after the rest), marks it done, archives it, or snoozes it for a while. Swipe left (or tap *Next*) to go on and do it, and right to go back to the one you
-came from. One you replied to, one still working, and one waiting on you to allow something are
-left as they are, and holding *Send* sends and goes straight on. A PR's page has the same bar over
-its review box: going on from a review you haven't given brings it round again later, or snoozes
-it, picked there for that PR alone. The next one is read ahead, so it shows at once. On the last
-one the bar says nothing else waits, and swiping (or *Finish*) goes on to a page that says so,
+reply box says how many more do and what swiping left does to the session you're reading: marks it
+seen and goes on. Tap the bar to do something else instead, and go on as you pick it: leave it as
+it is (to come round again after the rest), mark it done, archive it, or snooze it for a while.
+Swipe right to go back to the one you came from. One you replied to, one still working, and one
+waiting on you to allow something are left as they are, and holding *Send* sends and goes straight
+on. A PR's page has the same bar over its review box: swiping on from a review you haven't given
+brings it round again later, and a tap on the bar snoozes it instead. The next one is read ahead,
+so it shows at once. On the last one the bar says nothing else waits, and going on goes to a page that says so,
 with how many sessions are working; whatever comes to wait on you while it's open shows up there,
 a swipe away. Replies an
 agent suggested for a session (a supervisor going over what waits on you, with `codealong session
