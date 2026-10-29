@@ -486,7 +486,7 @@ struct SessionView: View {
                         Task { await answer(pending, choice) }
                     }
                 } else {
-                    QuestionsCard(pending: pending, account: row?.account ?? "It", hosted: row?.hosted == true, canAct: canAct, why: whyNot, answering: answering) { answers in
+                    QuestionsCard(pending: pending, account: row?.account ?? "It", hosted: row?.hosted == true, canAct: canAct, why: whyNot, answering: answering, writing: typing) { answers in
                         Task { await answer(pending, .allow, questions: answers) }
                     } decline: {
                         Task { await answer(pending, .deny) }
@@ -1478,7 +1478,8 @@ private struct ApprovalCard: View {
 /// goes on to the next without an answer, and the button says Next until none is left; your picks
 /// go back as its answer, as the Mac's panel sends them. Decline stops the turn. It starts folded
 /// to a line of what it asks, so the conversation it came with can be read above it: open, a long
-/// question and its choices covered most of the screen. A tap opens it, and folds it again.
+/// question and its choices covered most of the screen. A tap opens it, and folds it again, as
+/// starting to write in the reply box does.
 private struct QuestionsCard: View {
     let pending: Pending
     let account: String
@@ -1486,6 +1487,8 @@ private struct QuestionsCard: View {
     let canAct: Bool
     let why: String?
     let answering: Choice?
+    /// The reply box has the keyboard.
+    var writing = false
     let answer: ([QuestionAnswer]) -> Void
     let decline: () -> Void
     @State private var picks: [String: [String]] = [:]
@@ -1528,6 +1531,11 @@ private struct QuestionsCard: View {
             }
         }
         .modifier(WaitingCard())
+        // Writing in the box below says something else instead, and with the keyboard up the box
+        // and the conversation need the room it took open: it folds, and a tap opens it again.
+        .onChange(of: writing) { _, now in
+            if now { withAnimation(.snappy) { open = false } }
+        }
         // Another set of questions starts folded, at its first, with nothing picked.
         .onChange(of: pending.id) { _, _ in
             open = false
@@ -1935,8 +1943,13 @@ private extension ScrollGeometry {
     /// conversation at its end was scrolled up, and new messages didn't keep it there.
     var atEnd: Bool { visibleRect.maxY - contentInsets.bottom >= contentSize.height - 60 }
     /// Scrolled far enough up that the newest is out of sight: more than half a screen, so reading
-    /// the last reply a little way up doesn't bring the button over it.
-    var scrolledUp: Bool { contentSize.height - (visibleRect.maxY - contentInsets.bottom) > containerSize.height / 2 }
+    /// the last reply a little way up doesn't bring the button over it. Not while what's over the
+    /// box leaves the conversation no room for it, as an open question with the keyboard up can:
+    /// the button sat over the session's name in the navigation bar.
+    var scrolledUp: Bool {
+        visibleRect.height - contentInsets.top - contentInsets.bottom > 100
+            && contentSize.height - (visibleRect.maxY - contentInsets.bottom) > containerSize.height / 2
+    }
 }
 
 /// Where one of your prompts is against the top of what's in view.
@@ -3116,13 +3129,15 @@ private struct ModelMenu: View {
 
 /// As tall as the scroll view in it needs, up to `most`, past which it scrolls. Worked out in the
 /// layout it's drawn in, so it's never drawn at another height first, as a height measured once
-/// drawn was for a frame when a swipe slid its session in.
+/// drawn was for a frame when a swipe slid its session in. It's no taller than it's offered
+/// either: with the keyboard up, an open question over the reply box was taller than the room
+/// between the keyboard and the top, and went up under the navigation bar, its chevron with it.
 private struct UpTo: Layout {
     let most: CGFloat
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let needs = subviews.first?.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil)) ?? .zero
-        return CGSize(width: proposal.width ?? needs.width, height: min(needs.height, most))
+        return CGSize(width: proposal.width ?? needs.width, height: min(needs.height, most, proposal.height ?? .infinity))
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
