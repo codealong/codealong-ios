@@ -518,7 +518,7 @@ struct SessionView: View {
             }
             // Not while you write here: the box needs the room, and what's next waits.
             if let onward, draft.isEmpty && attached.isEmpty {
-                GoOnBar(next: onward, more: after.count - 1, showDevice: store.devices.count > 1, showProject: project.isEmpty, going: going, picked: swipeOn.label, choices: { SwipeOn.picker($swipeOn) }) { goOn(to: onward) }
+                GoOnBar(next: onward, left: after.count, going: going, picked: swipeOn.label, choices: { SwipeOn.picker($swipeOn) }) { goOn(to: onward) }
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
             if let suggestions = row?.suggestions {
@@ -2709,7 +2709,7 @@ struct SessionGlance: View {
                 Text(said).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
             }
             if let next = onward, !open {
-                GoOnBar(next: next, more: after.count - 1, showDevice: store.devices.count > 1, showProject: project.isEmpty, going: Going.of(.seen, row: row, pending: pending, acted: !(store.outgoing[key] ?? []).isEmpty), picked: SwipeOn.seen.label, choices: { EmptyView() }) {}
+                GoOnBar(next: next, left: after.count, going: Going.of(.seen, row: row, pending: pending, acted: !(store.outgoing[key] ?? []).isEmpty), picked: SwipeOn.seen.label, choices: { EmptyView() }) {}
             }
             if let suggestions = row?.suggestions {
                 SuggestedRepliesView(suggestions: suggestions, blocked: canAct && pending?.cannot == nil ? nil : why ?? "It waits on you where it runs: answer that there first") { _ in } edit: { _ in } dismiss: {}

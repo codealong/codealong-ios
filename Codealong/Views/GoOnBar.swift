@@ -173,16 +173,15 @@ enum Going: Equatable {
     }
 }
 
-/// Over a session's reply box or a PR's review box while you go through what waits on you: what
-/// going on does to this one, and where it goes. The first line says what a swipe does here, and
-/// its menu picks what going on does to this one (`SwipeOn`, `ReviewSwipeOn`); under it, the
-/// next session or PR, or on the last one Finish, which a tap goes on to as the swipe does.
+/// Over a session's reply box or a PR's review box while you go through what waits on you: what a
+/// swipe does to this one, first and largest, with the menu that picks it (`SwipeOn`,
+/// `ReviewSwipeOn`); under it, how many more wait on you; and Next, or on the last one Finish,
+/// which a tap goes on with as the swipe does. It doesn't name the next one: the swipe slides it
+/// in, and its title only took the room from what the swipe does.
 struct GoOnBar<Choices: View>: View {
     let next: Onward
-    let more: Int
-    let showDevice: Bool
-    /// The inbox shows every project, so it says which it's in.
-    let showProject: Bool
+    /// How many wait on you after this one, the next among them.
+    let left: Int
     let going: Going
     /// What's picked now, for VoiceOver.
     let picked: String
@@ -193,78 +192,48 @@ struct GoOnBar<Choices: View>: View {
     let action: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            // Where it is goes under what the swipe does when the line can't hold both in full: a
-            // menu's label otherwise gave up its room, and what the swipe does was cut short.
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) {
-                    choice.fixedSize()
-                    Spacer(minLength: 8)
-                    if !place.isEmpty { placeText.fixedSize() }
-                }
+        // Next goes under what the swipe does when the line can't hold both in full, as a long
+        // snooze's can't: a menu's label otherwise gave up its room, and its words were cut short.
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
-                    choice
-                    if !place.isEmpty { placeText }
+                    choice.fixedSize()
+                    countText
                 }
+                Spacer(minLength: 8)
+                nextButton
             }
-            Button(action: action) {
-                HStack(spacing: 10) {
-                    switch next {
-                    case .to(.session(let row)):
-                        StatusMark(status: row.status, stalled: row.stalled, waiting: row.waitsInBackground)
-                        HStack(spacing: 5) {
-                            if let emblem = row.emblem {
-                                EmblemView(emblem: emblem, mac: row.device, size: 15)
-                            }
-                            Text(row.title)
-                                .font(.subheadline.weight(.semibold))
-                                .lineLimit(1)
-                        }
-                    case .to(.pr(let pr)):
-                        // Waiting on your review, in the color of what needs you.
-                        Image(systemName: "arrow.triangle.pull")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.orange)
-                            .accessibilityHidden(true)
-                        Text(pr.title)
-                            .font(.subheadline.weight(.semibold))
-                            .lineLimit(1)
-                    case .end:
-                        Image(systemName: "checkmark.circle")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.green)
-                            .accessibilityHidden(true)
-                        Text("Nothing else waits on you")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
+            VStack(alignment: .leading, spacing: 2) {
+                choice
+                HStack(spacing: 8) {
+                    countText
                     Spacer(minLength: 8)
-                    Text(next == .end ? "Finish" : "Next")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Color.accentColor)
-                    Image(systemName: "chevron.forward")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(Color.accentColor)
+                    nextButton
                 }
-                .contentShape(.rect)
             }
-            .buttonStyle(.plain)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(nextWords)
-            .accessibilityHint([going.spoken, next == .end ? nil : more > 0 ? "\(more) more wait on you after it" : "The last that waits on you"].compactMap { $0 }.joined(separator: ". "))
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .glassEffect(.regular, in: .rect(cornerRadius: 22))
     }
 
-    private var nextWords: String {
-        switch next {
-        case .to(.session(let row)): "Next: \(row.title)"
-        case .to(.pr(let pr)): "Next: your review of #\(pr.number), \(pr.title)"
-        case .end: "Finish: nothing else waits on you"
+    private var nextButton: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Text(next == .end ? "Finish" : "Next")
+                    .font(.subheadline.weight(.semibold))
+                Image(systemName: "chevron.forward")
+                    .font(.footnote.weight(.semibold))
+            }
+            .foregroundStyle(Color.accentColor)
+            .padding(.vertical, 6)
+            .padding(.leading, 8)
+            .contentShape(.rect)
         }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(next == .end ? "Finish" : "Next")
+        .accessibilityHint([going.spoken, count].compactMap { $0 }.joined(separator: ". "))
     }
 
     /// What a swipe does here, and the menu that picks what going on does.
@@ -276,51 +245,41 @@ struct GoOnBar<Choices: View>: View {
             } label: {
                 swipeWords(menu: true)
             }
-            // Gray, under the session it goes to: a menu's label takes the tint, which washed out.
-            .tint(.secondary)
+            // A menu's label takes the tint, and this is what the bar is for, so it's drawn as
+            // text is rather than as a button.
+            .tint(.primary)
             .accessibilityLabel(going.words)
             .accessibilityHint("Picks what going on to the next does. Now: \(picked)")
         } else {
-            swipeWords(menu: false).foregroundStyle(.secondary)
+            swipeWords(menu: false)
         }
     }
 
     private func swipeWords(menu: Bool) -> some View {
-        HStack(spacing: 5) {
+        HStack(spacing: 6) {
             Image(systemName: going.symbol)
             Text(going.words)
             if menu {
                 Image(systemName: "chevron.down")
-                    .font(.caption2.weight(.semibold))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
             }
         }
-        .font(.caption.weight(.medium))
+        .font(.subheadline.weight(.semibold))
         .lineLimit(1)
         .contentShape(.rect)
     }
 
-    private var placeText: some View {
-        Text(place)
+    private var countText: some View {
+        Text(count)
             .font(.caption)
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(.secondary)
             .lineLimit(1)
     }
 
-    /// What the next is, where it is, and how many wait after it; nothing for the end, which its
-    /// line says.
-    private var place: String {
-        var parts: [String] = []
-        let (device, project): (String, String)
-        switch next {
-        case .to(.session(let row)): (device, project) = (row.deviceName, row.project)
-        case .to(.pr(let pr)): (device, project) = (pr.deviceName, pr.project)
-        case .end: return ""
-        }
-        if case .to(.pr(let pr)) = next { parts.append("Review #\(pr.number)") }
-        if showDevice { parts.append(Names.short(device)) }
-        if showProject { parts.append(project) }
-        if more > 0 { parts.append("\(more) more after it") }
-        if parts.isEmpty { parts.append("The last that waits on you") }
-        return parts.joined(separator: " · ")
+    /// How many wait on you after this one.
+    private var count: String {
+        if next == .end { return "Nothing else waits on you" }
+        return left == 1 ? "1 more waits on you" : "\(left) more wait on you"
     }
 }

@@ -187,8 +187,6 @@ private struct EndFoot: View {
     let offer: [Waiting]
     let said: String?
     let goOn: (Waiting) -> Void
-    @Environment(Store.self) private var store
-    @AppStorage("project") private var project = ""
 
     var body: some View {
         VStack(spacing: 8) {
@@ -196,7 +194,7 @@ private struct EndFoot: View {
                 Text(said).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
             }
             if let next = offer.first {
-                GoOnBar(next: .to(next), more: offer.count - 1, showDevice: store.devices.count > 1, showProject: project.isEmpty, going: .on, picked: "", picks: false, choices: { EmptyView() }) { goOn(next) }
+                GoOnBar(next: .to(next), left: offer.count, going: .on, picked: "", picks: false, choices: { EmptyView() }) { goOn(next) }
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }

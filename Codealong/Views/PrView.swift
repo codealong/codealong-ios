@@ -135,7 +135,7 @@ struct PrView: View {
                 VStack(spacing: 8) {
                     // Not while you write your review: the box needs the room, and what's next waits.
                     if let onward, !drafted {
-                        GoOnBar(next: onward, more: after.count - 1, showDevice: store.devices.count > 1, showProject: project.isEmpty, going: going, picked: reviewOn.label, choices: { ReviewSwipeOn.picker($reviewOn) }) { goOn(to: onward) }
+                        GoOnBar(next: onward, left: after.count, going: going, picked: reviewOn.label, choices: { ReviewSwipeOn.picker($reviewOn) }) { goOn(to: onward) }
                             .padding(.horizontal)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
@@ -372,7 +372,7 @@ struct PrGlance: View {
                     // As its page will have it: gone on to, it's part of what you're going through.
                     let onward = Onward.of(after, goingThrough: from != nil || store.goingThrough(PrView.prefix + key, project: project))
                     if let next = onward, (store.drafts[PrView.prefix + key] ?? "").isEmpty {
-                        GoOnBar(next: next, more: after.count - 1, showDevice: store.devices.count > 1, showProject: project.isEmpty, going: Going.of(.later, pr: pr, acted: false), picked: ReviewSwipeOn.later.label, choices: { EmptyView() }) {}
+                        GoOnBar(next: next, left: after.count, going: Going.of(.later, pr: pr, acted: false), picked: ReviewSwipeOn.later.label, choices: { EmptyView() }) {}
                             .padding(.horizontal)
                     }
                     ReviewBoxView(pr: pr, draft: detail?.draft, reviews: detail?.reviews ?? [], read: detail != nil, whyNot: whyNot, said: said) { _ in }
