@@ -204,7 +204,8 @@ fn agent_review_line(r: &codealong_peer::pr::AutoReview) -> AgentReviewLine {
 /// Changes requested.
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
 pub struct PrTurn {
-    /// `reply-needed`, `rereview-asked`, `reviewer-replied` or `author-replied`, for its icon.
+    /// `reply-needed`, `rereview-asked`, `reviewer-replied`, `author-replied` or `assigned`, for its
+    /// icon.
     pub kind: String,
     /// The pill's words: "Author replied".
     pub words: String,
@@ -227,6 +228,7 @@ fn turn_line(t: &codealong_peer::pr::Turn) -> Option<PrTurn> {
         TurnKind::RereviewAsked => ("rereview-asked", "Re-review asked", false, format!("Waiting on {who}, who asked for changes: asked to review it again or written to{ago}. {stands}")),
         TurnKind::ReviewerReplied => ("reviewer-replied", "Reviewer replied", true, format!("{who} asked for changes, then wrote again{ago}: your move. {stands}")),
         TurnKind::AuthorReplied => ("author-replied", "Author replied", true, format!("{who} wrote{ago} after your last review or comment: your move.")),
+        TurnKind::Assigned => ("assigned", "Assigned", true, format!("{who} assigned you{ago} after your last review: your move. It waits on your review until you give one, as a request for it would.")),
         TurnKind::Other => return None,
     };
     Some(PrTurn { kind: kind.into(), words: words.into(), yours, says })
@@ -1064,6 +1066,10 @@ pub(crate) mod tests {
         assert!(asked.says.starts_with("Waiting on ana, ken and sam, who asked for changes: asked to review it again or written to. "), "{}", asked.says);
         assert!(turn(TurnKind::ReplyNeeded, &[], Some(9)).unwrap().says.starts_with("Commits came {ago:9} after ana asked for changes,"));
         assert_eq!(turn(TurnKind::ReviewerReplied, &["ken"], None).unwrap().words, "Reviewer replied");
+        // Assigned after your last review: yours, as a request for it would be, naming who assigned you.
+        let assigned = turn(TurnKind::Assigned, &[], Some(9)).unwrap();
+        assert_eq!((assigned.kind.as_str(), assigned.words.as_str(), assigned.yours), ("assigned", "Assigned", true));
+        assert!(assigned.says.starts_with("ana assigned you {ago:9} after your last review: your move."), "{}", assigned.says);
         // A kind a later Mac names leaves the PR's state to say it.
         assert_eq!(turn(TurnKind::Other, &[], None), None);
     }

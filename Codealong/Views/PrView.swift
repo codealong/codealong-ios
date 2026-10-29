@@ -667,6 +667,8 @@ struct TurnLabel: View {
         switch turn.kind {
         case "reply-needed": "arrowshape.turn.up.left"
         case "rereview-asked": "hourglass"
+        // It waits on your review, as the Mac's mark for one asked of you has it.
+        case "assigned": "eye"
         default: "text.bubble"
         }
     }
