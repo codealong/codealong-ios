@@ -1103,7 +1103,7 @@ struct SessionView: View {
         if ahead, let onward {
             goOn(to: onward, speed: speed)
         } else if let target = before {
-            // Back is a step by hand: this one isn't passed over for it. The trail is cut back once
+            // Back is a step by hand: nothing is done to this one for it. The trail is cut back once
             // it's there, so what's beside it stays put while it slides.
             store.outcome = acted ? said : nil
             slide(to: target.key, back: true, speed: speed) { store.back(to: target.key) }
@@ -1326,8 +1326,8 @@ struct SessionView: View {
     private var going: Going { Going.of(swipeOn, row: row, pending: pending, acted: acted || !(store.outgoing[key] ?? []).isEmpty) }
 
     /// Goes on to `next` as a swipe does, doing to this one what the bar says. Marked seen as it
-    /// slides, as it always was (`slide`), it's passed over until its Mac's feed has it seen, so
-    /// one whose Mac didn't take that comes round again. Marking it done or archiving it waits on
+    /// slides, as it always was (`slide`), it comes round after the rest until its Mac's feed has
+    /// it seen, so one whose Mac didn't take that comes round again. Marking it done or archiving it waits on
     /// its Mac, which the swipe doesn't: it's out of what's next meanwhile, how it went is said on
     /// the screen shown once its Mac answers, and one that didn't go comes round again
     /// (`Store.doneLater`, `Store.archiveLater`). Done marks it seen on its Mac, so the slide
@@ -1368,7 +1368,6 @@ struct SessionView: View {
     /// Left without a reply while it needs you, this one comes round again after the rest.
     private func moveOn(to next: Onward, outcome: String? = nil, speed: CGFloat = 0, seen: Bool = true) {
         guard swipe.to == nil else { return }
-        if !acted && outcome == nil { store.passedOver(key) }
         if next.key != key { store.trail.append(key) }
         if next == .end { store.goingToEnd(from: key) }
         store.outcome = outcome ?? (acted ? said : nil)

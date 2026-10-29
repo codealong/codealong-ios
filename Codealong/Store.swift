@@ -45,8 +45,10 @@ final class Store {
     /// left out of what's next until it waits on you anew, since the Mac's feed takes a moment to
     /// show an answer.
     private var handled: [String: Int64] = [:]
-    /// Sessions you went on from without replying, in the order you left them.
-    private var passed: [String] = []
+    /// Where each session and PR stood the last time it waited on you, by its key in the list's
+    /// path: answered, a page can stop waiting before you go on from it, and what's next goes on
+    /// from where it stood rather than from the top (the core's `leftAfter`).
+    @ObservationIgnored private var was: [String: QueuePlace] = [:]
     /// The page gone on from to the end of what waits (`EndView`), as it was then, which the end
     /// doesn't offer straight back: marked seen, it waits until its Mac has that, and skipped, it
     /// would come round at once. It's offered again once it changes, once it's left what waits and
@@ -118,10 +120,14 @@ final class Store {
         let snap = core.snapshot()
         tick &+= 1
         if snap.devices != devices { devices = snap.devices }
+        let waits = snap.sessions != sessions || snap.prs != prs
         if snap.sessions != sessions { sessions = snap.sessions }
         if snap.prs != prs {
             prs = snap.prs
             reviews = reviewsWaiting()
+        }
+        if waits {
+            for w in waitingNow(project: "") { was[w.key] = w.place }
         }
         if snap.projects != projects { projects = snap.projects }
         if snap.prProjects != prProjects { prProjects = snap.prProjects }
@@ -256,12 +262,12 @@ final class Store {
     }
 
     /// What waits on you besides `key` (a page's key in the list's path: a session's, or a PR's
-    /// after `PrView.prefix`), the next first, in the order the Mac's windows go through it
-    /// (queue.ts `WAITS`): sessions that need you, then PRs waiting on your review, then Your turn,
-    /// so next is always the most urgent one left. Sessions are in the inbox's order and PRs the
-    /// longest wait first, as the PRs page lists them. Ones you went on from without dealing with
-    /// them come round again after the rest, and ones you've dealt with stay out until they wait
-    /// on you anew. `project` narrows it as the inbox is.
+    /// after `PrView.prefix`), the next first, as the Mac's windows go through it (the core's
+    /// `leftAfter`, queue.ts there): sessions that need you, then PRs waiting on your review, then
+    /// Your turn, each the longest wait first, going on from where `key` stands and round to the
+    /// ones before it after the rest, so the ones you went on from come round again. Ones you've
+    /// dealt with stay out until they wait on you anew; a review asked for again (a new
+    /// `requestedAt`) waits anew. `project` narrows it as the inbox is.
     func queue(after key: String, project: String) -> [Waiting] {
         if let fixed = testQueue {
             // Those after it in the list, as a real queue has gone past the ones before; none
@@ -270,21 +276,21 @@ final class Store {
             let rest = fixed.firstIndex(of: key).map { fixed[($0 + 1)...] } ?? fixed[...]
             return rest.compactMap { waiting($0) }
         }
-        let fresh = { (k: String, since: Int64) in self.handled[k].map { since > $0 } ?? true }
+        let all = waitingNow(project: project)
+        let byKey = Dictionary(all.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
+        return leftAfter(places: all.map(\.place), key: key, handled: handled, was: was[key]).compactMap { byKey[$0] }
+    }
+
+    /// What waits on you in `project` (empty for all), in no order: the sessions that need you or
+    /// whose turn ended, and the PRs waiting on your review.
+    private func waitingNow(project: String) -> [Waiting] {
         // A helper or a headless run that doesn't need you isn't waiting on you, as it's out of
         // the lists: a pin keeps one listed (in Pinned), and a Mac from before the helpers' rule
         // calls its turns Your turn.
         let rows = sessions.filter { row in
-            guard row.key != key, !row.unattended, row.section == .needsYou || row.section == .yourTurn, project.isEmpty || row.project == project else { return false }
-            return fresh(row.key, row.statusSince ?? row.lastActivity)
+            !row.unattended && (row.section == .needsYou || row.section == .yourTurn) && (project.isEmpty || row.project == project)
         }
-        // A review asked for again (a new `requestedAt`) waits on you anew.
-        let asked = reviews.filter { pr in
-            let k = PrView.prefix + pr.key
-            return k != key && (project.isEmpty || pr.project == project) && fresh(k, pr.requestedAt ?? pr.updatedAt)
-        }
-        let all = rows.filter { $0.section == .needsYou }.map(Waiting.session) + asked.map(Waiting.pr) + rows.filter { $0.section == .yourTurn }.map(Waiting.session)
-        return all.filter { !passed.contains($0.key) } + passed.compactMap { key in all.first { $0.key == key } }
+        return rows.map(Waiting.session) + reviews.filter { project.isEmpty || $0.project == project }.map(Waiting.pr)
     }
 
     /// `key` (a page's key in the list's path) is part of what you're going through: it waits on
@@ -323,20 +329,7 @@ final class Store {
     /// You replied to or answered `key`, a session; or reviewed it, a PR (its key after
     /// `PrView.prefix`), which GitHub takes as the review asked of you.
     func dealtWith(_ key: String) {
-        switch waiting(key) {
-        case .session(let row): handled[key] = row.statusSince ?? row.lastActivity
-        case .pr(let pr): handled[key] = pr.requestedAt ?? pr.updatedAt
-        case nil: return
-        }
-        passed.removeAll { $0 == key }
-    }
-
-    /// You went on from `key` without replying: while it still needs you, it comes round again
-    /// after the rest (a finished turn, or a reply that asks you something, was marked seen, and
-    /// leaves).
-    func passedOver(_ key: String) {
-        passed.removeAll { $0 == key }
-        passed.append(key)
+        if let since = waiting(key)?.since { handled[key] = since }
     }
 
     func conversation(_ key: String) -> Conversation? {
@@ -650,7 +643,6 @@ final class Store {
     /// Mac's queue has it; one its Mac didn't snooze comes round again, saying why.
     func snoozeLater(_ key: String, title: String, until: Date) {
         handled[key] = nil
-        passedOver(key)
         Task {
             do {
                 try await snooze(key, until: until)
@@ -675,7 +667,6 @@ final class Store {
     /// again after the rest, as one gone on from without a reply does.
     private func comeRound(_ key: String) {
         handled[key] = nil
-        passedOver(key)
         if endedFrom?.key == key { endedFrom = nil }
     }
 
@@ -972,6 +963,23 @@ enum Waiting: Equatable {
         switch self {
         case .session(let row): row.lastActivity
         case .pr(let pr): pr.updatedAt
+        }
+    }
+
+    /// When it began waiting on you as it does, as the Mac's queue has it: a session's status, the
+    /// latest request for your review.
+    var since: Int64 {
+        switch self {
+        case .session(let row): row.statusSince ?? row.lastActivity
+        case .pr(let pr): pr.requestedAt ?? pr.updatedAt
+        }
+    }
+
+    /// Where it stands in what waits on you, while it waits.
+    var place: QueuePlace {
+        switch self {
+        case .session(let row): QueuePlace(key: key, waits: row.section == .needsYou ? .needs : .unread, since: since)
+        case .pr: QueuePlace(key: key, waits: .reviews, since: since)
         }
     }
 }

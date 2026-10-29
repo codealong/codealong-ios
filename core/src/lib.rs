@@ -22,6 +22,7 @@ mod md;
 mod merge;
 mod prs;
 mod lists;
+mod queue;
 mod quick;
 mod review;
 mod sounds;

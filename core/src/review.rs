@@ -36,21 +36,26 @@ fn comments(n: u64) -> String {
 }
 
 /// Your standing review among `reviews` (each reviewer's last approval or change request, else
-/// comment), in words.
-fn yours(reviews: &[PrReview]) -> Option<String> {
+/// comment), in words. Where `pr` asks for your review again, that comes first, as the Mac's
+/// Re-review says (prStatus.ts `reReviewPill`): it's why a PR you reviewed waits on you. GitHub
+/// takes a review as the one asked of you, so one asked for while yours stands came after it.
+fn yours(pr: &PrRow, reviews: &[PrReview]) -> Option<String> {
     let r = reviews.iter().find(|r| r.mine)?;
+    let again = pr.review_requested && is_open(&pr.state) && pr.state != "draft";
     let did = match r.state.as_str() {
-        "APPROVED" => "You approved it",
-        "CHANGES_REQUESTED" => "You asked for changes",
-        "COMMENTED" => "You commented",
+        "APPROVED" => "approved it",
+        "CHANGES_REQUESTED" => "asked for changes",
+        "COMMENTED" => "commented",
         // When it was dismissed isn't known, only when it was given.
+        "DISMISSED" if again => return Some("Your review is asked for again: the last was dismissed".to_string()),
         "DISMISSED" => return Some("Your review was dismissed".to_string()),
         _ => return None,
     };
-    Some(match r.at {
+    let did = match r.at {
         Some(at) => format!("{did} {{ago:{at}}}"),
         None => did.to_string(),
-    })
+    };
+    Some(if again { format!("Your review is asked for again: you {did}") } else { format!("You {did}") })
 }
 
 /// The box for `pr`, with your draft review of it and its reviews as its page read them.
@@ -84,7 +89,7 @@ pub fn review_box(pr: PrRow, draft: Option<PrDraft>, reviews: Vec<PrReview>) -> 
         (Some(why), Some(with)) => Some(format!("{why} {with}")),
         (why, with) => why.or(with),
     };
-    ReviewBox { reviewable, hint, note, yours: yours(&reviews) }
+    ReviewBox { reviewable, hint, note, yours: yours(&pr, &reviews) }
 }
 
 /// Whether `verdict` has something to say (`saysSomething`): what's written, or a draft with text
@@ -191,6 +196,25 @@ mod tests {
         // Someone else's approval isn't yours, and a Mac that doesn't say whose is whose says none.
         assert_eq!(yours(vec![review("ann", "APPROVED", Some(5), false)]), None);
         assert_eq!(yours(vec![]), None);
+    }
+
+    #[test]
+    fn a_review_asked_for_again_after_yours_says_so_first() {
+        // Commits came after you approved it, and its author asked you again: it waits on you.
+        let yours = |state: &str, requested: bool, reviews: Vec<PrReview>| {
+            let mut p = pr(state, false);
+            p.review_requested = requested;
+            review_box(p, None, reviews).yours
+        };
+        let approved = || vec![review("me", "APPROVED", Some(9), true)];
+        assert_eq!(yours("approved", true, approved()).as_deref(), Some("Your review is asked for again: you approved it {ago:9}"));
+        assert_eq!(yours("changes", true, vec![review("me", "CHANGES_REQUESTED", Some(9), true)]).as_deref(), Some("Your review is asked for again: you asked for changes {ago:9}"));
+        assert_eq!(yours("open", true, vec![review("me", "DISMISSED", Some(9), true)]).as_deref(), Some("Your review is asked for again: the last was dismissed"));
+        // Not asked, or asked of no one who reviewed it, or past asking: as before.
+        assert_eq!(yours("approved", false, approved()).as_deref(), Some("You approved it {ago:9}"));
+        assert_eq!(yours("open", true, vec![]), None);
+        assert_eq!(yours("merged", true, approved()).as_deref(), Some("You approved it {ago:9}"));
+        assert_eq!(yours("draft", true, approved()).as_deref(), Some("You approved it {ago:9}"));
     }
 
     #[test]

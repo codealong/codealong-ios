@@ -255,7 +255,7 @@ struct PrView: View {
         if ahead, let onward {
             goOn(to: onward, speed: speed)
         } else if let target = before {
-            // Back is a step by hand: this one isn't passed over for it.
+            // Back is a step by hand: nothing is done to this one for it.
             store.outcome = acted ? said : nil
             slide(to: target.key, back: true, speed: speed) { store.back(to: target.key) }
         }
@@ -268,7 +268,6 @@ struct PrView: View {
     private func goOn(to next: Onward, speed: CGFloat = 0) {
         guard swipe.to == nil else { return }
         if case .snooze = going, let pr, let snooze = reviewOn.snoozeChoice() {
-            store.passedOver(page)
             store.snoozeLater(pr, until: snooze.until)
             moveOn(to: next, outcome: "Snoozed your review of #\(pr.number) until \(Snooze.words(snooze.until)).", speed: speed)
         } else {
@@ -280,7 +279,6 @@ struct PrView: View {
     /// Left without a review while it waits on one, this one comes round again after the rest.
     private func moveOn(to next: Onward, outcome: String? = nil, speed: CGFloat = 0) {
         guard swipe.to == nil else { return }
-        if !acted && outcome == nil { store.passedOver(page) }
         if next.key != page { store.trail.append(page) }
         if next == .end { store.goingToEnd(from: page) }
         store.outcome = outcome ?? (acted ? said : nil)

@@ -60,7 +60,8 @@ foot that goes back down to the newest. A session running
 inside Codealong on your Mac streams its reply as it's written.
 
 **Work through what's waiting.** Sessions that need you, PRs waiting on your review and finished
-turns come one after another, in the Mac's order. While something else waits on you, a bar over the
+turns come one after another, in the Mac's order: each kind the longest waiting first, and the ones
+you go on from come round again after the rest. While something else waits on you, a bar over the
 reply box says how many more do and what going on does to the session you're reading: marks it seen,
 or, picked from the bar's menu for that session alone, leaves it as it is (to come round again
 after the rest), marks it done, archives it, or snoozes it for a while. Swipe left (or tap *Next*) to go on and do it, and right to go back to the one you
