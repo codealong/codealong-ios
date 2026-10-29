@@ -89,7 +89,11 @@ need you, as on the Mac.
 - switch a running session's model, effort or mode (a Codex app thread's from its next turn);
 - resume one that isn't running, where and on what model you pick;
 - fork it, go on from before one of your prompts with an edit of it (hold the prompt, *Edit from
-  here*), or mark it done (closing it where its Mac can).
+  here*), or mark it done (closing it where its Mac can);
+- ask a Claude Code or Codex session something on the side (*Ask on the side* in its menu, or
+  `/side` and a question in its box, as on the Mac): a throwaway copy of its conversation answers
+  on its Mac as you watch, and the session carries on and never hears of it. Follow-ups go to the
+  same copy until you close it, and the earlier ones are there to read, go on with or delete.
 
 A running Claude Code session with Remote Control on opens in the Claude app from its menu.
 

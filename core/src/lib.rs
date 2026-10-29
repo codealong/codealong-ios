@@ -207,6 +207,9 @@ pub struct SessionRow {
     /// Its harness can go on from before a prompt of yours, as a copy (Edit from here): Claude
     /// Code, Codex and OpenCode can, as the Mac's harness.ts `EDITS` has it.
     pub edits: bool,
+    /// It can be asked on the side, by a throwaway copy of its conversation on its Mac (`Conversation::ask_side`):
+    /// Claude Code and Codex can, as the Mac's slash.ts `side` has it.
+    pub sides: bool,
     /// The name you gave it, where its harness keeps one.
     pub name: Option<String>,
     /// The session it came from, when its harness or Codealong wrote that down.
@@ -702,6 +705,7 @@ pub(crate) fn all_rows(feeds: &Feeds) -> Vec<SessionRow> {
                 cut_off: s.cut_off.filter(|_| status != Status::Working).map(|_| CUT_OFF.to_string()),
                 remote_control: s.remote_control.as_deref().filter(|_| s.live).map(remote_control_url),
                 edits: matches!(s.harness, Harness::Claude | Harness::Codex | Harness::Opencode),
+                sides: matches!(s.harness, Harness::Claude | Harness::Codex),
                 name: s.name.clone(),
                 origin: s.origin.as_ref().map(|o| SessionOrigin { key: remote_key(&d.short, &o.key), title: titles.get(o.key.as_str()).map(|t| t.to_string()), fork: o.how == OriginHow::Fork }),
                 limit: s.limit.as_ref().filter(|_| status != Status::Working).map(|l| limit_words(&s.account, l, now)),
@@ -1061,6 +1065,65 @@ pub enum Choice {
 pub struct Live {
     pub text: String,
     pub tool: Option<String>,
+}
+
+/// A session's side conversation: a throwaway copy of its conversation on its Mac, answering
+/// what's asked on the side while the session carries on and never hears of it (the Mac's
+/// side.rs). A session has one open at a time; closed, it's kept on its Mac to read.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct SideConversation {
+    /// Which of the session's it is: a question goes on in it by this (`ask_side`'s `from`).
+    pub id: String,
+    pub turns: Vec<SideTurn>,
+    /// Its copy is answering.
+    pub running: bool,
+    /// Its copy is gone (it sat idle, or stopped): the next question goes to a new one, told what
+    /// was said.
+    pub ended: bool,
+    /// Closed while its copy answered: it answers what it was asked, and is only read after.
+    pub closed: bool,
+}
+
+impl From<api::Side> for SideConversation {
+    fn from(s: api::Side) -> SideConversation {
+        SideConversation { id: s.id, turns: s.turns.into_iter().map(SideTurn::from).collect(), running: s.running, ended: s.ended, closed: s.closed }
+    }
+}
+
+/// One question on the side, and its answer.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct SideTurn {
+    pub question: String,
+    /// The answer so far, in Markdown.
+    pub answer: String,
+    /// What the copy did to answer: its tool calls, a line each, in order.
+    pub tools: Vec<String>,
+    /// The tool it's running now, as a line.
+    pub tool: Option<String>,
+    pub done: bool,
+    /// Why it ended without an answer, or with half of one.
+    pub error: Option<String>,
+    /// When it was asked.
+    pub at: i64,
+}
+
+impl From<api::SideTurn> for SideTurn {
+    fn from(t: api::SideTurn) -> SideTurn {
+        SideTurn { question: t.question, answer: t.answer, tools: t.tools, tool: t.tool, done: t.done, error: t.error, at: t.at }
+    }
+}
+
+/// A side conversation as its Mac keeps it, to read once it's closed: the latest first in the list
+/// of a session's earlier ones.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct SideKept {
+    pub id: String,
+    pub started_at: i64,
+    /// When it was last asked or answered.
+    pub last_at: i64,
+    pub turns: Vec<SideTurn>,
+    /// Closed while its copy answered, and answering still (`Conversation::side_closing`).
+    pub answering: bool,
 }
 
 /// A session's conversation as far as it's been read: a page back from the newest, older pages
@@ -1442,6 +1505,53 @@ impl Conversation {
     pub fn switch_mode(&self, id: String) -> Result<ModeSwitch, CoreError> {
         let switched = self.client.switch_mode(&self.device, &self.key, &id).map_err(|e| CoreError::Failed(older_mac(e, &self.client, &self.device, "switch modes from here")))?;
         Ok(ModeSwitch { message: switched.message, mode: switched.mode })
+    }
+
+    /// Its open side conversation, read from its Mac now; none when it has none. From then on its
+    /// Mac tells the phone of each change to its side conversations while it's connected (`side`,
+    /// `side_closing`), so it's read again after the two were apart. Macs before 2026-10-23
+    /// refuse it.
+    pub fn read_side(&self) -> Result<Option<SideConversation>, CoreError> {
+        let side = self.client.side_get(&self.device, &self.key).map_err(|e| older_mac(e, &self.client, &self.device, "ask on the side from here"))?;
+        Ok(side.filter(|s| !s.turns.is_empty()).map(SideConversation::from))
+    }
+
+    /// Its open side conversation as its Mac last said, once it's been read or asked here.
+    pub fn side(&self) -> Option<SideConversation> {
+        self.client.side(&self.device, &self.key).map(SideConversation::from)
+    }
+
+    /// One of its side conversations closed while its copy answered, as its Mac last said, by id.
+    pub fn side_closing(&self, id: String) -> Option<SideConversation> {
+        self.client.side_closing(&self.device, &id).map(SideConversation::from)
+    }
+
+    /// Asks it `text` on the side: a throwaway copy of its conversation answers on its Mac, which
+    /// may do what the session may without asking, so it needs remote control there. It goes in
+    /// the open side conversation, or a new one, or with `from`, in that one from before, which is
+    /// the open one then. The answer comes as it's written (`side`).
+    pub fn ask_side(&self, text: String, from: Option<String>) -> Result<SideConversation, CoreError> {
+        let side = self.client.side_ask(&self.device, &self.key, &text, from.as_deref()).map_err(|e| older_mac(e, &self.client, &self.device, "ask on the side from here"))?;
+        Ok(side.into())
+    }
+
+    /// Closes its open side conversation: a copy that's answering answers what it was asked
+    /// before it ends (`side_closing`), and what was said is kept on its Mac to read.
+    pub fn close_side(&self) -> Result<(), CoreError> {
+        Ok(self.client.side_close(&self.device, &self.key)?)
+    }
+
+    /// Its side conversations kept on its Mac, the latest first: the open one too, as far as it's
+    /// been answered.
+    pub fn earlier_sides(&self) -> Result<Vec<SideKept>, CoreError> {
+        let kept = self.client.side_past(&self.device, &self.key).map_err(|e| older_mac(e, &self.client, &self.device, "ask on the side from here"))?;
+        Ok(kept.into_iter().map(|k| SideKept { id: k.id, started_at: k.started_at, last_at: k.last_at, turns: k.turns.into_iter().map(SideTurn::from).collect(), answering: k.answering }).collect())
+    }
+
+    /// Deletes one of its side conversations kept on its Mac, stopping it if it was closed and is
+    /// still answering.
+    pub fn forget_side(&self, id: String) -> Result<(), CoreError> {
+        Ok(self.client.side_forget(&self.device, &self.key, &id)?)
     }
 
     /// Forks it from just before a prompt of yours (`item`, an item's id here), your edit of it
@@ -2419,6 +2529,7 @@ mod order_tests {
             cut_off: None,
             remote_control: None,
             edits: false,
+            sides: false,
             name: None,
             origin: None,
             limit: None,

@@ -914,6 +914,7 @@ pub(crate) mod tests {
             cut_off: None,
             remote_control: None,
             edits: false,
+            sides: false,
             name: None,
             origin: None,
             limit: None,

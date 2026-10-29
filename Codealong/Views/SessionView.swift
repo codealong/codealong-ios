@@ -23,7 +23,9 @@ import SwiftUI
 /// choice; a running one says its model beside the box, and switches it where its Mac can. Where
 /// its turn can take a message at once, the bolt beside Send sends it into the turn.
 /// `/fork [prompt]` forks it into a copy that goes on in the background on its Mac, and you stay
-/// where you are, as on the Mac.
+/// where you are, as on the Mac. `/side [question]` (or `/btw`) asks it on the side, as its menu's
+/// Ask on the side does (`SideSheet`): a throwaway copy of its conversation answers, and the
+/// session never hears of it.
 ///
 /// A message goes as the Mac's windows send one: the box clears at once and the message shows at
 /// the end of the conversation as sending, then sent, until the session's record has it, so you
@@ -111,6 +113,8 @@ struct SessionView: View {
     @State private var editing: Item?
     /// Pick a time… in its Snooze menu, asking for the time.
     @State private var snoozing: SnoozePick?
+    /// Its side conversations are up, with a question to ask as they open.
+    @State private var aside: SideAsk?
     /// The mode picked here, until its Mac's feed says the one it's in.
     @State private var modePicked: String?
     /// A queued message Send now didn't send into the turn, and why.
@@ -207,6 +211,7 @@ struct SessionView: View {
             }
         }
         .sheet(item: $snoozing) { SnoozePicker(pick: $0) }
+        .sheet(item: $aside) { SideSheet(key: key, question: $0.question) }
         .alert("Rename", isPresented: $renaming) {
             TextField("Name", text: $newName)
             Button("Rename") { Task { await rename() } }
@@ -415,6 +420,10 @@ struct SessionView: View {
         }
         if canStop {
             Button("Stop", systemImage: "stop.circle") { Task { await stop() } }
+        }
+        if row?.sides == true {
+            Button("Ask on the side", systemImage: "bubble.left.and.text.bubble.right") { aside = SideAsk() }
+                .disabled(!online)
         }
         Button("Rename…", systemImage: "pencil") {
             newName = row?.name ?? row?.title ?? ""
@@ -762,6 +771,11 @@ struct SessionView: View {
         await lookBack()
         // The next that waits on you is read now, so it shows at once when you go on to it.
         opened = true
+        // `/side` typed for a test, once it's up.
+        if let typed = store.sideWhenOpen, let question = SideAsk.question(in: typed) {
+            store.sideWhenOpen = nil
+            aside = SideAsk(question: question)
+        }
         // A session Codealong runs sends its reply as it's written, while it's shown here.
         if row?.hosted == true {
             watching = await Task.detached { conv.watch() }.value
@@ -1036,7 +1050,8 @@ struct SessionView: View {
     /// Sends the box; with `thenNext`, goes on to what waits on you once it's gone; with `now`,
     /// into the turn it's taking at once. While it waits on a call that can be answered here, it
     /// denies the call and tells it what you wrote instead; while it isn't running, it goes on
-    /// where you picked. `/fork [prompt]` forks it instead. One that fails stays, saying why.
+    /// where you picked. `/fork [prompt]` forks it instead, and `/side [question]` asks it on the
+    /// side. One that fails stays, saying why.
     private func send(text reply: String? = nil, thenNext: Bool = false, now: Bool = false) async {
         guard let conv = conversation else { return }
         // A suggested reply goes as it is, and what's being written stays in the box.
@@ -1053,6 +1068,17 @@ struct SessionView: View {
             }
             draft = ""
             await fork(String(trimmed.dropFirst("/fork".count)).trimmingCharacters(in: .whitespaces))
+            return
+        }
+        // Claude Code's own is /btw, Codex's /side; typed here, either asks on the side from here.
+        if reply == nil, row?.sides == true, let question = SideAsk.question(in: trimmed) {
+            if !attached.isEmpty {
+                said = "A question on the side takes words only: take the images off to ask it, or send them in a reply."
+                return
+            }
+            draft = ""
+            typing = false
+            aside = SideAsk(question: question)
             return
         }
         // A message, or one that goes on with a session that isn't running, goes without waiting:
@@ -2273,7 +2299,7 @@ private struct HeldView: View {
 /// A prompt of yours as you wrote it, as the Mac shows one: not read as Markdown, its web links
 /// opening, the images Codealong kept for it shown above its words (read from its Mac), and the
 /// files named.
-private struct PromptText: View {
+struct PromptText: View {
     let text: String
     @Environment(\.imageMac) private var mac
 
@@ -2574,6 +2600,21 @@ private func replyWords(why: String?, pending: Pending?, account: String?, other
     return otherwise()
 }
 
+/// The session's side conversations being opened, with a question to ask as they do.
+struct SideAsk: Identifiable {
+    let id = UUID()
+    var question: String?
+
+    /// What `/side` or `/btw` at the start of what's written asks, its lines kept: empty for the
+    /// command alone, which shows the side conversations; nil when it isn't one.
+    static func question(in text: String) -> String? {
+        for name in ["/side", "/btw"] where text == name || text.hasPrefix(name + " ") || text.hasPrefix(name + "\n") {
+            return String(text.dropFirst(name.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return nil
+    }
+}
+
 /// What a session's screen opens with when a swipe slid it in: what the swipe drew of it.
 struct Opening {
     let kept: Kept
@@ -2754,7 +2795,7 @@ struct SessionGlance: View {
 }
 
 /// Between the reply box's buttons and its edge.
-private let replyInset: CGFloat = 6
+let replyInset: CGFloat = 6
 
 /// The reply box, a control in glass as Codex's phone app draws its own, at the foot of the
 /// conversation, which goes under it at a hard edge rather than reading through it. While you
@@ -2762,7 +2803,7 @@ private let replyInset: CGFloat = 6
 /// turn runs. Open, its field has the box's width to itself, over a row of its buttons: photos on
 /// the left; the model, send now and send or stop on the right. The session's screen and a glance
 /// of it both draw it, so a session slid in looks as its screen will.
-private struct ReplyBox<Above: View, Field: View, Tools: View, Action: View>: View {
+struct ReplyBox<Above: View, Field: View, Tools: View, Action: View>: View {
     let open: Bool
     /// The send button's, which a line of the box matches.
     let size: CGFloat
@@ -2835,7 +2876,7 @@ private struct ReplyBox<Above: View, Field: View, Tools: View, Action: View>: Vi
 }
 
 /// Send's face: the accent while there's something to send, a quiet grey while there isn't.
-private struct SendMark: View {
+struct SendMark: View {
     let ready: Bool
     var sending = false
     let size: CGFloat

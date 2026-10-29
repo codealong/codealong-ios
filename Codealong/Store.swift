@@ -33,6 +33,8 @@ final class Store {
     var offeredLink: String?
     /// A session just started here, to open as soon as its Mac lists it.
     var openWhenListed: String?
+    /// `/side` and a question, typed into the box of the session a test opens (`SIDE=… scripts/run.sh`).
+    var sideWhenOpen: String?
     /// Something to tell you once: what's next after a start that needs you at the Mac, say.
     var notice: String?
     /// How the session you just moved on from went ("Sent to …"), for the next one to say.
@@ -166,6 +168,7 @@ final class Store {
             }
             if let key = ProcessInfo.processInfo.environment["CODEALONG_OPEN"], !key.isEmpty {
                 openWhenListed = key
+                sideWhenOpen = ProcessInfo.processInfo.environment["CODEALONG_SIDE"].flatMap { $0.isEmpty ? nil : $0 }
             }
             // Improve Codealong pressed for a test (`IMPROVE=1 scripts/run.sh`), once the Macs have
             // answered and a session OPEN asked for is up, so the picture is of that screen.
