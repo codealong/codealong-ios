@@ -1962,7 +1962,7 @@ private struct SuggestedRepliesView: View {
     }
 }
 
-private extension ScrollGeometry {
+extension ScrollGeometry {
     /// Scrolled to the newest: the foot of what's in view, above the reply box, is at the end. Not
     /// by the container's height, which leaves out the bars' insets: with them it said a
     /// conversation at its end was scrolled up, and new messages didn't keep it there.

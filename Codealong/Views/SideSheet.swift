@@ -19,8 +19,16 @@ struct SideSheet: View {
     @State private var shown = Shown.open
     @State private var open: SideConversation?
     @State private var earlier: [SideKept] = []
-    /// One closed while its copy answered, being read, as its Mac last said.
-    @State private var closing: SideConversation?
+    /// The latest read of the earlier ones asked for: one that answers after a later one is dropped.
+    @State private var earlierRead = 0
+    /// The ones closed while their copies answered, by id, as their Mac last said.
+    @State private var closing: [String: SideConversation] = [:]
+    /// Closing the open one is on its way: a question waits for it, or it could go to the one
+    /// being closed rather than a new one.
+    @State private var closingOpen = false
+    /// Scrolled to the newest: an answer as it's written keeps it there. Scrolled up to read, it
+    /// stays put.
+    @State private var atBottom = true
     @State private var text = ""
     @State private var typing = false
     @State private var asking = false
@@ -45,7 +53,7 @@ struct SideSheet: View {
     /// The one read, from what its Mac keeps, or as it answers when it was closed answering.
     private var past: (kept: SideKept, turns: [SideTurn], running: Bool)? {
         guard case .past(let id) = shown, let kept = earlier.first(where: { $0.id == id }) else { return nil }
-        if let closing, closing.id == id, closing.turns.count >= kept.turns.count { return (kept, closing.turns, closing.running) }
+        if let c = closing[id], c.turns.count >= kept.turns.count { return (kept, c.turns, c.running) }
         return (kept, kept.turns, kept.answering)
     }
 
@@ -66,8 +74,9 @@ struct SideSheet: View {
                 // A long one opens at its newest; what's short sits at the top.
                 .defaultScrollAnchor(.bottom, for: .initialOffset)
                 .scrollDismissesKeyboard(.immediately)
+                .onScrollGeometryChange(for: Bool.self) { $0.atEnd } action: { _, now in atBottom = now }
                 .onChange(of: open?.turns.last?.answer) { _, _ in
-                    if showing == .open { proxy.scrollTo("end", anchor: .bottom) }
+                    if showing == .open && atBottom { proxy.scrollTo("end", anchor: .bottom) }
                 }
                 .onChange(of: showing) { _, now in
                     if now != .list { proxy.scrollTo("end", anchor: .bottom) }
@@ -75,6 +84,8 @@ struct SideSheet: View {
                 .scrollEdgeEffectStyle(.hard, for: .bottom)
                 .safeAreaBar(edge: .bottom) { box }
             }
+            // A question asked on the Mac with images shows them, read from its Mac.
+            .environment(\.imageMac, row?.device)
             .navigationTitle("On the side")
             .navigationSubtitle(row?.title ?? "")
             .navigationBarTitleDisplayMode(.inline)
@@ -131,7 +142,7 @@ struct SideSheet: View {
                         .padding(.top, 6)
                     VStack(spacing: 0) {
                         ForEach(earlier, id: \.id) { kept in
-                            EarlierRow(kept: kept, isOpen: kept.id == open?.id) {
+                            EarlierRow(kept: kept, isOpen: kept.id == open?.id, answering: closing[kept.id]?.running ?? kept.answering) {
                                 shown = kept.id == open?.id ? .open : .past(kept.id)
                             }
                             .contextMenu {
@@ -218,7 +229,7 @@ struct SideSheet: View {
     }
 
     private var canSend: Bool {
-        whyNot == nil && !asking && !loading && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        whyNot == nil && !asking && !closingOpen && !loading && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func start() async {
@@ -241,8 +252,9 @@ struct SideSheet: View {
     private func reread() async {
         guard let conv = conversation else { return }
         do {
-            let side = try await Task.detached { try conv.readSide() }.value
-            open = conv.side() ?? side
+            // As the core has it after the read: a read the Mac's word overtook is dropped there.
+            _ = try await Task.detached { try conv.readSide() }.value
+            open = conv.side()
             problem = nil
         } catch {
             problem = words(error)
@@ -252,27 +264,40 @@ struct SideSheet: View {
 
     private func readEarlier() async {
         guard let conv = conversation else { return }
+        earlierRead += 1
+        let read = earlierRead
         do {
-            earlier = try await Task.detached { try conv.earlierSides() }.value
+            let kept = try await Task.detached { try conv.earlierSides() }.value
+            guard read == earlierRead else { return }
+            earlier = kept
+            // What's kept says how far each closed one got; the core let go of the ones done.
+            follow()
         } catch {
-            problem = words(error)
+            if read == earlierRead { problem = words(error) }
         }
     }
 
     /// Takes what its Mac said: the open one as it's answered, and one closed answering as it's
     /// read. A turn that ended, or the open one gone, changes what's kept.
     private func follow() {
-        guard let conv = conversation, !loading else { return }
+        guard let conv = conversation else { return }
+        // While it's first read, what's read says.
         let now = conv.side()
-        if now != open {
+        if !loading && now != open {
             let turnEnded = now?.turns.filter(\.done).count != open?.turns.filter(\.done).count
             open = now
             if turnEnded && showing != .open { Task { await readEarlier() } }
         }
-        if case .past(let id) = shown {
-            let was = closing
-            closing = conv.sideClosing(id: id)
-            if was?.running == true && closing?.running == false { Task { await readEarlier() } }
+        // Each closed one still answering, listed or read: once it has answered, what's kept has
+        // its answer.
+        var told: [String: SideConversation] = [:]
+        for kept in earlier where kept.answering || closing[kept.id] != nil {
+            if let c = conv.sideClosing(id: kept.id) { told[kept.id] = c }
+        }
+        if told != closing {
+            let answered = closing.contains { id, was in was.running && told[id]?.running != true }
+            closing = told
+            if answered { Task { await readEarlier() } }
         }
     }
 
@@ -290,8 +315,8 @@ struct SideSheet: View {
         defer { asking = false }
         problem = nil
         do {
-            let side = try await Task.detached { try conv.askSide(text: question, from: from) }.value
-            open = conv.side() ?? side
+            _ = try await Task.detached { try conv.askSide(text: question, from: from) }.value
+            open = conv.side()
             shown = .open
             if text.trimmingCharacters(in: .whitespacesAndNewlines) == question { text = "" }
         } catch {
@@ -306,6 +331,8 @@ struct SideSheet: View {
         guard let conv = conversation, let was = open else { return }
         open = nil
         shown = .list
+        closingOpen = true
+        defer { closingOpen = false }
         do {
             try await Task.detached { try conv.closeSide() }.value
             open = conv.side()
@@ -415,6 +442,8 @@ private struct EarlierRow: View {
     let kept: SideKept
     /// It's the open one, which shows instead of being read.
     let isOpen: Bool
+    /// Closed while its copy answered, and answering still, as its Mac last said.
+    let answering: Bool
     let show: () -> Void
 
     var body: some View {
@@ -449,7 +478,7 @@ private struct EarlierRow: View {
         let ago = last.formatted(.relative(presentation: .named))
         let asked = kept.turns.count == 1 ? "" : " · \(kept.turns.count) questions"
         if isOpen { return "Open · last asked \(ago)\(asked)" }
-        if kept.answering { return "Answering\(asked)" }
+        if answering { return "Answering\(asked)" }
         return "Answered \(ago)\(asked)"
     }
 }
