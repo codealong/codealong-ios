@@ -1354,10 +1354,16 @@ struct SessionView: View {
     /// You replied or answered here, or a message to it is on its way: going on leaves it to that.
     private var replied: Bool { acted || !(store.outgoing[key] ?? []).isEmpty }
 
-    /// Pick a time… in the bar's menu: snoozes it until the time picked, then goes on.
+    /// Pick a time… in the bar's menu: snoozes it until the time picked, then goes on. What was
+    /// next can stop waiting while the sheet is open, leaving nothing to go on to: it's snoozed all
+    /// the same, as the session's own Snooze does it.
     private func pickSnooze() {
         snoozing = SnoozePick(id: key, title: "Snooze") { until in
-            if let onward { snooze(until: until, goingOn: onward) }
+            if let onward {
+                snooze(until: until, goingOn: onward)
+            } else {
+                Task { await snooze(until: until) }
+            }
         }
     }
 

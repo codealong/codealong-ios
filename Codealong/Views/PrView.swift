@@ -270,10 +270,16 @@ struct PrView: View {
     }
 
     /// Pick a time… in the bar's menu: snoozes your review until the time picked, then goes on.
+    /// What was next can stop waiting while the sheet is open, leaving nothing to go on to: it's
+    /// snoozed all the same, as its own Snooze review does it.
     private func pickSnooze() {
         guard let pr else { return }
         snoozing = SnoozePick(id: pr.key, title: "Snooze review") { until in
-            if let onward { snooze(until: until, goingOn: onward) }
+            if let onward {
+                snooze(until: until, goingOn: onward)
+            } else {
+                Task { await snooze(pr, until: until) }
+            }
         }
     }
 
