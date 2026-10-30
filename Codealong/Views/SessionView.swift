@@ -1344,8 +1344,10 @@ struct SessionView: View {
     /// What going on to the next with `pick` does to this one.
     private func going(_ pick: SwipeOn) -> Going { Going.of(pick, row: row, pending: pending, acted: replied) }
 
-    /// You replied or answered here, or a message to it is on its way: going on leaves it to that.
-    private var replied: Bool { acted || !(store.outgoing[key] ?? []).isEmpty }
+    /// You replied or answered here, or a message to it is on its way: going on leaves it to that,
+    /// until it waits on you anew (the turn you gave it ended while you watched, say), when going
+    /// on does to it what it does to any.
+    private var replied: Bool { (acted && !store.waitsAnew(key)) || !(store.outgoing[key] ?? []).isEmpty }
 
     /// Pick a time… in the bar's menu: snoozes it until the time picked, then goes on. What was
     /// next can stop waiting while the sheet is open, leaving nothing to go on to: it's snoozed all

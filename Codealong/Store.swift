@@ -343,6 +343,14 @@ final class Store {
         if let since = waiting(key)?.since { handled[key] = since }
     }
 
+    /// `key`, a session dealt with here, waits on you again since: it's back in what waits, as the
+    /// core's `leftAfter` has it.
+    func waitsAnew(_ key: String) -> Bool {
+        guard let dealt = handled[key], let row = sessions.first(where: { $0.key == key }),
+              row.section == .needsYou || row.section == .yourTurn else { return false }
+        return Waiting.session(row).since > dealt
+    }
+
     func conversation(_ key: String) -> Conversation? {
         try? core?.conversation(key: key)
     }
