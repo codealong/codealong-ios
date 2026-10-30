@@ -829,7 +829,8 @@ impl Core {
     /// search hits for it (`said`) and the sessions a Mac's suggestion ranked first (`ranked`);
     /// archived sessions too when `archived` asks for them.
     pub fn quick(&self, project: String, query: String, said: Vec<SaidHit>, ranked: Vec<String>, archived: bool) -> QuickList {
-        // Archived sessions are read only for words, which count them whether they're listed or not.
+        // Sessions the list leaves out (archived ones, and those in worktrees in no project) are
+        // read only for words, which find them, and count the archived ones listed or not.
         let searching = !words_of(&query).is_empty();
         self.client.with_feeds(|feeds| quick_list(&crate::session_rows(feeds, searching), &all_prs(feeds, &self.you(feeds)), &project, &query, &said, &ranked, archived, now_ms()))
     }

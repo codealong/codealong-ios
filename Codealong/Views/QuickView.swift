@@ -116,9 +116,10 @@ struct QuickView: View {
             .sheet(isPresented: $showingMacs) {
                 DevicesView()
             }
-            // A session started here, or a link to one, opens once its Mac lists it.
-            .onChange(of: store.sessions) { _, _ in openListed() }
-            .onChange(of: store.prs) { _, _ in openListed() }
+            // A session started here, or a link to one, opens once its Mac lists it: at any change
+            // the Macs send, since one that isn't in the list (an older or archived session)
+            // changes neither its sessions nor its PRs as it comes.
+            .onChange(of: store.tick) { _, _ in openListed() }
             .onChange(of: store.openWhenListed) { _, _ in openListed() }
             // The first that wait on you are the likeliest to be opened: read them ahead, so they
             // show at once. Again as they change, and once a Mac connects.

@@ -580,8 +580,8 @@ impl Core {
     }
 
     /// The rows of the sessions `keys` that the Macs have, archived ones too: a search finds
-    /// sessions the snapshot's list leaves out (older ones, and archived ones when it's asked to),
-    /// and a page opened from there shows one of them.
+    /// sessions the snapshot's list leaves out (older ones, ones in worktrees in no project, and
+    /// archived ones when it's asked to), and a page opened from there shows one of them.
     pub fn sessions(&self, keys: Vec<String>) -> Vec<SessionRow> {
         if keys.is_empty() {
             return Vec::new();
@@ -652,12 +652,14 @@ pub(crate) fn all_rows(feeds: &Feeds) -> Vec<SessionRow> {
     session_rows(feeds, false)
 }
 
-/// Every session on the linked Macs once, as `all_rows` has them, with the archived ones too when
-/// `archived` asks for them, for a search that finds them.
-pub(crate) fn session_rows(feeds: &Feeds, archived: bool) -> Vec<SessionRow> {
+/// Every session on the linked Macs once, as `all_rows` has them, then with `every` the ones it
+/// leaves out too (archived ones, and those in worktrees in no project), as the Mac's search finds
+/// them: for a search, and a page opened from one. Those come after, as they are, counting no runs.
+pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
     let now = now_ms();
     let projects = Projects::of_feeds(feeds);
     let mut sessions = Vec::new();
+    let mut unlisted = Vec::new();
     for (d, replica) in feeds {
         let titles: std::collections::HashMap<&str, &str> = replica.lanes.iter().flat_map(|l| l.sessions.iter()).map(|s| (s.key.as_str(), s.title.as_str())).collect();
         let mut seen = std::collections::HashSet::new();
@@ -666,18 +668,19 @@ pub(crate) fn session_rows(feeds: &Feeds, archived: bool) -> Vec<SessionRow> {
         let mut all: Vec<(&Lane, &Session)> = replica.lanes.iter().flat_map(|l| l.sessions.iter().map(move |s| (l, s))).collect();
         all.sort_by_key(|(_, s)| s.visitor.is_some());
         for (lane, s) in all {
-            if (s.archived && !archived) || !seen.insert(s.key.as_str()) {
+            if !seen.insert(s.key.as_str()) {
                 continue;
             }
             // Worktrees in no project stay off the Mac's board unless they need you, and
             // off here unless another Mac has their repo in a project. One pinned there stays.
             let project = projects.lane(lane);
-            if lane.hidden && project.is_none() && !matches!(s.status, PeerStatus::Needs | PeerStatus::Error) && s.pin.is_none() {
+            let listed = !s.archived && !(lane.hidden && project.is_none() && !matches!(s.status, PeerStatus::Needs | PeerStatus::Error) && s.pin.is_none());
+            if !listed && !every {
                 continue;
             }
             let status: Status = s.status.into();
             let snoozed_until = s.snoozed_until.filter(|&t| t > now && status != Status::Working);
-            sessions.push(SessionRow {
+            let row = SessionRow {
                 key: remote_key(&d.short, &s.key),
                 device: d.key.clone(),
                 device_name: d.name.clone(),
@@ -738,22 +741,23 @@ pub(crate) fn session_rows(feeds: &Feeds, archived: bool) -> Vec<SessionRow> {
                 emblem: s.emblem.as_ref().map(Emblem::from),
                 id: s.id.clone(),
                 archived: s.archived,
-            });
+            };
+            if listed { sessions.push(row) } else { unlisted.push(row) }
         }
     }
     count_runs(&mut sessions);
+    sessions.extend(unlisted);
     sessions
 }
 
 /// Each headless run counted on the row of the session it came from, as the Mac's Sessions view
 /// counts them (its boardLists.ts `runCounts`), and the ones whose session isn't on a linked
 /// Mac's board listed as sessions of their own (its `placeHelpers`): a script in a terminal ran
-/// it, its session was archived, or it ended before its Mac saw it running. Archived rows, listed
-/// only by a search that asks for them, leave that as it is without them.
+/// it, its session was archived, or it ended before its Mac saw it running.
 fn count_runs(rows: &mut [SessionRow]) {
-    let keys: std::collections::HashSet<String> = rows.iter().filter(|r| !r.archived).map(|r| r.key.clone()).collect();
+    let keys: std::collections::HashSet<String> = rows.iter().map(|r| r.key.clone()).collect();
     let mut runs: std::collections::HashMap<String, (u32, u32)> = std::collections::HashMap::new();
-    for r in rows.iter_mut().filter(|r| r.headless && !r.archived) {
+    for r in rows.iter_mut().filter(|r| r.headless) {
         match r.origin.as_ref().map(|o| o.key.clone()).filter(|k| keys.contains(k)) {
             Some(parent) => {
                 let c = runs.entry(parent).or_default();
@@ -2592,27 +2596,33 @@ mod order_tests {
         assert!(!by("asks").unattended, "one that needs you waits on you");
         assert!(!by("lone").unattended && !by("gone").unattended, "listed as sessions of their own");
         assert_eq!(by("lone").runs, 0);
-
-        // A search that lists archived sessions too lists the rest as they were: a run of an
-        // archived session is still one of its own, and the archived one counts none.
-        let mut rows = vec![SessionRow { archived: true, ..row("old", Status::Idle, 0, None, 0) }, run("left", Status::Idle, Some("old"))];
-        count_runs(&mut rows);
-        assert!(!rows[1].unattended);
-        assert_eq!(rows[0].runs, 0);
     }
 
     #[test]
-    fn archived_sessions_have_rows_only_when_asked_for() {
+    fn every_session_has_a_row_when_asked_for_and_the_lists_rows_stay_as_they_were() {
         use codealong_peer::client::Device;
         use codealong_peer::feed::Replica;
+        use codealong_peer::model::SessionOrigin as Origin;
         let mac = Device { key: "m".into(), short: "m".into(), name: "Mac".into(), online: true, since: None, last_seen: None, remote_control: true, app: String::new(), loading: false, linked_back: true };
         let mut lane = codealong_peer::model::Lane::new("/src/app", "App", "app");
-        lane.sessions = vec![Session { archived: true, ..Session::new(Harness::Claude, "claude", "old") }, Session::new(Harness::Claude, "claude", "new")];
-        let replica = Replica { lanes: vec![lane], ..Replica::default() };
+        // A headless run of an archived session.
+        let run = Session { headless: true, origin: Some(Origin { key: "claude:claude:old".into(), how: OriginHow::Started }), ..Session::new(Harness::Claude, "claude", "run") };
+        lane.sessions = vec![Session { archived: true, ..Session::new(Harness::Claude, "claude", "old") }, Session::new(Harness::Claude, "claude", "new"), run];
+        // A worktree in no project, which the list leaves out while nothing in it needs you.
+        let mut scratch = codealong_peer::model::Lane::new("/scratch", "Elsewhere", "scratch");
+        scratch.hidden = true;
+        scratch.sessions = vec![Session::new(Harness::Claude, "claude", "aside")];
+        let replica = Replica { lanes: vec![lane, scratch], ..Replica::default() };
         let feeds = [(mac, &replica)];
-        let keys = |rows: Vec<SessionRow>| rows.into_iter().map(|r| (r.key, r.archived)).collect::<Vec<_>>();
-        assert_eq!(keys(all_rows(&feeds)), [("@m:claude:claude:new".to_string(), false)]);
-        assert_eq!(keys(session_rows(&feeds, true)), [("@m:claude:claude:old".to_string(), true), ("@m:claude:claude:new".into(), false)]);
+        let keys = |rows: &[SessionRow]| rows.iter().map(|r| (r.key.trim_start_matches("@m:claude:claude:").to_string(), r.archived)).collect::<Vec<_>>();
+        let listed = all_rows(&feeds);
+        assert_eq!(keys(&listed), [("new".to_string(), false), ("run".into(), false)]);
+        let every = session_rows(&feeds, true);
+        assert_eq!(keys(&every), [("new".to_string(), false), ("run".into(), false), ("old".into(), true), ("aside".into(), false)]);
+        // The run is listed as a session of its own either way, and the archived one counts none.
+        assert_eq!(every[..2], listed[..]);
+        assert!(!every[1].unattended);
+        assert_eq!(every[2].runs, 0);
     }
 
     #[test]

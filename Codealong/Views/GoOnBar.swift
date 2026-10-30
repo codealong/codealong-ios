@@ -117,6 +117,9 @@ enum Going: Hashable {
         let waits = pending != nil || (row.status == .needs && !row.seenable)
         switch pick {
         case _ where acted: return .on
+        // An archived one, opened from a search, is in no list to wait in: archiving or snoozing
+        // it would do no more than going on does.
+        case .archive where row.archived, .snooze where row.archived: return .on
         // A snooze picked for this one is done whatever it waits on: it puts nothing off for
         // good, and its Mac snoozes a session at any stage, as its own Snooze does.
         case .snooze(let time): return .snooze(Snooze.phrase(time.picked()))
@@ -125,7 +128,7 @@ enum Going: Hashable {
         case .keep: return row.seenable ? .later : .on
         case .seen: return row.seenable ? .seen : .on
         case .done: return row.status == .working ? .working : .done
-        case .archive: return row.status == .working ? .working : row.archived ? .on : .archive
+        case .archive: return row.status == .working ? .working : .archive
         }
     }
 
