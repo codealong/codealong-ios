@@ -10,11 +10,11 @@ protocol GoOnPick: Hashable {
 }
 
 /// What going on from a session's screen to the next that waits on you can do to it. A swipe, Go
-/// to next in the menu and ⌘] mark it seen, as going on always did; a tap on the bar over the box
-/// offers the rest, and the one picked is done as it goes on. Leave as it is goes on without
-/// marking it anything, so one that asks you something stays in Needs you and comes round again
-/// after the rest. A snooze runs for a time the menus offer, as the session's own Snooze does
-/// (`Snooze`), or for one picked.
+/// to next in the menu and ⌘] mark it seen, which opening it doesn't; a tap on the bar over the
+/// box offers the rest, and the one picked is done as it goes on. Leave as it is goes on without
+/// marking it anything, so a turn that ended stays in Your turn, or one that asks you something
+/// in Needs you, and comes round again after the rest. A snooze runs for a time the menus offer,
+/// as the session's own Snooze does (`Snooze`), or for one picked.
 enum SwipeOn: GoOnPick {
     case keep, seen, done, archive
     case snooze(Snooze.For)

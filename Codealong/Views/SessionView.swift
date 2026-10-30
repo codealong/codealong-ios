@@ -9,7 +9,8 @@ import SwiftUI
 /// waits on you, a bar over the box says what a swipe does to this one and how many more wait, and
 /// a swipe goes on, to a PR's page as to a session's screen, or on the last to the end of what
 /// waits. Holding Send sends and goes on at once. Going on marks it seen, so a turn that ended
-/// leaves Your turn and a reply that asks you something leaves Needs you, as it always did; a tap on
+/// leaves Your turn and a reply that asks you something leaves Needs you; opening it, or a turn
+/// ending while it's open, doesn't, so one read and gone back from is where it was. A tap on
 /// the bar offers leaving it as it is, marking it done, archiving it or snoozing it instead, and
 /// goes on as it does it (`SwipeOn`). One you replied to here, or one at work, is left as it is, and
 /// one skipped while it waits on a call to allow comes round again after the rest (`Going`).
@@ -230,11 +231,6 @@ struct SessionView: View {
         }
         // Its Mac says the mode it's in now: that's the one shown.
         .onChange(of: row?.mode?.id) { _, _ in modePicked = nil }
-        // A turn that ends while it's shown here has been seen; one you marked unread here is
-        // left so.
-        .onChange(of: row?.status) { _, status in
-            if status == .unread && !markedUnread { store.markSeen(key) }
-        }
         // A reply being written comes as a change the core reports.
         .onChange(of: store.tick) { _, _ in
             guard watching, let conv = conversation else { return }
@@ -462,8 +458,7 @@ struct SessionView: View {
             Label("Quiet", systemImage: "speaker.slash")
         }
         .disabled(!online)
-        // A reply that asks you something isn't seen by opening it, and the last one waiting
-        // has nothing to swipe on to.
+        // Opening it doesn't mark it seen, going on from it does: this does it and stays.
         if row?.seenable == true {
             Button("Mark as seen", systemImage: "eye") { store.markSeen(key) }
                 .disabled(!online)
@@ -766,7 +761,6 @@ struct SessionView: View {
             }
         }
         loading = false
-        if row?.status == .unread { store.markSeen(key) }
         // A turn longer than the first page: the prompt behind it, to pin from the start.
         await lookBack()
         // The next that waits on you is read now, so it shows at once when you go on to it.
@@ -1132,17 +1126,16 @@ struct SessionView: View {
             // Back is a step by hand: nothing is done to this one for it. The trail is cut back once
             // it's there, so what's beside it stays put while it slides.
             store.outcome = acted ? said : nil
-            slide(to: target.key, back: true, speed: speed) { store.back(to: target.key) }
+            slide(to: target.key, back: true, speed: speed, seen: false) { store.back(to: target.key) }
         }
     }
 
     /// Slides this screen away and `target`'s in after it, from what the phone keeps of it, then
     /// does `then` and shows `target` in its place, starting as it was drawn sliding in.
     private func slide(to target: String, back: Bool, speed: CGFloat = 0, seen: Bool = true, then: @escaping () -> Void = {}) {
-        // Gone on from, it's been seen, as the Mac's ⌘E marks it: a finished turn, or a reply
-        // that asks you something, which then leaves Needs you. Opening marks a finished turn
-        // too, but only once its Mac has answered, which a quick swipe goes on before; one that
-        // asks you something stays as it is while it's open, so going back to the list leaves it.
+        // Gone on from, it's been seen, as the Mac's ⌘E marks it: a finished turn, which then
+        // leaves Your turn, or a reply that asks you something, which leaves Needs you. Only
+        // going on does it: opened, read and gone back from, it's where it was.
         if seen && row?.seenable == true && !markedUnread { store.markSeen(key) }
         // A PR's page opens with what was last read of it.
         if !target.hasPrefix(PrView.prefix) {
@@ -1264,8 +1257,8 @@ struct SessionView: View {
         }
     }
 
-    /// Your turn again, as the Mac's Mark as unread: until it's seen or prompted. Shown here it
-    /// would be seen at once, so the screen goes back to the list.
+    /// Your turn again, as the Mac's Mark as unread: until it's seen or prompted. It's left for
+    /// later, so the screen goes back to the list.
     private func markUnread() async {
         markedUnread = true
         do {

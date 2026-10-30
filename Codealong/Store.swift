@@ -102,7 +102,7 @@ final class Store {
     /// another app.
     @ObservationIgnored private var inFront = false
     /// Launched for a check that goes through your real sessions (`LOOK_ONLY=1 scripts/run.sh`):
-    /// nothing opened here is marked seen on its Mac, so the check leaves them as they were.
+    /// nothing gone on from here is marked seen on its Mac, so the check leaves them as they were.
     private let lookOnly = ProcessInfo.processInfo.environment["CODEALONG_LOOK_ONLY"] == "1"
     /// The sessions a check goes through, in order, in place of what waits on you
     /// (`QUEUE=<key>,<key> scripts/run.sh`): any sessions, waiting or not.

@@ -63,10 +63,11 @@ inside Codealong on your Mac streams its reply as it's written.
 turns come one after another, in the Mac's order: each kind the longest waiting first, and the ones
 you go on from come round again after the rest. While something else waits on you, a bar over the
 reply box says how many more do and what swiping left does to the session you're reading: marks it
-seen and goes on. Tap the bar to do something else instead, and go on as you pick it: leave it as
-it is (to come round again after the rest), mark it done, archive it, or snooze it for a while.
-Swipe right to go back to the one you came from. One you replied to, one still working, and one
-waiting on you to allow something are left as they are, and holding *Send* sends and goes straight
+seen and goes on. Opening one doesn't mark it seen, so one you read and go back from is still
+waiting. Tap the bar to do something else instead, and go on as you pick it: leave it as it is
+(to come round again after the rest), mark it done, archive it, or snooze it for a while. Swipe
+right to go back to the one you came from, leaving this one as it is. One you replied to, one
+still working, and one waiting on you to allow something are left as they are, and holding *Send* sends and goes straight
 on. A PR's page has the same bar over its review box: swiping on from a review you haven't given
 brings it round again later, and a tap on the bar snoozes it instead. The next one is read ahead,
 so it shows at once. On the last one the bar says nothing else waits, and going on goes to a page that says so,
