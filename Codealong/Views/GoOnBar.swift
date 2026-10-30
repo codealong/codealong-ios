@@ -47,7 +47,10 @@ enum SwipeOn: GoOnPick {
 
     /// What the bar's menu offers besides marking it seen, as it is now (`Going.offered`).
     static func offers(row: SessionRow?, pending: Pending?, acted: Bool) -> [SwipeOn] {
-        Going.offered([.keep, .done, .archive] + Snooze.For.offered.map(SwipeOn.snooze), besides: .seen) {
+        // An archived one, opened from a search, is in no list to wait in: it isn't offered
+        // archiving or snoozing, as its menu doesn't offer them.
+        let picks: [SwipeOn] = row?.archived == true ? [.keep, .done] : [.keep, .done, .archive] + Snooze.For.offered.map(SwipeOn.snooze)
+        return Going.offered(picks, besides: .seen) {
             Going.of($0, row: row, pending: pending, acted: acted)
         }
     }
@@ -117,9 +120,6 @@ enum Going: Hashable {
         let waits = pending != nil || (row.status == .needs && !row.seenable)
         switch pick {
         case _ where acted: return .on
-        // An archived one, opened from a search, is in no list to wait in: archiving or snoozing
-        // it would do no more than going on does.
-        case .archive where row.archived, .snooze where row.archived: return .on
         // A snooze picked for this one is done whatever it waits on: it puts nothing off for
         // good, and its Mac snoozes a session at any stage, as its own Snooze does.
         case .snooze(let time): return .snooze(Snooze.phrase(time.picked()))
