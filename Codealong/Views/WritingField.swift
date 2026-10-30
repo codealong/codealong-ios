@@ -129,6 +129,35 @@ private struct Words: UIViewRepresentable {
             followFocus()
         }
 
+        /// Swiping back to a page whose field had the keyboard, UIKit gives it back as the swipe
+        /// begins, but SwiftUI makes no room for a keyboard that comes while the page is still
+        /// sliding in, nor once it's in: the quick search's start bar stayed under it. So the
+        /// field takes it once the page is in, where SwiftUI does. On a swipe that's let go,
+        /// the page it was on is out of the window by then and takes nothing.
+        override func becomeFirstResponder() -> Bool {
+            // Asked for here, it wants it already; and nothing can be tapped while a page slides.
+            if !wantsFocus, let coordinator = controller?.transitionCoordinator {
+                coordinator.animate(alongsideTransition: nil) { [weak self] _ in
+                    Task { @MainActor in
+                        guard let self, self.window != nil, !self.isFirstResponder else { return }
+                        _ = self.becomeFirstResponder()
+                    }
+                }
+                return false
+            }
+            return super.becomeFirstResponder()
+        }
+
+        /// The view controller it's in, whose transition (a swipe back, say) is under way.
+        private var controller: UIViewController? {
+            var responder = next
+            while let r = responder {
+                if let controller = r as? UIViewController { return controller }
+                responder = r.next
+            }
+            return nil
+        }
+
         /// Copied words paste as words; an image alone attaches.
         private var pastesImages: Bool {
             let board = UIPasteboard.general
