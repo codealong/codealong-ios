@@ -22,6 +22,9 @@ struct QuickView: View {
     @AppStorage("project") private var project = ""
     /// Worktrees folded away in the list by project, by their ids, a line each.
     @AppStorage("folded") private var foldedLines = ""
+    /// Searches list archived sessions too, after the others that match as closely: kept, as the
+    /// Mac's quick panel keeps its Archived box.
+    @AppStorage("search.archived") private var withArchived = false
     /// Merged and closed PRs shown, which start folded.
     @State private var showingDone = false
     /// How tall the list is, which the start bar over it mustn't outgrow.
@@ -122,9 +125,12 @@ struct QuickView: View {
             .task(id: "\(firstWaiting)\(store.devices.filter(\.online).count)") {
                 for key in firstWaiting { store.prefetch(key) }
             }
-            // Back at the list, swiping back starts again from the next session opened.
-            .onChange(of: path) { _, now in
+            .onChange(of: path, initial: true) { _, now in
+                // Back at the list, swiping back starts again from the next session opened.
                 if now.isEmpty { store.trail.removeAll() }
+                // A session a search found outside the list (an older or archived one) has its
+                // row read for its page while it's open.
+                store.follow(now)
             }
             // Improve Codealong pressed on this or any other screen: the list takes it up.
             .onChange(of: store.improving?.id) { _, id in
@@ -455,7 +461,7 @@ struct QuickView: View {
     /// Typed words search, whatever the page; with none, the page in its order.
     private var listed: Listed {
         if !query.isEmpty {
-            return .quick(store.quick(project: project, query: query, said: said, ranked: routedFor == query ? route?.ranked ?? [] : []))
+            return .quick(store.quick(project: project, query: query, said: said, ranked: routedFor == query ? route?.ranked ?? [] : [], archived: withArchived))
         }
         if page == .prs { return .prs(store.prList(project: project)) }
         switch order {
@@ -519,7 +525,18 @@ struct QuickView: View {
             if let routeProblem, !query.isEmpty {
                 Note(text: "Couldn’t suggest where this goes: \(routeProblem)")
             }
-            if !query.isEmpty && content.isEmpty && suggested.isEmpty && !routing && !saidBuilding {
+            // Archived sessions match where no other session does: a tap lists them.
+            if case let .quick(quick) = content, !query.isEmpty, !withArchived, quick.archivedFound > 0, !quick.sections.contains(where: { $0.group == .sessions }) {
+                let n = Int(quick.archivedFound)
+                Button { listArchived(true) } label: {
+                    let archived = n == 1 ? "1 archived \(content.isEmpty ? "session does" : "one does")" : "\(n) archived \(content.isEmpty ? "sessions do" : "ones do")"
+                    Text("\(content.isEmpty ? "No sessions or PRs match" : "No session matches"), but \(archived). \(Text(n == 1 ? "Show it" : "Show them").foregroundStyle(.tint))")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+            } else if !query.isEmpty && content.isEmpty && suggested.isEmpty && !routing && !saidBuilding {
                 Note(text: "No sessions or PRs match. Start a session with this prompt below.")
             }
             if !query.isEmpty && saidBuilding {
@@ -540,9 +557,45 @@ struct QuickView: View {
                     }
                 }
             } header: {
-                GroupHeading(title: section.group.title, count: Int(section.count), symbol: section.group == .pinned ? "pin.fill" : nil)
+                HStack {
+                    GroupHeading(title: section.group.title, count: Int(section.count), symbol: section.group == .pinned ? "pin.fill" : nil)
+                    if section.group == .sessions && (withArchived || quick.archivedFound > 0) {
+                        Spacer()
+                        archivedToggle(found: Int(quick.archivedFound))
+                    }
+                }
             }
         }
+    }
+
+    /// Under the sessions a search finds: archived ones listed too, or left out, from now on, as
+    /// the Mac's quick panel's Archived box does it. Lit and checked while they're listed; how many
+    /// the words find either way.
+    private func archivedToggle(found: Int) -> some View {
+        Button { listArchived(!withArchived) } label: {
+            HStack(spacing: 4) {
+                Image(systemName: withArchived ? "checkmark" : "archivebox")
+                Text("Archived")
+                if found > 0 {
+                    Text("\(found)").monospacedDigit()
+                }
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(withArchived ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+            .padding(.horizontal, 10)
+            .frame(minHeight: 28)
+            .background(withArchived ? AnyShapeStyle(.tint.opacity(0.18)) : AnyShapeStyle(.fill.tertiary), in: .capsule)
+            .contentShape(.capsule)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(found == 1 ? "Archived, 1 session" : "Archived, \(found) sessions")
+        .accessibilityValue(withArchived ? "Listed" : "Left out")
+        .accessibilityAddTraits(withArchived ? .isSelected : [])
+        .accessibilityHint(withArchived ? "Leaves archived sessions out of searches" : "Lists archived sessions in searches")
+    }
+
+    private func listArchived(_ on: Bool) {
+        withAnimation(.snappy) { withArchived = on }
     }
 
     /// The sessions pinned on their Macs, leading By project and Recent as they lead the rest.
@@ -694,8 +747,13 @@ struct QuickView: View {
         .tint(.primary)
         .contextMenu { sessionMenu(r) }
         .swipeActions(edge: .trailing) {
-            Button("Archive", systemImage: "archivebox") { store.archive(r.key) }
-                .tint(.gray)
+            if r.archived {
+                Button("Unarchive", systemImage: "tray.and.arrow.up") { act { try await store.unarchive(r.key) } }
+                    .tint(.gray)
+            } else {
+                Button("Archive", systemImage: "archivebox") { store.archive(r.key) }
+                    .tint(.gray)
+            }
         }
         .swipeActions(edge: .leading) {
             if r.status == .unread {
@@ -750,19 +808,22 @@ struct QuickView: View {
             if r.unreadable {
                 Button("Mark as unread", systemImage: "envelope.badge") { act { try await store.markUnread(r.key) } }
             }
-            // Pinned on its Mac, which lists it first there and here.
-            Button(r.pinned == nil ? "Pin" : "Unpin", systemImage: r.pinned == nil ? "pin" : "pin.slash") {
-                act { try await store.pin(r.key, r.pinned == nil) }
-            }
-            Menu("Snooze", systemImage: "moon.zzz") {
-                ForEach(Snooze.choices()) { c in
-                    Button(c.label) { act { try await store.snooze(r.key, until: c.until) } }
+            // Pinned on its Mac, which lists it first there and here. An archived one is in no list
+            // to lead or wait in: unarchived, it can be.
+            if !r.archived {
+                Button(r.pinned == nil ? "Pin" : "Unpin", systemImage: r.pinned == nil ? "pin" : "pin.slash") {
+                    act { try await store.pin(r.key, r.pinned == nil) }
                 }
-                Button("Pick a time…", systemImage: "calendar") {
-                    snoozing = SnoozePick(id: r.key, title: "Snooze") { until in act { try await store.snooze(r.key, until: until) } }
-                }
-                if r.snoozedUntil != nil {
-                    Button("Wake now", systemImage: "sun.max") { act { try await store.snooze(r.key, until: nil) } }
+                Menu("Snooze", systemImage: "moon.zzz") {
+                    ForEach(Snooze.choices()) { c in
+                        Button(c.label) { act { try await store.snooze(r.key, until: c.until) } }
+                    }
+                    Button("Pick a time…", systemImage: "calendar") {
+                        snoozing = SnoozePick(id: r.key, title: "Snooze") { until in act { try await store.snooze(r.key, until: until) } }
+                    }
+                    if r.snoozedUntil != nil {
+                        Button("Wake now", systemImage: "sun.max") { act { try await store.snooze(r.key, until: nil) } }
+                    }
                 }
             }
             Toggle(isOn: Binding(get: { r.quiet }, set: { on in act { try await store.quiet(r.key, on) } })) {
@@ -770,7 +831,12 @@ struct QuickView: View {
             }
             Button("Mark as done", systemImage: "checkmark.circle") { markDone(r) }
                 .disabled(!online || asking.contains("done:" + r.key))
-            Button("Archive", systemImage: "archivebox") { store.archive(r.key) }
+            if r.archived {
+                Button("Unarchive", systemImage: "tray.and.arrow.up") { act { try await store.unarchive(r.key) } }
+                    .disabled(!online)
+            } else {
+                Button("Archive", systemImage: "archivebox") { store.archive(r.key) }
+            }
         }
         Section {
             if !r.id.isEmpty {
@@ -1161,7 +1227,7 @@ struct QuickView: View {
             showingMacs = true
             return
         }
-        let listed = key.hasPrefix(PrView.prefix) ? store.pr(String(key.dropFirst(PrView.prefix.count))) != nil : store.sessions.contains { $0.key == key }
+        let listed = key.hasPrefix(PrView.prefix) ? store.pr(String(key.dropFirst(PrView.prefix.count))) != nil : store.has(key)
         if listed {
             store.openWhenListed = nil
             // A start that hadn't been listed yet has been now.

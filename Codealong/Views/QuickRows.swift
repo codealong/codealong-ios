@@ -31,6 +31,10 @@ struct QuickSessionRow: View {
                         if let until = row.snoozedUntil {
                             Label(Clock.until(until, now: context.date), systemImage: "moon.zzz")
                                 .accessibilityLabel("Snoozed, back in \(Clock.until(until, now: context.date))")
+                        } else if row.archived {
+                            // Listed only because searches list archived sessions too.
+                            Label(Clock.ago(row.statusSince ?? row.lastActivity, now: context.date), systemImage: "archivebox")
+                                .accessibilityLabel("Archived, \(Clock.ago(row.statusSince ?? row.lastActivity, now: context.date))")
                         } else {
                             Text(Clock.ago(row.statusSince ?? row.lastActivity, now: context.date))
                         }

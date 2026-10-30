@@ -147,7 +147,8 @@ struct TitleBlock: View {
     @Environment(Store.self) private var store
 
     var body: some View {
-        switch store.waiting(key) {
+        // A session opened from a search that found it outside the list too.
+        switch store.waiting(key) ?? store.row(key).map(Waiting.session) {
         case .pr(let pr):
             // Verbatim: a localized number would be written #1,244.
             Text(verbatim: "#\(pr.number)").font(.headline)
@@ -159,7 +160,7 @@ struct TitleBlock: View {
                     }
                     Text(row.title).font(.headline).lineLimit(1)
                 }
-                Text("\(Names.short(row.deviceName)) · \(row.project)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                Text("\(Names.short(row.deviceName)) · \(row.project)\(row.archived ? " · Archived" : "")").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
             }
         case nil where key == EndView.key:
             EmptyView()

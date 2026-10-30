@@ -276,6 +276,9 @@ pub struct QuickList {
     /// Nothing typed and nothing waits on you.
     pub nothing_waits: bool,
     pub working: u32,
+    /// How many archived sessions the typed words find, listed or not: what turning archived
+    /// sessions on in a search would bring.
+    pub archived_found: u32,
 }
 
 #[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -383,11 +386,14 @@ fn session(row: &SessionRow) -> QuickRow {
 }
 
 /// The list for what's typed (`query`) in `project` (empty for all). `said` has the Macs' text
-/// search hits for it and `ranked` the sessions Jev scored, which lead the sessions found.
-pub(crate) fn quick_list(rows: &[SessionRow], prs: &[PrRow], project: &str, query: &str, said: &[SaidHit], ranked: &[String], now: i64) -> QuickList {
+/// search hits for it and `ranked` the sessions Jev scored, which lead the sessions found. Archived
+/// sessions in `rows` are found only by words, and listed only when `archived` asks for them, after
+/// the others that match as closely, as the Mac's quick panel lists them with its Archived box
+/// checked: you mostly look for what you still work on.
+pub(crate) fn quick_list(rows: &[SessionRow], prs: &[PrRow], project: &str, query: &str, said: &[SaidHit], ranked: &[String], archived: bool, now: i64) -> QuickList {
     let inp = |p: &str| project.is_empty() || p == project;
-    let rows: Vec<&SessionRow> = rows.iter().filter(|r| inp(&r.project)).collect();
     let words = words_of(query);
+    let rows: Vec<&SessionRow> = rows.iter().filter(|r| inp(&r.project) && (!r.archived || !words.is_empty())).collect();
     let mut sections = Vec::new();
 
     if words.is_empty() {
@@ -430,7 +436,7 @@ pub(crate) fn quick_list(rows: &[SessionRow], prs: &[PrRow], project: &str, quer
         if !recent.is_empty() {
             sections.push(QuickSection { group: QuickGroup::Recent, count: recent.len() as u32, rows: recent.into_iter().take(RECENT_SESSIONS).map(session).collect() });
         }
-        return QuickList { sections, nothing_waits: !waiting, working };
+        return QuickList { sections, nothing_waits: !waiting, working, archived_found: 0 };
     }
 
     let has_all = |hay: &str| has_words(hay, &words);
@@ -451,7 +457,11 @@ pub(crate) fn quick_list(rows: &[SessionRow], prs: &[PrRow], project: &str, quer
             }
         })
         .collect();
-    found.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)).then(status_rank(a.3.status).cmp(&status_rank(b.3.status))).then(b.3.last_activity.cmp(&a.3.last_activity)).then_with(|| a.3.key.cmp(&b.3.key)));
+    let archived_found = found.iter().filter(|f| f.3.archived).count() as u32;
+    if !archived {
+        found.retain(|f| !f.3.archived);
+    }
+    found.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)).then(a.3.archived.cmp(&b.3.archived)).then(status_rank(a.3.status).cmp(&status_rank(b.3.status))).then(b.3.last_activity.cmp(&a.3.last_activity)).then_with(|| a.3.key.cmp(&b.3.key)));
     let count = found.len() as u32;
     let mut found: Vec<(QuickRow, &SessionRow)> = found.into_iter().take(FOUND_SESSIONS).map(|(_, _, q, r)| (q, r)).collect();
     // The ones Jev scored lead, in its order; the rest keep theirs.
@@ -477,7 +487,7 @@ pub(crate) fn quick_list(rows: &[SessionRow], prs: &[PrRow], project: &str, quer
     if !prs.is_empty() {
         sections.push(QuickSection { group: QuickGroup::Prs, count: prs.len() as u32, rows: prs.into_iter().take(FOUND_PRS).map(|(_, p)| QuickRow::Pr { pr: p.clone() }).collect() });
     }
-    QuickList { sections, nothing_waits: false, working: 0 }
+    QuickList { sections, nothing_waits: false, working: 0, archived_found }
 }
 
 /// A PR's key, `owner/name#number`, as GitHub names it now (its URL), so a PR is one PR however
@@ -816,9 +826,12 @@ pub(crate) fn suggestions(route: &api::Route, short: &str, rows: &HashMap<String
 #[uniffi::export]
 impl Core {
     /// What the quick search lists for `query` in `project` (empty for all), with the Macs' text
-    /// search hits for it (`said`) and the sessions a Mac's suggestion ranked first (`ranked`).
-    pub fn quick(&self, project: String, query: String, said: Vec<SaidHit>, ranked: Vec<String>) -> QuickList {
-        self.client.with_feeds(|feeds| quick_list(&all_rows(feeds), &all_prs(feeds, &self.you(feeds)), &project, &query, &said, &ranked, now_ms()))
+    /// search hits for it (`said`) and the sessions a Mac's suggestion ranked first (`ranked`);
+    /// archived sessions too when `archived` asks for them.
+    pub fn quick(&self, project: String, query: String, said: Vec<SaidHit>, ranked: Vec<String>, archived: bool) -> QuickList {
+        // Archived sessions are read only for words, which count them whether they're listed or not.
+        let searching = !words_of(&query).is_empty();
+        self.client.with_feeds(|feeds| quick_list(&crate::session_rows(feeds, searching), &all_prs(feeds, &self.you(feeds)), &project, &query, &said, &ranked, archived, now_ms()))
     }
 
     /// Looks for the words in what was said in sessions on every connected Mac, at once.
@@ -927,6 +940,7 @@ pub(crate) mod tests {
             suggestions: None,
             emblem: None,
             id: key.into(),
+            archived: false,
         }
     }
 
@@ -958,12 +972,12 @@ pub(crate) mod tests {
             row("idle", "d", Status::Idle, NOW - 4 * hour),
             row("old", "e", Status::Idle, NOW - 30 * hour),
         ];
-        let l = quick_list(&rows, &[], "", "", &[], &[], NOW);
+        let l = quick_list(&rows, &[], "", "", &[], &[], false, NOW);
         // What's working stays out of the way while something waits, and shows in the last day.
         assert_eq!(keys(&l), [(QuickGroup::NeedsYou, vec!["needs".to_string()]), (QuickGroup::YourTurn, vec!["turn".into()]), (QuickGroup::Recent, vec!["working".into(), "idle".into()])]);
         assert!(!l.nothing_waits);
         // With nothing waiting, what's working shows.
-        let l = quick_list(&rows[2..], &[], "", "", &[], &[], NOW);
+        let l = quick_list(&rows[2..], &[], "", "", &[], &[], false, NOW);
         assert_eq!(keys(&l)[0], (QuickGroup::Working, vec!["working".to_string()]));
         assert!(l.nothing_waits);
         assert_eq!(l.working, 1);
@@ -977,7 +991,7 @@ pub(crate) mod tests {
         let mut idle = row("idle", "b", Status::Idle, NOW - 30 * hour);
         idle.pinned = Some(0);
         let rows = vec![needs, idle, row("turn", "c", Status::Unread, NOW - 2 * hour)];
-        let l = quick_list(&rows, &[], "", "", &[], &[], NOW);
+        let l = quick_list(&rows, &[], "", "", &[], &[], false, NOW);
         assert_eq!(keys(&l), [(QuickGroup::Pinned, vec!["idle".to_string(), "needs".into()]), (QuickGroup::YourTurn, vec!["turn".into()])]);
         assert!(!l.nothing_waits);
         // A pinned one that needs you counts as waiting when it's the only one; a pinned helper
@@ -988,7 +1002,7 @@ pub(crate) mod tests {
         let mut working = row("working", "e", Status::Working, NOW - hour);
         working.pinned = Some(3);
         let rows = vec![rows[0].clone(), helper, working];
-        let l = quick_list(&rows, &[], "", "", &[], &[], NOW);
+        let l = quick_list(&rows, &[], "", "", &[], &[], false, NOW);
         assert_eq!(keys(&l), [(QuickGroup::Pinned, vec!["needs".to_string(), "helper".into(), "working".into()])]);
         assert!(!l.nothing_waits);
         assert_eq!(l.working, 1);
@@ -1267,11 +1281,11 @@ pub(crate) mod tests {
         let mut early = pr_row("o/app#5", "Earlier", true);
         early.requested_at = Some(NOW - 50);
         let prs = [late, early, pr_row("o/app#6", "Not asked", false)];
-        let l = quick_list(&rows, &prs, "", "", &[], &[], NOW);
+        let l = quick_list(&rows, &prs, "", "", &[], &[], false, NOW);
         assert_eq!(keys(&l)[..2], [(QuickGroup::YourTurn, vec!["turn".to_string()]), (QuickGroup::Reviews, vec!["o/app#5".to_string(), "o/app#4".into()])]);
         assert!(!l.nothing_waits);
         // A review alone is something waiting on you.
-        assert!(!quick_list(&[], &prs, "", "", &[], &[], NOW).nothing_waits);
+        assert!(!quick_list(&[], &prs, "", "", &[], &[], false, NOW).nothing_waits);
     }
 
     #[test]
@@ -1281,13 +1295,13 @@ pub(crate) mod tests {
         let rows = vec![row("said", "Other work", Status::Needs, NOW), other, row("title", "Quick search on the phone", Status::Idle, NOW - 5)];
         let said = [SaidHit { key: "said".into(), snippet: "make the quick search".into(), you: true, at: NOW, score: 0 }];
         let prs = [pr_row("app#3", "Quick search", false)];
-        let l = quick_list(&rows, &prs, "", "quick search", &said, &[], NOW);
+        let l = quick_list(&rows, &prs, "", "quick search", &said, &[], false, NOW);
         assert_eq!(keys(&l), [(QuickGroup::Sessions, vec!["title".to_string(), "branch".into(), "said".into()]), (QuickGroup::Prs, vec!["app#3".into()])]);
         // Jev's ranking leads.
-        let l = quick_list(&rows, &[], "", "quick search", &said, &["said".into()], NOW);
+        let l = quick_list(&rows, &[], "", "quick search", &said, &["said".into()], false, NOW);
         assert_eq!(keys(&l)[0].1[0], "said");
         // Another project's are left out.
-        assert!(quick_list(&rows, &prs, "Other", "quick", &said, &[], NOW).sections.is_empty());
+        assert!(quick_list(&rows, &prs, "Other", "quick", &said, &[], false, NOW).sections.is_empty());
     }
 
     #[test]
@@ -1334,11 +1348,30 @@ pub(crate) mod tests {
     fn short_words_count_whole_among_others_and_better_matches_lead() {
         let rows = vec![row("a", "Fix class names", Status::Idle, NOW), row("b", "Fix the c compiler", Status::Idle, NOW - 5)];
         // Alone, a short word is a search as you type; among others, only a whole word.
-        assert_eq!(keys(&quick_list(&rows, &[], "", "c", &[], &[], NOW))[0].1, ["a", "b"]);
-        assert_eq!(keys(&quick_list(&rows, &[], "", "fix c", &[], &[], NOW))[0].1, ["b"]);
+        assert_eq!(keys(&quick_list(&rows, &[], "", "c", &[], &[], false, NOW))[0].1, ["a", "b"]);
+        assert_eq!(keys(&quick_list(&rows, &[], "", "fix c", &[], &[], false, NOW))[0].1, ["b"]);
         // Found by what was said, the better match leads.
         let said = [SaidHit { key: "a".into(), snippet: "webhook".into(), you: true, at: NOW, score: 1 }, SaidHit { key: "b".into(), snippet: "the webhook".into(), you: true, at: NOW, score: 9 }];
-        assert_eq!(keys(&quick_list(&rows, &[], "", "webhook", &said, &[], NOW))[0].1, ["b", "a"]);
+        assert_eq!(keys(&quick_list(&rows, &[], "", "webhook", &said, &[], false, NOW))[0].1, ["b", "a"]);
+    }
+
+    #[test]
+    fn archived_sessions_are_found_by_words_and_listed_when_asked_for() {
+        let archived = |key: &str, title: &str, at: i64| SessionRow { archived: true, ..row(key, title, Status::Idle, at) };
+        let mut branch = row("branch", "Other work", Status::Idle, NOW - 50);
+        branch.branch = Some("login-fix".into());
+        let rows = vec![archived("old", "Fix the login", NOW), row("live", "Login page", Status::Idle, NOW - 50), branch, archived("older", "Login again", NOW)];
+        // Left out, and counted.
+        let l = quick_list(&rows, &[], "", "login", &[], &[], false, NOW);
+        assert_eq!(keys(&l), [(QuickGroup::Sessions, vec!["live".to_string(), "branch".into()])]);
+        assert_eq!(l.archived_found, 2);
+        // Asked for, each after the others that match as closely, though it was active later.
+        let l = quick_list(&rows, &[], "", "login", &[], &[], true, NOW);
+        assert_eq!(keys(&l), [(QuickGroup::Sessions, vec!["live".to_string(), "old".into(), "older".into(), "branch".into()])]);
+        assert_eq!((l.sections[0].count, l.archived_found), (4, 2));
+        // With nothing typed, they're left out whatever's asked.
+        let pinned = SessionRow { pinned: Some(0), ..archived("pinned", "Pinned", NOW) };
+        assert!(keys(&quick_list(&[pinned], &[], "", "", &[], &[], true, NOW)).is_empty());
     }
 
     fn worktree(id: &str, main: bool, reuse: Option<crate::WorktreeReuse>, at: i64) -> Worktree {

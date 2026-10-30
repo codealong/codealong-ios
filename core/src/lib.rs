@@ -247,6 +247,9 @@ pub struct SessionRow {
     /// Copy session ID copies, as the Mac's does. Its resume command, which the Mac's menu copies
     /// too, isn't sent to other devices: it works only on its Mac (peerfeed.rs `shareable`).
     pub id: String,
+    /// It's archived on its Mac: only a search that asks for archived sessions lists it, and only
+    /// a page opened from there shows it (`Core::sessions`).
+    pub archived: bool,
 }
 
 /// A session's worktree's PR: where its menu's Open PR goes.
@@ -576,6 +579,16 @@ impl Core {
         })
     }
 
+    /// The rows of the sessions `keys` that the Macs have, archived ones too: a search finds
+    /// sessions the snapshot's list leaves out (older ones, and archived ones when it's asked to),
+    /// and a page opened from there shows one of them.
+    pub fn sessions(&self, keys: Vec<String>) -> Vec<SessionRow> {
+        if keys.is_empty() {
+            return Vec::new();
+        }
+        self.client.with_feeds(|feeds| session_rows(feeds, true).into_iter().filter(|r| keys.contains(&r.key)).collect())
+    }
+
     /// The sound due for what came to wait on you since the last time this was asked, if any,
     /// of the kinds `on` (`sounds`): asked each time `Listener::changed` says something's new,
     /// sounds on or not, so what came while they were off isn't news later. With none on, as
@@ -636,6 +649,12 @@ pub(crate) fn in_inbox(s: &SessionRow, now: i64) -> bool {
 /// Every session on the linked Macs once, archived ones left out, in the projects the Macs line
 /// up; unsorted.
 pub(crate) fn all_rows(feeds: &Feeds) -> Vec<SessionRow> {
+    session_rows(feeds, false)
+}
+
+/// Every session on the linked Macs once, as `all_rows` has them, with the archived ones too when
+/// `archived` asks for them, for a search that finds them.
+pub(crate) fn session_rows(feeds: &Feeds, archived: bool) -> Vec<SessionRow> {
     let now = now_ms();
     let projects = Projects::of_feeds(feeds);
     let mut sessions = Vec::new();
@@ -647,7 +666,7 @@ pub(crate) fn all_rows(feeds: &Feeds) -> Vec<SessionRow> {
         let mut all: Vec<(&Lane, &Session)> = replica.lanes.iter().flat_map(|l| l.sessions.iter().map(move |s| (l, s))).collect();
         all.sort_by_key(|(_, s)| s.visitor.is_some());
         for (lane, s) in all {
-            if s.archived || !seen.insert(s.key.as_str()) {
+            if (s.archived && !archived) || !seen.insert(s.key.as_str()) {
                 continue;
             }
             // Worktrees in no project stay off the Mac's board unless they need you, and
@@ -691,7 +710,7 @@ pub(crate) fn all_rows(feeds: &Feeds) -> Vec<SessionRow> {
                 // Keyed as the PRs listed key a worktree's (quick.rs `all_prs`), so its page is found.
                 worktree_pr: lane.pr.as_ref().map(|p| WorktreePr { key: quick::pr_key(&p.url, &format!("{}#{}", lane.repo_slug.as_deref().unwrap_or(&lane.repo), p.number)), number: p.number, url: p.url.clone() }),
                 seenable: status == Status::Unread || s.asks,
-                unreadable: !s.asks && matches!(status, Status::Idle | Status::Stopped),
+                unreadable: !s.asks && !s.archived && matches!(status, Status::Idle | Status::Stopped),
                 // Macs before 2026-09-29 don't say, and stop only the sessions Codealong runs.
                 stoppable: s.stoppable || (s.hosted && status == Status::Working),
                 steerable: s.steerable,
@@ -718,6 +737,7 @@ pub(crate) fn all_rows(feeds: &Feeds) -> Vec<SessionRow> {
                 suggestions: s.suggestions.as_ref().filter(|g| !g.replies.is_empty()).map(|g| SuggestedReplies { replies: g.replies.clone(), note: g.note.clone(), by: g.by_title.clone() }),
                 emblem: s.emblem.as_ref().map(Emblem::from),
                 id: s.id.clone(),
+                archived: s.archived,
             });
         }
     }
@@ -728,11 +748,12 @@ pub(crate) fn all_rows(feeds: &Feeds) -> Vec<SessionRow> {
 /// Each headless run counted on the row of the session it came from, as the Mac's Sessions view
 /// counts them (its boardLists.ts `runCounts`), and the ones whose session isn't on a linked
 /// Mac's board listed as sessions of their own (its `placeHelpers`): a script in a terminal ran
-/// it, its session was archived, or it ended before its Mac saw it running.
+/// it, its session was archived, or it ended before its Mac saw it running. Archived rows, listed
+/// only by a search that asks for them, leave that as it is without them.
 fn count_runs(rows: &mut [SessionRow]) {
-    let keys: std::collections::HashSet<String> = rows.iter().map(|r| r.key.clone()).collect();
+    let keys: std::collections::HashSet<String> = rows.iter().filter(|r| !r.archived).map(|r| r.key.clone()).collect();
     let mut runs: std::collections::HashMap<String, (u32, u32)> = std::collections::HashMap::new();
-    for r in rows.iter_mut().filter(|r| r.headless) {
+    for r in rows.iter_mut().filter(|r| r.headless && !r.archived) {
         match r.origin.as_ref().map(|o| o.key.clone()).filter(|k| keys.contains(k)) {
             Some(parent) => {
                 let c = runs.entry(parent).or_default();
@@ -2542,6 +2563,7 @@ mod order_tests {
             suggestions: None,
             emblem: None,
             id: key.into(),
+            archived: false,
         }
     }
 
@@ -2570,6 +2592,27 @@ mod order_tests {
         assert!(!by("asks").unattended, "one that needs you waits on you");
         assert!(!by("lone").unattended && !by("gone").unattended, "listed as sessions of their own");
         assert_eq!(by("lone").runs, 0);
+
+        // A search that lists archived sessions too lists the rest as they were: a run of an
+        // archived session is still one of its own, and the archived one counts none.
+        let mut rows = vec![SessionRow { archived: true, ..row("old", Status::Idle, 0, None, 0) }, run("left", Status::Idle, Some("old"))];
+        count_runs(&mut rows);
+        assert!(!rows[1].unattended);
+        assert_eq!(rows[0].runs, 0);
+    }
+
+    #[test]
+    fn archived_sessions_have_rows_only_when_asked_for() {
+        use codealong_peer::client::Device;
+        use codealong_peer::feed::Replica;
+        let mac = Device { key: "m".into(), short: "m".into(), name: "Mac".into(), online: true, since: None, last_seen: None, remote_control: true, app: String::new(), loading: false, linked_back: true };
+        let mut lane = codealong_peer::model::Lane::new("/src/app", "App", "app");
+        lane.sessions = vec![Session { archived: true, ..Session::new(Harness::Claude, "claude", "old") }, Session::new(Harness::Claude, "claude", "new")];
+        let replica = Replica { lanes: vec![lane], ..Replica::default() };
+        let feeds = [(mac, &replica)];
+        let keys = |rows: Vec<SessionRow>| rows.into_iter().map(|r| (r.key, r.archived)).collect::<Vec<_>>();
+        assert_eq!(keys(all_rows(&feeds)), [("@m:claude:claude:new".to_string(), false)]);
+        assert_eq!(keys(session_rows(&feeds, true)), [("@m:claude:claude:old".to_string(), true), ("@m:claude:claude:new".into(), false)]);
     }
 
     #[test]

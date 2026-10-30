@@ -153,7 +153,7 @@ struct SessionView: View {
         }
     }
 
-    private var row: SessionRow? { store.sessions.first { $0.key == key } }
+    private var row: SessionRow? { store.row(key) }
     /// What you've written here and not sent: the store keeps it, so it's still here when you come
     /// back, and a message that didn't go comes back to it.
     private var draft: String {
@@ -441,18 +441,21 @@ struct SessionView: View {
         }
         Button(finishing ? "Wrapping up…" : "Mark as done", systemImage: "checkmark.circle") { Task { await markDone() } }
             .disabled(!online || finishing)
-        Menu("Snooze", systemImage: "moon.zzz") {
-            ForEach(Snooze.choices()) { c in
-                Button(c.label) { Task { await snooze(until: c.until) } }
+        // An archived one is in no list to wait in or lead: unarchived, it can be.
+        if row?.archived != true {
+            Menu("Snooze", systemImage: "moon.zzz") {
+                ForEach(Snooze.choices()) { c in
+                    Button(c.label) { Task { await snooze(until: c.until) } }
+                }
+                Button("Pick a time…", systemImage: "calendar") {
+                    snoozing = SnoozePick(id: key, title: "Snooze") { until in Task { await snooze(until: until) } }
+                }
+                if row?.snoozedUntil != nil {
+                    Button("Wake now", systemImage: "sun.max") { Task { await snooze(until: nil) } }
+                }
             }
-            Button("Pick a time…", systemImage: "calendar") {
-                snoozing = SnoozePick(id: key, title: "Snooze") { until in Task { await snooze(until: until) } }
-            }
-            if row?.snoozedUntil != nil {
-                Button("Wake now", systemImage: "sun.max") { Task { await snooze(until: nil) } }
-            }
+            .disabled(!online)
         }
-        .disabled(!online)
         // Checked while it is, as on the Mac: its turns don't wait on you.
         Toggle(isOn: Binding(get: { row?.quiet == true }, set: { on in Task { await setQuiet(on) } })) {
             Label("Quiet", systemImage: "speaker.slash")
@@ -467,12 +470,18 @@ struct SessionView: View {
             Button("Mark as unread", systemImage: "envelope.badge") { Task { await markUnread() } }
                 .disabled(!online)
         }
-        // Pinned on its Mac, which lists it first there and here.
-        Button(row?.pinned == nil ? "Pin" : "Unpin", systemImage: row?.pinned == nil ? "pin" : "pin.slash") { Task { await pin() } }
-            .disabled(!online)
-        Button("Archive", systemImage: "archivebox") {
-            store.archive(key)
-            dismiss()
+        if row?.archived == true {
+            // Back in the lists, here and on its Mac; a message sent to it brings it back too.
+            Button("Unarchive", systemImage: "tray.and.arrow.up") { Task { await unarchive() } }
+                .disabled(!online)
+        } else {
+            // Pinned on its Mac, which lists it first there and here.
+            Button(row?.pinned == nil ? "Pin" : "Unpin", systemImage: row?.pinned == nil ? "pin" : "pin.slash") { Task { await pin() } }
+                .disabled(!online)
+            Button("Archive", systemImage: "archivebox") {
+                store.archive(key)
+                dismiss()
+            }
         }
         if let id = row?.id, !id.isEmpty {
             Section {
@@ -1274,6 +1283,14 @@ struct SessionView: View {
         let on = row?.pinned == nil
         do {
             try await store.pin(key, on)
+        } catch {
+            said = words(error)
+        }
+    }
+
+    private func unarchive() async {
+        do {
+            try await store.unarchive(key)
         } catch {
             said = words(error)
         }
@@ -2658,7 +2675,7 @@ struct SessionGlance: View {
     /// More than a screen of the conversation's end: what's above it is off the top.
     private let shown = 40
 
-    private var row: SessionRow? { store.sessions.first { $0.key == key } }
+    private var row: SessionRow? { store.row(key) }
     private var why: String? { store.cannotReach(row) }
     private var rules: ReplyRules {
         ReplyRules(row: row, way: kept.way, choices: row.flatMap { store.choices[$0.device] }, resumePlace: nil)

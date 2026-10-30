@@ -8,6 +8,12 @@ import UIKit
 final class Store {
     private(set) var devices: [DeviceRow] = []
     private(set) var sessions: [SessionRow] = []
+    /// Sessions open here that `sessions` doesn't list, by key: older ones and archived ones, which
+    /// only a search finds (`follow`).
+    private var others: [String: SessionRow] = [:]
+    /// The keys of the pages open in the list's path, the sessions among them read from the core
+    /// when `sessions` doesn't have them (`follow`).
+    @ObservationIgnored private var followed: [String] = []
     /// Every PR the Macs list, once each.
     private(set) var prs: [PrRow] = []
     /// The PRs waiting on your review, in every project, in the order what waits on you goes
@@ -121,6 +127,33 @@ final class Store {
         refresh()
     }
 
+    /// A session's row, wherever it is: in the list, or open from a search that found it outside
+    /// it (`follow`).
+    func row(_ key: String) -> SessionRow? {
+        sessions.first { $0.key == key } ?? others[key]
+    }
+
+    /// The Macs have this session, listed or not: a link to an older or archived one opens it too.
+    func has(_ key: String) -> Bool {
+        row(key) != nil || core?.sessions(keys: [key]).isEmpty == false
+    }
+
+    /// The pages open now, by their keys in the list's path: the sessions among them that the list
+    /// doesn't have (older ones, archived ones, opened from a search) are read from the core as
+    /// their Macs change them, so their pages have their rows.
+    func follow(_ keys: [String]) {
+        followed = keys.filter { !$0.hasPrefix(PrView.prefix) && $0 != EndView.key }
+        readOthers()
+    }
+
+    private func readOthers() {
+        let listed = Set(sessions.map(\.key))
+        let wanted = followed.filter { !listed.contains($0) }
+        let read = wanted.isEmpty ? [] : core?.sessions(keys: wanted) ?? []
+        let now = Dictionary(read.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
+        if now != others { others = now }
+    }
+
     func refresh() {
         guard let core else { return }
         let snap = core.snapshot()
@@ -128,6 +161,7 @@ final class Store {
         if snap.devices != devices { devices = snap.devices }
         let waits = snap.sessions != sessions || snap.prs != prs
         if snap.sessions != sessions { sessions = snap.sessions }
+        readOthers()
         if snap.prs != prs {
             prs = snap.prs
             reviews = reviewsWaiting()
@@ -367,7 +401,7 @@ final class Store {
     /// box: what it waits on you for, and how a message gets there.
     func kept(_ key: String, read: Bool) async -> Kept? {
         guard let core, let conv = conversation(key) else { return nil }
-        let waits = sessions.first { $0.key == key }?.status == .needs
+        let waits = row(key)?.status == .needs
         return await Task.detached(priority: .utility) {
             if read { core.prefetch(key: key) }
             let pending = waits ? try? conv.pending() : nil
@@ -587,6 +621,12 @@ final class Store {
         Task.detached { try? core.archive(key: key, archived: true) }
     }
 
+    /// Brings an archived session back on its Mac, which lists it again, here too.
+    func unarchive(_ key: String) async throws {
+        let core = try running()
+        try await Task.detached { try core.archive(key: key, archived: false) }.value
+    }
+
     /// A Mac's worktrees, from its feed.
     func worktrees(_ device: String) -> [Worktree] {
         core?.worktrees(device: device) ?? []
@@ -702,11 +742,11 @@ final class Store {
         return core?.replyPlaceholder(key: key, way: way, resumePlace: resumePlace, behind: behind) ?? ReplyPlaceholder(short: "Reply", full: "Reply")
     }
 
-    /// What the quick search lists (the core's rules). Reads `tick`, so a view that shows it
-    /// updates with every change the Macs send.
-    func quick(project: String, query: String, said: [SaidHit], ranked: [String]) -> QuickList {
+    /// What the quick search lists (the core's rules), archived sessions too when `archived` asks
+    /// for them. Reads `tick`, so a view that shows it updates with every change the Macs send.
+    func quick(project: String, query: String, said: [SaidHit], ranked: [String], archived: Bool = false) -> QuickList {
         _ = tick
-        return core?.quick(project: project, query: query, said: said, ranked: ranked) ?? QuickList(sections: [], nothingWaits: false, working: 0)
+        return core?.quick(project: project, query: query, said: said, ranked: ranked, archived: archived) ?? QuickList(sections: [], nothingWaits: false, working: 0, archivedFound: 0)
     }
 
     /// Counts the PRs `login` opened as yours, or not, from now on. One account stays yours.
@@ -811,7 +851,7 @@ final class Store {
     /// still holds can't be in the record yet, however long the turn it waits on goes on.
     func shown(_ key: String, items: [Item]) {
         guard let list = outgoing[key], !list.isEmpty else { return }
-        let row = sessions.first { $0.key == key }
+        let row = self.row(key)
         let going = list.filter { $0.state != .queued && !$0.held(in: row) }.map { SentAt(id: $0.id, at: Int64($0.at.timeIntervalSince1970 * 1000)) }
         let found = Set(sendsInRecord(sends: going, items: items))
         // A message goes after a while whatever the record says: its bubble has said what it knows.

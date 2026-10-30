@@ -125,7 +125,7 @@ enum Going: Hashable {
         case .keep: return row.seenable ? .later : .on
         case .seen: return row.seenable ? .seen : .on
         case .done: return row.status == .working ? .working : .done
-        case .archive: return row.status == .working ? .working : .archive
+        case .archive: return row.status == .working ? .working : row.archived ? .on : .archive
         }
     }
 

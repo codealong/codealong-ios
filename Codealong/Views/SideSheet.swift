@@ -42,7 +42,7 @@ struct SideSheet: View {
         case past(String)
     }
 
-    private var row: SessionRow? { store.sessions.first { $0.key == key } }
+    private var row: SessionRow? { store.row(key) }
     private var mac: String { row?.deviceName ?? "its Mac" }
     private var whyNot: String? { store.cannotReach(row) }
     private var online: Bool { row?.deviceOnline == true }

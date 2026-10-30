@@ -43,7 +43,8 @@ other: directly, encrypted end to end, with no Codealong server in between.
 sessions pinned on your Macs first, in each Mac's order (pin or unpin one from its long-press
 menu), then the ones that need you, then the ones whose turn just ended (the working ones when
 nothing is waiting), then the rest from the last day. Typing in the box finds sessions, by what
-was said in them too, and PRs. The menu at the top left orders the sessions *By project* instead,
+was said in them too, and PRs; *Archived* on the sessions' heading lists archived ones as well,
+after the others that match as closely, and stays on until you turn it off. The menu at the top left orders the sessions *By project* instead,
 worktree by worktree (tap a worktree to fold it away, or its ✎ to start a session in it), or
 *Recent*, the last active first. The pills under the box narrow the list to one project; a
 project that lives on two Macs is one project here. Each session has the emblem its Mac gave it
