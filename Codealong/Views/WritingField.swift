@@ -132,14 +132,16 @@ private struct Words: UIViewRepresentable {
         /// Swiping back to a page whose field had the keyboard, UIKit gives it back as the swipe
         /// begins, but SwiftUI makes no room for a keyboard that comes while the page is still
         /// sliding in, nor once it's in: the quick search's start bar stayed under it. So the
-        /// field takes it once the page is in, where SwiftUI does. On a swipe that's let go,
-        /// the page it was on is out of the window by then and takes nothing.
+        /// field takes it once the page is in, where SwiftUI does: only on the page it ends on,
+        /// so a swipe let go, or a sheet dragged down and let go, gives the keyboard to nothing
+        /// under it (a sheet's page is still in the window).
         override func becomeFirstResponder() -> Bool {
             // Asked for here, it wants it already; and nothing can be tapped while a page slides.
             if !wantsFocus, let coordinator = controller?.transitionCoordinator {
-                coordinator.animate(alongsideTransition: nil) { [weak self] _ in
+                coordinator.animate(alongsideTransition: nil) { [weak self] context in
+                    guard let shown = context.viewController(forKey: context.isCancelled ? .from : .to) else { return }
                     Task { @MainActor in
-                        guard let self, self.window != nil, !self.isFirstResponder else { return }
+                        guard let self, self.window != nil, !self.isFirstResponder, self.isOn(shown) else { return }
                         _ = self.becomeFirstResponder()
                     }
                 }
@@ -156,6 +158,16 @@ private struct Words: UIViewRepresentable {
                 responder = r.next
             }
             return nil
+        }
+
+        /// Whether it's on that page: in its view controller or one inside it.
+        private func isOn(_ page: UIViewController) -> Bool {
+            var inside = controller
+            while let c = inside {
+                if c === page { return true }
+                inside = c.parent
+            }
+            return false
         }
 
         /// Copied words paste as words; an image alone attaches.
