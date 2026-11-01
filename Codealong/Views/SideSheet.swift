@@ -12,7 +12,8 @@ struct SideSheet: View {
     let key: String
     /// A question to ask as it opens: `/side` and a question in the session's box.
     var question: String?
-    /// One kept that answered and wasn't seen, to read as it opens (`Session::side_answer`).
+    /// The one that answered and wasn't seen, to show as it opens (`Session::side_answer`): the
+    /// open one, or one closed since, as its Mac says then.
     var reading: String?
     @Environment(Store.self) private var store
     @Environment(\.dismiss) private var dismiss
@@ -239,11 +240,15 @@ struct SideSheet: View {
     private func start() async {
         guard conversation == nil, let conv = store.conversation(key) else { return }
         conversation = conv
-        if let reading { shown = .past(reading) }
         // What's known shows at once; its Mac says what it is now.
         open = conv.side()
         if open != nil { loading = false }
         await reread()
+        // Not the open one any more, if it ever was: it's read where the kept ones are.
+        if let reading, open?.id != reading {
+            shown = .past(reading)
+            await readEarlier()
+        }
         loading = false
         if let question, !question.isEmpty {
             await ask(question)

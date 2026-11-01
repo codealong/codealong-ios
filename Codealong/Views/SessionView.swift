@@ -772,7 +772,11 @@ struct SessionView: View {
         came = Int64(Date.now.timeIntervalSince1970 * 1000)
         if store.slidIn?.key == key { store.slidIn = nil }
         sayProblem()
-        guard conversation == nil, let conv = store.conversation(key) else { return }
+        guard conversation == nil, let conv = store.conversation(key) else {
+            // Back on it from what covered it: an answer that came meanwhile comes up now.
+            bringUpAnswer()
+            return
+        }
         conversation = conv
         // Read before (opened, or prefetched as the next that waits on you): it shows at once,
         // and its Mac is asked only for what came since.
@@ -902,12 +906,13 @@ struct SessionView: View {
     }
 
     /// Brings up what a side conversation answered as you come to the session, as a Mac's window
-    /// does (side.ts `useSideAnswer`), once for each answer: the open one, or the one that answered,
-    /// closed since. Not over what you're writing or another sheet, and it's left waiting on you
-    /// for that: reading it doesn't mark the session seen, going on from it does.
+    /// does (side.ts `useSideAnswer`), once for each answer, by its id: the sheet shows it as the open
+    /// one or as one closed since, as its Mac says then, which a saved feed can be behind. Not over
+    /// what you're writing or another sheet, and it's left waiting on you for that: reading it
+    /// doesn't mark the session seen, going on from it does.
     private func bringUpAnswer() {
         guard let answer = row?.sideAnswer, online, store.showing == key, aside == nil, editing == nil, snoozing == nil, !renaming, draft.isEmpty, store.bringUp(key, answer) else { return }
-        aside = SideAsk(reading: answer.open ? nil : answer.id)
+        aside = SideAsk(reading: answer.id)
     }
 
     private var awaitingRecord: Int {
@@ -2821,7 +2826,7 @@ private func replyWords(why: String?, pending: Pending?, account: String?, other
 struct SideAsk: Identifiable {
     let id = UUID()
     var question: String?
-    /// One closed since that answered, to read as they open.
+    /// The one that answered, to show as they open.
     var reading: String?
 
     /// What `/side` or `/btw` at the start of what's written asks, its lines kept: empty for the
