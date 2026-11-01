@@ -110,8 +110,11 @@ pub struct PrRow {
     pub additions: u64,
     pub deletions: u64,
     pub changed_files: u64,
-    /// The sessions that worked on it, by their keys here (`@<device>:<key>`).
+    /// The sessions that worked on it, by their keys here (`@<device>:<key>`), its primary one
+    /// first.
     pub sessions: Vec<String>,
+    /// The session a Mac tells of what happens on it; none from Macs before 2026-10-29.
+    pub primary: Option<PrPrimary>,
     /// Its labels on GitHub, in the order of their names; none from Macs before 2026-10-17.
     pub labels: Vec<PrLabelRow>,
     /// It's approved, but only by approvals of an earlier commit than the one it's at, which
@@ -196,6 +199,33 @@ fn agent_review_line(r: &codealong_peer::pr::AutoReview) -> AgentReviewLine {
         .to_string()
     });
     AgentReviewLine { stage: stage.into(), says, suggests }
+}
+
+/// A PR's primary session, on the Mac that says so: each Mac works out its own from its own
+/// sessions' records (the engine's board.rs `pr_primary`), so the first of the Macs listed that
+/// names one speaks for the PR here.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct PrPrimary {
+    /// Its key here (`@<device>:<key>`).
+    pub key: String,
+    /// What being its primary session means, and why this one is (prStatus.ts `primaryWords`).
+    pub says: String,
+}
+
+/// A PR's primary session as a Mac's card names it, in the words the Mac's tag has for another
+/// machine's: it's that Mac's to nudge and to pick.
+fn primary_of(p: &codealong_peer::pr::PrCard, d: &codealong_peer::client::Device) -> Option<PrPrimary> {
+    use codealong_peer::pr::PrimaryBy;
+    let key = p.primary.as_deref()?;
+    let why = match p.primary_by {
+        Some(PrimaryBy::Picked) => "It was picked as the primary one. ",
+        Some(PrimaryBy::Pushed) => "It pushed to the PR\u{2019}s branch most. ",
+        Some(PrimaryBy::Opened) => "It opened the PR, and no other session pushed to it more. ",
+        Some(PrimaryBy::Started) => "No session\u{2019}s records show it opened the PR or pushed to it, so it\u{2019}s the one that started first. ",
+        Some(PrimaryBy::Other) | None => "",
+    };
+    let says = format!("The PR\u{2019}s primary session on {}: when that Mac nudges the PR, only this one is told what happens on it. {why}The PR\u{2019}s menu there picks another.", d.name);
+    Some(PrPrimary { key: remote_key(&d.short, key), says })
 }
 
 /// Whose move an open PR is, where its review state doesn't say, as the Mac's pill says it in place
@@ -555,6 +585,9 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                 // has it open.
                 if let Some(i) = place(&mut at, &key, &p.key, None) {
                     add_sessions(&mut out[i].sessions, sessions);
+                    if out[i].primary.is_none() {
+                        out[i].primary = primary_of(p, d);
+                    }
                     let open = !matches!(out[i].state.as_str(), "draft" | "merged" | "closed");
                     if ours && open && told.insert(i) {
                         out[i].turn = turn(p);
@@ -598,6 +631,7 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                 deletions: p.deletions,
                 changed_files: p.changed_files,
                 sessions,
+                primary: primary_of(p, d),
                 labels: p.labels.iter().map(PrLabelRow::of).collect(),
                 // A PR card doesn't carry it: its worktree's PR on the same Mac does.
                 stale: stale_words(p.state, replica.lanes.iter().filter_map(|l| l.pr.as_ref()).find(|w| !w.url.is_empty() && w.url == p.url).and_then(|w| w.stale_approval.as_ref())),
@@ -657,11 +691,19 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                 deletions: 0,
                 changed_files: 0,
                 sessions,
+                primary: None,
                 labels: Vec::new(),
                 stale: stale_words(pr.state, pr.stale_approval.as_ref()),
                 agent_review: None,
                 turn: None,
             });
+        }
+    }
+    // Its primary session leads its sessions, as the Mac's row names it first.
+    for pr in &mut out {
+        let first = pr.primary.as_ref().and_then(|p| pr.sessions.iter().position(|s| *s == p.key));
+        if let Some(i) = first {
+            pr.sessions[..=i].rotate_right(1);
         }
     }
     out
@@ -942,6 +984,9 @@ pub(crate) mod tests {
             emblem: None,
             id: key.into(),
             archived: false,
+            raised: None,
+            agent_seen: None,
+            side_answer: None,
         }
     }
 
@@ -1041,6 +1086,7 @@ pub(crate) mod tests {
             deletions: 0,
             changed_files: 0,
             sessions: Vec::new(),
+            primary: None,
             labels: Vec::new(),
             stale: None,
             agent_review: None,
@@ -1264,6 +1310,34 @@ pub(crate) mod tests {
         let prs = all_prs(&feeds, &crate::github::You::default());
         assert_eq!(prs.iter().map(|p| p.key.as_str()).collect::<Vec<_>>(), vec!["N/App#5", "O/App#9"]);
         assert_eq!(prs[0].sessions, vec!["@driving:claude:b:2", "@driving:claude:b:3", "@old:claude:c:4", "@old:claude:c:5"]);
+    }
+
+    #[test]
+    fn a_prs_primary_session_is_the_first_macs_that_names_one_and_leads_its_sessions() {
+        use codealong_peer::client::Device;
+        use codealong_peer::feed::Replica;
+        let mac = |key: &str, name: &str| Device { key: key.into(), short: key.into(), name: name.into(), online: true, since: None, last_seen: None, remote_control: true, app: String::new(), loading: false, linked_back: true };
+        let card = |sessions: &[&str], primary: Option<&str>, by: Option<&str>| serde_json::from_value::<codealong_peer::pr::PrCard>(serde_json::json!({"key": "O/App#5", "repo": "O/App", "project": "Apps", "number": 5, "title": "T", "url": "https://github.com/O/App/pull/5", "state": "open", "author": null, "head": "b", "sessions": sessions, "primary": primary, "primaryBy": by})).unwrap();
+        // The first Mac is from before these: the second, which says, speaks for the PR.
+        let older = Replica { prs: vec![card(&["claude:a:1"], None, None)], ..Replica::default() };
+        let mini = Replica { prs: vec![card(&["claude:b:2", "claude:b:3"], Some("claude:b:3"), Some("pushed"))], ..Replica::default() };
+        let laptop = Replica { prs: vec![card(&["claude:c:4"], Some("claude:c:4"), Some("opened"))], ..Replica::default() };
+        let feeds = vec![(mac("older", "Studio"), &older), (mac("mini", "Mac mini"), &mini), (mac("laptop", "Laptop"), &laptop)];
+        let prs = all_prs(&feeds, &crate::github::You::default());
+        let primary = prs[0].primary.clone().unwrap();
+        assert_eq!(primary.key, "@mini:claude:b:3");
+        assert_eq!(primary.says, "The PR\u{2019}s primary session on Mac mini: when that Mac nudges the PR, only this one is told what happens on it. It pushed to the PR\u{2019}s branch most. The PR\u{2019}s menu there picks another.");
+        assert_eq!(prs[0].sessions, ["@mini:claude:b:3", "@older:claude:a:1", "@mini:claude:b:2", "@laptop:claude:c:4"]);
+
+        // One a later version names says what being primary means, and no more.
+        let later = Replica { prs: vec![card(&["claude:b:2"], Some("claude:b:2"), Some("reviewed"))], ..Replica::default() };
+        let feeds = vec![(mac("mini", "Mac mini"), &later)];
+        assert_eq!(all_prs(&feeds, &crate::github::You::default())[0].primary.as_ref().map(|p| p.says.as_str()), Some("The PR\u{2019}s primary session on Mac mini: when that Mac nudges the PR, only this one is told what happens on it. The PR\u{2019}s menu there picks another."));
+
+        // None named: they stay in the order they came.
+        let feeds = vec![(mac("older", "Studio"), &older)];
+        let prs = all_prs(&feeds, &crate::github::You::default());
+        assert_eq!((prs[0].primary.clone(), prs[0].sessions.clone()), (None, vec!["@older:claude:a:1".to_string()]));
     }
 
     #[test]

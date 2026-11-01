@@ -12,6 +12,8 @@ struct SideSheet: View {
     let key: String
     /// A question to ask as it opens: `/side` and a question in the session's box.
     var question: String?
+    /// One kept that answered and wasn't seen, to read as it opens (`Session::side_answer`).
+    var reading: String?
     @Environment(Store.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var conversation: Conversation?
@@ -237,6 +239,7 @@ struct SideSheet: View {
     private func start() async {
         guard conversation == nil, let conv = store.conversation(key) else { return }
         conversation = conv
+        if let reading { shown = .past(reading) }
         // What's known shows at once; its Mac says what it is now.
         open = conv.side()
         if open != nil { loading = false }
@@ -244,7 +247,7 @@ struct SideSheet: View {
         loading = false
         if let question, !question.isEmpty {
             await ask(question)
-        } else if open == nil {
+        } else if open == nil && reading == nil {
             typing = true
         }
     }
@@ -272,6 +275,8 @@ struct SideSheet: View {
             let kept = try await Task.detached { try conv.earlierSides() }.value
             guard read == earlierRead else { return }
             earlier = kept
+            // Forgotten since it answered: there's nothing of it to read.
+            if case .past(let id) = shown, !kept.contains(where: { $0.id == id }) { shown = .list }
             // What's kept says how far each closed one got; the core let go of the ones done.
             follow()
         } catch {

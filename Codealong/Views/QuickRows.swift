@@ -27,6 +27,13 @@ struct QuickSessionRow: View {
                         .font(.body.weight(wantsYou ? .semibold : .regular))
                         .lineLimit(1)
                     Spacer(minLength: 0)
+                    // A compact row has no line for its chip.
+                    if compact && row.raised != nil {
+                        Image(systemName: "arrow.up")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.orange)
+                            .accessibilityLabel("Moved to the top")
+                    }
                     TimelineView(.periodic(from: .now, by: 30)) { context in
                         if let until = row.snoozedUntil {
                             Label(Clock.until(until, now: context.date), systemImage: "moon.zzz")
@@ -57,10 +64,18 @@ struct QuickSessionRow: View {
                                 .lineLimit(2)
                         }
                     }
-                    Text(place)
-                        .font(.footnote.monospaced())
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
+                    HStack(spacing: 6) {
+                        if row.raised != nil {
+                            Chip(words: "Top", symbol: "arrow.up", tint: .orange)
+                        }
+                        if row.agentSeen != nil {
+                            Chip(words: "Seen by agent", symbol: "eye", tint: .secondary)
+                        }
+                        Text(place)
+                            .font(.footnote.monospaced())
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
                 }
             }
         }
@@ -89,6 +104,26 @@ struct QuickSessionRow: View {
         }
         if row.headless { parts.append("headless") }
         return parts.joined(separator: " · ")
+    }
+}
+
+/// A word on a row that says something of it, as the Mac's chips do: Top, Seen by agent. Its page
+/// says who and why, which a Mac's tooltip does there.
+private struct Chip: View {
+    let words: String
+    let symbol: String
+    let tint: Color
+
+    var body: some View {
+        // A label's icon keeps a width of its own, which leaves a gap wider than the word here.
+        HStack(spacing: 2) {
+            Image(systemName: symbol).accessibilityHidden(true)
+            Text(words)
+        }
+        .font(.caption2.weight(.medium))
+        .foregroundStyle(tint)
+        .lineLimit(1)
+        .fixedSize()
     }
 }
 

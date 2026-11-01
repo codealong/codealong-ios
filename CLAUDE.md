@@ -54,8 +54,9 @@ the core whenever `core/` isn't what it was last built from).
 - It never sends a feed and answers every request with a refusal.
 - It reads with `session-page`, `session-newer`, `session-pending`, `session-way`,
   `start-options`, `route`, `search`, `side-get` and `side-past`, and organizes (`mark-seen`,
-  `session-archive`, `session-rename`) with any Mac. It can only act (`session-send`,
-  `session-answer`, `session-cancel`, `session-steer`, `session-resume`, `session-model`,
+  `session-archive`, `session-rename`, `session-raise`) with any Mac. It can only act
+  (`session-send`, `session-answer`, `session-cancel`, `session-steer`, `session-unqueue`,
+  `session-resume`, `session-model`,
   `session-effort`, `session-mode`, `session-fork`, `session-edit`, `session-done`, `start`,
   `side-ask`, `side-close`, `side-forget`)
   where the Mac has remote control on (Settings › Devices there), and each of those is written

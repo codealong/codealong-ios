@@ -61,8 +61,8 @@ foot that goes back down to the newest. A session running
 inside Codealong on your Mac streams its reply as it's written.
 
 **Work through what's waiting.** Sessions that need you, PRs waiting on your review and finished
-turns come one after another, in the Mac's order: each kind the longest waiting first, and the ones
-you go on from come round again after the rest. While something else waits on you, a bar over the
+turns come one after another, in the Mac's order: the ones moved to the top first, then each kind
+the longest waiting first, and the ones you go on from come round again after the rest. While something else waits on you, a bar over the
 reply box says how many more do and what swiping left does to the session you're reading: marks it
 seen and goes on. Opening one doesn't mark it seen, so one you read and go back from is still
 waiting. Tap the bar to do something else instead, and go on as you pick it: leave it as it is
@@ -83,8 +83,9 @@ need you, as on the Mac.
 
 - reply to it, or slip a message into the turn it's taking right now, with photos or a pasted
   image (screenshots and the like) attached, which the agent gets as the Mac's paste does; a
-  message its harness holds until the turn ends (the Codex app's queue) shows at the end of the
-  conversation, with *Send now* to put it in the turn at once;
+  message its harness holds until the turn ends shows at the end of the conversation, with *Send
+  now* to put it in the turn at once, *Edit* to take it out into the box, and *Remove* so it's never
+  sent;
 - allow or deny what it wants to run (or deny it and say what to do instead), and answer its
   questions;
 - stop its turn, with the square that takes send's place while it runs;
@@ -95,13 +96,16 @@ need you, as on the Mac.
 - ask a Claude Code or Codex session something on the side (*Ask on the side* in its menu, or
   `/side` and a question in its box, as on the Mac): a throwaway copy of its conversation answers
   on its Mac as you watch, and the session carries on and never hears of it. Follow-ups go to the
-  same copy until you close it, and the earlier ones are there to read, go on with or delete.
+  same copy until you close it, and the earlier ones are there to read, go on with or delete. One
+  that finishes brings its session back to what waits on you, and comes up as you open it.
 
 A running Claude Code session with Remote Control on opens in the Claude app from its menu.
 
-Renaming, archiving, marking seen, *Mark as unread*, *Snooze* (off what waits on you until the time
-you pick, on every device) and *Quiet* (its turns stop waiting on you; it comes to you only when it
-needs you) work with any Mac, remote control or not.
+Renaming, archiving, marking seen, *Mark as unread*, *Move to top* (first in every queue, on every
+device, until you send it something or see its finished turn; *Back in line* undoes it), *Snooze*
+(off what waits on you until the time you pick, on every device) and *Quiet* (its turns stop waiting
+on you; it comes to you only when it needs you) work with any Mac, remote control or not. A turn its
+own agent marked seen says so rather than waiting on you.
 
 **Review and merge PRs.** The PRs that wait on your review are listed after the sessions whose
 turn ended (*Review requested*), longest waiting first. The menu's *PRs* page lists every PR your
@@ -109,7 +113,7 @@ Macs know: pinned ones, the reviews asked of you, yours, the other open ones, sn
 the last week's merged and closed ones folded away. Yours are the ones opened by the GitHub account
 most of your Macs are signed in as; when one is signed in as another (a bot your agents open PRs
 as, or a work account), the menu's *Your GitHub accounts* picks which count as you. Open one to see where it stands (checks, whether it can merge, its size, who asked you, its labels, an approval of earlier commits, whose move it is where its review state doesn't say, as the Mac's *Author replied* or *Re-review asked* does, and Codealong's own review of it), the
-sessions that worked on it (tap one to open it), your draft review of it if you began one, its description, reviews, comments and changed files with
+sessions that worked on it on every Mac (tap one to open it), the one its Mac tells of what happens on it first, tagged Primary, your draft review of it if you began one, its description, reviews, comments and changed files with
 their diffs. The box at its foot reviews it, as the Mac's does: write what to say, then *Request
 changes*, *Comment* or *Approve* (only *Comment* on your own PR or a closed one), submitting your
 draft with it as GitHub's *Finish your review* does. *Merge…*, beside its state, is its merge box

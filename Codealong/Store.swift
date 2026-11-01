@@ -41,6 +41,8 @@ final class Store {
     var openWhenListed: String?
     /// `/side` and a question, typed into the box of the session a test opens (`SIDE=… scripts/run.sh`).
     var sideWhenOpen: String?
+    /// What to press there, for a test (`PRESS=… scripts/run.sh`).
+    var pressWhenOpen: String?
     /// Something to tell you once: what's next after a start that needs you at the Mac, say.
     var notice: String?
     /// How the session you just moved on from went ("Sent to …"), for the next one to say.
@@ -90,8 +92,21 @@ final class Store {
     /// The session shown now, if one is, or a PR's page (its key after `PrView.prefix`): a message
     /// that fails elsewhere is said in an alert.
     var showing: String? {
-        didSet { keepPlace() }
+        didSet {
+            if showing != oldValue { came = showing == nil ? nil : Int64(Date.now.timeIntervalSince1970 * 1000) }
+            keepPlace()
+        }
     }
+    /// When the page shown came up: what's moved to the top of what waits on you after that goes
+    /// next, though it's ahead of where you are (the core's `leftAfter`). This phone's clock, and
+    /// a move's time is its Mac's: a few seconds apart at worst, and it comes round after the rest.
+    @ObservationIgnored private var came: Int64?
+    /// Messages a session's harness held, taken out from here: gone from the conversation at once,
+    /// until its Mac no longer lists them, and `going` while it's at it.
+    private(set) var removals: [String: [Removal]] = [:]
+    /// The answer each session's side conversations last brought up here, by when it came: put
+    /// away, it doesn't come back up.
+    @ObservationIgnored private var broughtUp: [String: Int64] = [:]
     /// Sessions whose messages are going now: one at a time each, so they arrive in order.
     @ObservationIgnored private var pumping: Set<String> = []
 
@@ -162,6 +177,7 @@ final class Store {
         let waits = snap.sessions != sessions || snap.prs != prs
         if snap.sessions != sessions { sessions = snap.sessions }
         readOthers()
+        settleRemovals()
         if snap.prs != prs {
             prs = snap.prs
             reviews = reviewsWaiting()
@@ -203,6 +219,7 @@ final class Store {
             if let key = ProcessInfo.processInfo.environment["CODEALONG_OPEN"], !key.isEmpty {
                 openWhenListed = key
                 sideWhenOpen = ProcessInfo.processInfo.environment["CODEALONG_SIDE"].flatMap { $0.isEmpty ? nil : $0 }
+                pressWhenOpen = ProcessInfo.processInfo.environment["CODEALONG_PRESS"].flatMap { $0.isEmpty ? nil : $0 }
             }
             // Improve Codealong pressed for a test (`IMPROVE=1 scripts/run.sh`), once the Macs have
             // answered and a session OPEN asked for is up, so the picture is of that screen.
@@ -317,7 +334,7 @@ final class Store {
         }
         let all = waitingNow(project: project)
         let byKey = Dictionary(all.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
-        return leftAfter(places: all.map(\.place), key: key, handled: handled, was: was).compactMap { byKey[$0] }
+        return leftAfter(places: all.map(\.place), key: key, handled: handled, was: was, came: key == showing ? came : nil).compactMap { byKey[$0] }
     }
 
     /// Keeps where the page shown stands while it waits on you (`was`).
@@ -596,6 +613,21 @@ final class Store {
     func quiet(_ key: String, _ on: Bool) async throws {
         let core = try running()
         try await Task.detached { try core.quiet(keys: [key], quiet: on) }.value
+    }
+
+    /// Moves a session to the top of what waits on you, or back in line, on its Mac: every queue
+    /// goes to it first until you take it up.
+    func raise(_ key: String, _ on: Bool) async throws {
+        let core = try running()
+        try await Task.detached { try core.raise(keys: [key], raised: on) }.value
+    }
+
+    /// Whether what a side conversation answered comes up now: once for each answer, however you
+    /// come back to the session.
+    func bringUp(_ key: String, _ answer: SideAnswer) -> Bool {
+        if (broughtUp[key] ?? 0) >= answer.at { return false }
+        broughtUp[key] = answer.at
+        return true
     }
 
     /// Pins a session at the top of its Mac's pins, or unpins it.
@@ -887,6 +919,50 @@ final class Store {
         }
     }
 
+    /// Takes a message the session's harness holds out of what it holds, so it never goes: it
+    /// leaves the conversation at once, and one sent from here with it, and both are back if it's
+    /// still held after all, as the Mac's `unqueueAhead` has it. Claude Code gives back all it
+    /// holds and they go in again under new ids, so one of yours among them goes on showing as
+    /// held. Says why when it couldn't.
+    func unqueue(_ key: String, message: HeldMessage) async -> String? {
+        let core: Core
+        do { core = try running() } catch { return words(error) }
+        let mine = outgoing[key]?.firstIndex { $0.heldAs == message.id }
+        let before = mine.flatMap { outgoing[key]?[$0] }
+        if let mine { outgoing[key]?.remove(at: mine) }
+        removals[key, default: []].append(Removal(id: message.id, going: true))
+        do {
+            let done = try await Task.detached { try core.conversation(key: key).unqueue(id: message.id) }.value
+            for moved in done.requeued {
+                guard let j = outgoing[key]?.firstIndex(where: { $0.heldAs == moved.was }), case .sent(let said, let at, _)? = outgoing[key]?[j].state else { continue }
+                outgoing[key]?[j].state = .sent(said, at: at, held: moved.now)
+            }
+            if let j = removals[key]?.firstIndex(where: { $0.id == message.id }) { removals[key]?[j].going = false }
+            settleRemovals()
+            return nil
+        } catch {
+            removals[key]?.removeAll { $0.id == message.id }
+            if removals[key]?.isEmpty == true { removals[key] = nil }
+            if let before { outgoing[key, default: []].append(before) }
+            return words(error)
+        }
+    }
+
+    /// What a message taken out comes to once its Mac no longer lists it: nothing to hide.
+    private func settleRemovals() {
+        for (key, list) in removals {
+            let held = Set(row(key)?.queued.map(\.id) ?? [])
+            let left = list.filter { $0.going || held.contains($0.id) }
+            if left != list { removals[key] = left.isEmpty ? nil : left }
+        }
+    }
+
+    /// A held message's words to write again (Edit): one sent from here as you wrote it, else as
+    /// its harness lists it, where that has all of it.
+    func heldWords(_ key: String, _ message: HeldMessage) -> String? {
+        outgoing[key]?.first { $0.heldAs == message.id }?.text ?? message.words
+    }
+
     /// Puts a message that went away: the session didn't show it, and you've seen that.
     func dismissOutgoing(_ key: String, id: String) {
         outgoing[key]?.removeAll { $0.id == id }
@@ -976,6 +1052,11 @@ struct Outgoing: Identifiable, Equatable {
         case sent(String, at: Date, held: String? = nil)
     }
 
+    /// The id the session's harness holds it under, where its send said one.
+    var heldAs: String? {
+        if case .sent(_, _, let id) = state { id } else { nil }
+    }
+
     /// The session's harness holds it until its turn ends, as the Mac's thread reads the board
     /// (ahead.ts `settle`): while the session lists the id its send said it went under, or, where
     /// it lists none, while something it holds came after it went.
@@ -1037,10 +1118,16 @@ enum Waiting: Equatable {
     /// Where it stands in what waits on you, while it waits.
     var place: QueuePlace {
         switch self {
-        case .session(let row): QueuePlace(key: key, waits: row.section == .needsYou ? .needs : .unread, since: since)
-        case .pr: QueuePlace(key: key, waits: .reviews, since: since)
+        case .session(let row): QueuePlace(key: key, waits: row.section == .needsYou ? .needs : .unread, since: since, raised: row.raised)
+        case .pr: QueuePlace(key: key, waits: .reviews, since: since, raised: nil)
         }
     }
+}
+
+/// A message taken out of what a session's harness holds (`Store.unqueue`).
+struct Removal: Equatable {
+    let id: String
+    var going: Bool
 }
 
 /// Hands the core's change notices to the store; the core calls it on a thread of its own.

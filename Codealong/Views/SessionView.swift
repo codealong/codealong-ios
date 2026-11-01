@@ -118,8 +118,11 @@ struct SessionView: View {
     @State private var aside: SideAsk?
     /// The mode picked here, until its Mac's feed says the one it's in.
     @State private var modePicked: String?
-    /// A queued message Send now didn't send into the turn, and why.
-    @State private var unsteered: (id: String, why: String)?
+    /// A queued message Send now, Edit or Remove didn't do what it says for, and why.
+    @State private var unheld: Unheld?
+    /// When it came up here, or came forward: what a side conversation answered by then comes up.
+    @State private var came: Int64 = 0
+    @Environment(\.scenePhase) private var scenePhase
     /// When Mark as done was last held here by work under way: done again soon after ends that too.
     @State private var heldAt: Date?
     @State private var finishing = false
@@ -212,7 +215,7 @@ struct SessionView: View {
             }
         }
         .sheet(item: $snoozing) { SnoozePicker(pick: $0) }
-        .sheet(item: $aside) { SideSheet(key: key, question: $0.question) }
+        .sheet(item: $aside) { SideSheet(key: key, question: $0.question, reading: $0.reading) }
         .alert("Rename", isPresented: $renaming) {
             TextField("Name", text: $newName)
             Button("Rename") { Task { await rename() } }
@@ -227,7 +230,20 @@ struct SessionView: View {
         // Opened from the feeds saved before its Mac connected, or back after it went away: read
         // what it couldn't.
         .onChange(of: online) { _, now in
-            if now { Task { await reconnected() } }
+            if now {
+                Task { await reconnected() }
+                bringUpAnswer()
+            }
+        }
+        // One from before you came that its Mac's feed has only now caught up with. Not one that
+        // comes in after, with what you're doing here: it waits until you come to it.
+        .onChange(of: row?.sideAnswer?.at) { _, at in
+            if let at, opened, at <= came { bringUpAnswer() }
+        }
+        .onChange(of: scenePhase) { _, now in
+            guard now == .active else { return }
+            came = Int64(Date.now.timeIntervalSince1970 * 1000)
+            bringUpAnswer()
         }
         // Its Mac says the mode it's in now: that's the one shown.
         .onChange(of: row?.mode?.id) { _, _ in modePicked = nil }
@@ -311,7 +327,12 @@ struct SessionView: View {
                     }
                     // After the turn that's running, which they wait on.
                     ForEach(heldShown, id: \.id) { m in
-                        HeldView(message: m, sendNow: canAct && row?.steerable == true ? { Task { await steer(m) } } : nil, why: unsteered?.id == m.id ? unsteered?.why : nil)
+                        heldView(m)
+                    }
+                    // One taken out that's no longer held to say why under: its words are still
+                    // yours to write again.
+                    if let unheld, unheld.removing, !heldShown.contains(where: { $0.id == unheld.id }) {
+                        UnheldView(unheld: unheld, putInBox: unheld.words.map { w in { addToBox(w) } }) { self.unheld = nil }
                     }
                     if loading && items.isEmpty {
                         ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
@@ -397,8 +418,8 @@ struct SessionView: View {
         }
     }
 
-    /// The session's menu: stop, rename, fork, where it came from, done, snooze, quiet, seen or
-    /// unread, pin, archive; then copying its ID, as the Mac's menu does.
+    /// The session's menu: stop, rename, fork, where it came from, done, move to top, snooze,
+    /// quiet, seen or unread, pin, archive; then copying its ID, as the Mac's menu does.
     @ViewBuilder
     private var sessionMenu: some View {
         // A swipe across the screen does it too, and what the bar says goes with it.
@@ -443,6 +464,9 @@ struct SessionView: View {
             .disabled(!online || finishing)
         // An archived one is in no list to wait in or lead: unarchived, it can be.
         if row?.archived != true {
+            // It joins the top of what waits on you rather than leaving it, so you stay here.
+            Button(row?.raised == nil ? "Move to top" : "Back in line", systemImage: row?.raised == nil ? "arrow.up.to.line" : "arrow.uturn.down") { Task { await raise() } }
+                .disabled(!online)
             Menu("Snooze", systemImage: "moon.zzz") {
                 ForEach(Snooze.choices()) { c in
                     Button(c.label) { Task { await snooze(until: c.until) } }
@@ -525,6 +549,12 @@ struct SessionView: View {
             }
             if row?.flagged == true {
                 SessionNote(words: SessionNote.flagged, symbol: "flag.fill", tint: .red)
+            }
+            if let raised = row?.raised {
+                SessionNote(words: raised.says, symbol: "arrow.up.to.line", tint: .orange)
+            }
+            if let seen = row?.agentSeen {
+                SessionNote(words: seen, symbol: "eye", tint: .secondary)
             }
             if let said {
                 Text(said).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
@@ -739,6 +769,7 @@ struct SessionView: View {
 
     private func open() async {
         store.showing = key
+        came = Int64(Date.now.timeIntervalSince1970 * 1000)
         if store.slidIn?.key == key { store.slidIn = nil }
         sayProblem()
         guard conversation == nil, let conv = store.conversation(key) else { return }
@@ -779,6 +810,12 @@ struct SessionView: View {
             store.sideWhenOpen = nil
             aside = SideAsk(question: question)
         }
+        bringUpAnswer()
+        // Pressed for a test (`PRESS=… scripts/run.sh`), once it's up.
+        if let press = store.pressWhenOpen {
+            store.pressWhenOpen = nil
+            await pressed(press)
+        }
         // A session Codealong runs sends its reply as it's written, while it's shown here.
         if row?.hosted == true {
             watching = await Task.detached { conv.watch() }.value
@@ -788,13 +825,34 @@ struct SessionView: View {
 
     /// Messages from here its Mac took that the conversation doesn't show yet.
     /// The messages its harness holds, but those sent into the turn from here, which show as sent
-    /// in their place.
+    /// in their place, and those taken out from here.
     private var heldShown: [HeldMessage] {
         let steered = Set((store.outgoing[key] ?? []).compactMap { o -> String? in
             if case .steer(let id) = o.how { id } else { nil }
         })
-        return (row?.queued ?? []).filter { !steered.contains($0.id) }
+        let removed = Set((store.removals[key] ?? []).map(\.id))
+        return (row?.queued ?? []).filter { !steered.contains($0.id) && !removed.contains($0.id) }
     }
+
+    /// A message it holds, with what can be done to it from here.
+    private func heldView(_ m: HeldMessage) -> HeldView {
+        var view = HeldView(message: m, busy: removingHeld, why: unheld?.id == m.id ? unheld?.why : nil)
+        guard canHandleHeld else { return view }
+        view.sendNow = { Task { await steer(m) } }
+        view.remove = { Task { await removeHeld(m) } }
+        if let words = store.heldWords(key, m) {
+            view.edit = { Task { await editHeld(m, words: words) } }
+        }
+        return view
+    }
+
+    /// Send now, Edit and Remove beside a message it holds: while the turn would take it sooner,
+    /// and keys reach its harness.
+    private var canHandleHeld: Bool { canAct && row?.steerable == true }
+
+    /// One is being taken out: Claude Code gives back all it holds and they go in again under new
+    /// ids, so nothing else is done to them until it's over.
+    private var removingHeld: Bool { store.removals[key]?.contains(where: \.going) == true }
 
     /// Messages on their way from here, but those its harness lists among what it holds, which
     /// show there once.
@@ -802,16 +860,54 @@ struct SessionView: View {
         let held = Set(heldShown.map(\.id))
         return (store.outgoing[key] ?? []).filter { o in
             guard case .sent(_, _, let id?) = o.state else { return true }
-            return !held.contains(id)
+            return !held.contains(id) && !removingHeld
         }
     }
 
     /// Sends a queued message into the turn now.
     private func steer(_ message: HeldMessage) async {
-        unsteered = nil
+        unheld = nil
         if let why = await store.steer(key, message: message) {
-            unsteered = (message.id, why)
+            unheld = Unheld(id: message.id, why: why)
         }
+    }
+
+    /// Takes a queued message out, so it's never sent.
+    private func removeHeld(_ message: HeldMessage) async {
+        unheld = nil
+        if let why = await store.unqueue(key, message: message) {
+            unheld = Unheld(id: message.id, why: why, removing: true)
+        }
+    }
+
+    /// Takes a queued message out and puts its words in the box, to change and send from there. It
+    /// comes out as you start rather than changing where it's held once you're done: a turn takes
+    /// in what it holds as a step ends, often sooner than you'd finish. Its words reach the box
+    /// only once it's out, so one the turn took first isn't there to send twice.
+    private func editHeld(_ message: HeldMessage, words: String) async {
+        unheld = nil
+        if let why = await store.unqueue(key, message: message) {
+            unheld = Unheld(id: message.id, why: why, removing: true, words: words)
+        } else {
+            addToBox(words)
+        }
+    }
+
+    /// Words of a held message in the box, after what's written there.
+    private func addToBox(_ words: String) {
+        let written = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        draft = written.isEmpty ? words : written + "\n\n" + words
+        unheld = nil
+        typing = true
+    }
+
+    /// Brings up what a side conversation answered as you come to the session, as a Mac's window
+    /// does (side.ts `useSideAnswer`), once for each answer: the open one, or the one that answered,
+    /// closed since. Not over what you're writing or another sheet, and it's left waiting on you
+    /// for that: reading it doesn't mark the session seen, going on from it does.
+    private func bringUpAnswer() {
+        guard let answer = row?.sideAnswer, online, store.showing == key, aside == nil, editing == nil, snoozing == nil, !renaming, draft.isEmpty, store.bringUp(key, answer) else { return }
+        aside = SideAsk(reading: answer.open ? nil : answer.id)
     }
 
     private var awaitingRecord: Int {
@@ -1257,6 +1353,35 @@ struct SessionView: View {
     }
 
     /// Quiets it, or makes it heard again, as the Mac's Quiet does.
+    /// What a test asked to press: `raise` is Move to top or Back in line, `remove` and `edit` press
+    /// those beside the first message it holds, and `send:<words>` sends those.
+    private func pressed(_ what: String) async {
+        let held = heldShown.first
+        if what.hasPrefix("send:") {
+            store.post(key, title: title, text: String(what.dropFirst("send:".count)), how: .send(now: false))
+            return
+        }
+        switch what {
+        case "raise": await raise()
+        case "remove":
+            if let held { await removeHeld(held) }
+        case "edit":
+            if let held, let words = store.heldWords(key, held) { await editHeld(held, words: words) }
+        default: break
+        }
+    }
+
+    /// Moves it to the top of what waits on you, or back in line.
+    private func raise() async {
+        let on = row?.raised == nil
+        do {
+            try await store.raise(key, on)
+            said = on ? "Moved to the top: every queue goes to it first." : "Back in line."
+        } catch {
+            said = words(error)
+        }
+    }
+
     private func setQuiet(_ on: Bool) async {
         do {
             try await store.quiet(key, on)
@@ -2290,13 +2415,20 @@ private struct OutgoingView: View {
 /// A message the session's harness holds until the turn it's taking ends, whoever sent it, at the
 /// end of the conversation after that turn, as the Mac's thread shows one (SessionThread.tsx
 /// `NotYetSaid`): faint, saying so, with Send now while the turn would take it sooner, as Steer
-/// beside one in the Codex app does.
+/// beside one in the Codex app does, then Edit, as ↑ in Claude Code's box, and Remove, as the trash
+/// in the Codex app.
 private struct HeldView: View {
     let message: HeldMessage
-    /// Sends it into the turn now; none where the turn can't take it or nothing can be sent here.
-    let sendNow: (() -> Void)?
-    /// Why Send now didn't, when it didn't.
+    /// Another is being taken out: wait for that.
+    let busy: Bool
+    /// Why Send now, Edit or Remove didn't, when it didn't.
     let why: String?
+    /// Sends it into the turn now; none where the turn can't take it or nothing can be sent here.
+    var sendNow: (() -> Void)?
+    /// Takes it out into the box below; none where its words can't be had, too.
+    var edit: (() -> Void)?
+    /// Takes it out, so it's never sent; none as for Send now.
+    var remove: (() -> Void)?
 
     static let words = "Queued until this turn ends"
 
@@ -2314,11 +2446,25 @@ private struct HeldView: View {
                 Text(Self.words)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                if let sendNow {
-                    Button("Send now", systemImage: "bolt", action: sendNow)
-                        .font(.caption)
-                        .accessibilityHint("Into the turn it's taking, rather than once the turn ends")
+                Group {
+                    if let sendNow {
+                        Button("Send now", systemImage: "bolt", action: sendNow)
+                            .accessibilityHint("Into the turn it's taking, rather than once the turn ends")
+                    }
+                    if let edit {
+                        Button("Edit", systemImage: "pencil", action: edit)
+                            .accessibilityHint("Out of the queue into the box below, so it can't go while you change it")
+                    }
+                    if let remove {
+                        Button("Remove", systemImage: "trash", action: remove)
+                            .accessibilityHint("So it's never sent")
+                    }
                 }
+                .labelStyle(.iconOnly)
+                .font(.footnote)
+                .frame(minWidth: 28, minHeight: 28)
+                .contentShape(.rect)
+                .disabled(busy)
             }
             if let why {
                 Text(why)
@@ -2326,6 +2472,42 @@ private struct HeldView: View {
                     .foregroundStyle(.red)
                     .multilineTextAlignment(.trailing)
             }
+        }
+        .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+}
+
+/// What a queued message's Send now, Edit or Remove didn't do, and why.
+private struct Unheld {
+    let id: String
+    let why: String
+    var removing = false
+    /// The words an Edit was taking back.
+    var words: String?
+}
+
+/// Why one taken out didn't come out cleanly, where it's no longer held to say it under, as the
+/// Mac's thread says it: a turn took it first, say.
+private struct UnheldView: View {
+    let unheld: Unheld
+    /// Puts the words an Edit was taking back in the box.
+    let putInBox: (() -> Void)?
+    let dismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            Text(unheld.why)
+                .font(.caption)
+                .foregroundStyle(.red)
+                .multilineTextAlignment(.trailing)
+            HStack(spacing: 12) {
+                if let putInBox {
+                    Button("Put in the box", systemImage: "pencil", action: putInBox)
+                }
+                Button("Stop showing this", systemImage: "xmark", action: dismiss)
+                    .labelStyle(.iconOnly)
+            }
+            .font(.caption)
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
     }
@@ -2639,6 +2821,8 @@ private func replyWords(why: String?, pending: Pending?, account: String?, other
 struct SideAsk: Identifiable {
     let id = UUID()
     var question: String?
+    /// One closed since that answered, to read as they open.
+    var reading: String?
 
     /// What `/side` or `/btw` at the start of what's written asks, its lines kept: empty for the
     /// command alone, which shows the side conversations; nil when it isn't one.
@@ -2779,6 +2963,12 @@ struct SessionGlance: View {
             }
             if row?.flagged == true {
                 SessionNote(words: SessionNote.flagged, symbol: "flag.fill", tint: .red)
+            }
+            if let raised = row?.raised {
+                SessionNote(words: raised.says, symbol: "arrow.up.to.line", tint: .orange)
+            }
+            if let seen = row?.agentSeen {
+                SessionNote(words: seen, symbol: "eye", tint: .secondary)
             }
             if let said {
                 Text(said).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)

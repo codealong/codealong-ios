@@ -463,7 +463,7 @@ private struct PrHeader: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            SessionsSection(keys: pr.sessions)
+            SessionsSection(keys: pr.sessions, primary: pr.primary)
         }
     }
 
@@ -503,9 +503,11 @@ private struct PrHeader: View {
 
 /// The sessions that worked on it, under where it stands, as the Mac's panel has them under its
 /// header (`PanelPlaces`): each opens its session, so the one that made it is a tap away. Only
-/// the ones the list has: an archived session has no row here to open.
+/// the ones the list has: an archived session has no row here to open. Its primary session leads
+/// them, tagged, as the Mac's panel tags it.
 private struct SessionsSection: View {
     let keys: [String]
+    let primary: PrPrimary?
     @Environment(Store.self) private var store
 
     var body: some View {
@@ -520,7 +522,19 @@ private struct SessionsSection: View {
                         }
                         NavigationLink(value: r.key) {
                             HStack(spacing: 8) {
-                                QuickSessionRow(row: r, showDevice: store.devices.count > 1, showProject: false)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    QuickSessionRow(row: r, showDevice: store.devices.count > 1, showProject: false)
+                                    if r.key == primary?.key {
+                                        // Under its title, past its state's mark.
+                                        HStack(spacing: 3) {
+                                            Image(systemName: "star.fill").accessibilityHidden(true)
+                                            Text("Primary")
+                                        }
+                                        .font(.caption2.weight(.medium))
+                                        .foregroundStyle(.secondary)
+                                        .padding(.leading, 26)
+                                    }
+                                }
                                 Image(systemName: "chevron.right")
                                     .font(.caption.weight(.semibold))
                                     .foregroundStyle(.tertiary)
@@ -533,6 +547,11 @@ private struct SessionsSection: View {
                     }
                 }
                 .background(.background.secondary, in: .rect(cornerRadius: 12))
+                if let primary, rows.contains(where: { $0.key == primary.key }) {
+                    Text(primary.says)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             .padding(.top, 10)
         }

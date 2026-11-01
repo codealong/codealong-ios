@@ -250,6 +250,70 @@ pub struct SessionRow {
     /// It's archived on its Mac: only a search that asks for archived sessions lists it, and only
     /// a page opened from there shows it (`Core::sessions`).
     pub archived: bool,
+    /// Moved to the top of what waits on you, here or from a Mac, by you or by an agent: every
+    /// queue goes to it first until you take it up. None from Macs before 2026-10-29.
+    pub raised: Option<Raised>,
+    /// What's said of a turn its own agent marked seen, which needs nothing from you and so is
+    /// idle rather than Your turn (`Session::agent_seen`, LaneRow.tsx `AgentSeenChip`). None from
+    /// Macs before 2026-10-30, which show such a turn as Your turn.
+    pub agent_seen: Option<String>,
+    /// The side conversation that answered last since you saw it, which its page brings up as you
+    /// come to it. None from Macs before 2026-10-30.
+    pub side_answer: Option<SideAnswer>,
+}
+
+/// A session moved to the top of what waits on you (`Session::raised`).
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct Raised {
+    /// When it was moved, by the clock of its Mac.
+    pub at: i64,
+    /// An agent moved it, not you: it goes after every one you moved.
+    pub agent: bool,
+    /// Who moved it there, why and until when, as the Mac's Top chip says it (LaneRow.tsx
+    /// `RaisedChip`).
+    pub says: String,
+}
+
+impl From<&codealong_peer::model::Raised> for Raised {
+    fn from(r: &codealong_peer::model::Raised) -> Raised {
+        let by = if r.agent { format!(" by {}", r.by_title.as_deref().filter(|t| !t.is_empty()).unwrap_or("an agent")) } else { String::new() };
+        let says = format!("Moved to the top{by}{}. It\u{2019}s first in every queue until you send it something or see its finished turn.", because(r.note.as_deref()));
+        Raised { at: r.at, agent: r.agent, says }
+    }
+}
+
+/// A note ending what's said of a session, after a colon: `: the deploy waits on it`.
+fn because(note: Option<&str>) -> String {
+    note.map(|n| n.trim().trim_end_matches('.')).filter(|n| !n.is_empty()).map(|n| format!(": {n}")).unwrap_or_default()
+}
+
+/// What a turn its own agent marked seen says (LaneRow.tsx `AgentSeenChip`).
+fn agent_seen_words(seen: &codealong_peer::model::AgentSeen) -> String {
+    format!("Seen by its agent, which said this turn needs nothing from you{}. Mark as unread makes it Your turn again.", because(seen.note.as_deref()))
+}
+
+/// The order of sessions moved to the top, ahead of the rest (the Mac's board.rs `raised_order`):
+/// the ones you moved, then the ones agents did, so an agent's never goes over yours, each the
+/// latest first. Two that weren't moved are equal, and go by their status and wait.
+pub(crate) fn raised_order(a: Option<&Raised>, b: Option<&Raised>) -> std::cmp::Ordering {
+    let rank = |r: &Raised| (r.agent, std::cmp::Reverse(r.at));
+    match (a, b) {
+        (Some(a), Some(b)) => rank(a).cmp(&rank(b)),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+}
+
+/// What a side conversation answered that you haven't seen (`Session::side_answer`).
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct SideAnswer {
+    /// Its id, among those `Conversation::earlier_sides` lists.
+    pub id: String,
+    /// It's the session's open one; closed, it's read where the kept ones are.
+    pub open: bool,
+    /// When it finished answering, by the clock of the session's Mac.
+    pub at: i64,
 }
 
 /// A session's worktree's PR: where its menu's Open PR goes.
@@ -316,6 +380,39 @@ pub struct HeldMessage {
     pub at: i64,
     /// What it says, each image in it as `[Image #n]`.
     pub text: String,
+    /// Its words to write again (Edit), where they can be had: none where what its harness lists
+    /// only names part of it, a long paste or an image, which would be lost as it came out.
+    pub words: Option<String>,
+}
+
+/// A held message's words as its harness lists it, unless that only names part of it (the Mac's
+/// ahead.ts `heldWords`).
+fn held_words(text: &str) -> Option<String> {
+    const NAMES_WHAT_IT_HOLDS: [&str; 3] = ["[Pasted text #", "[Image #", "[...Truncated text #"];
+    (!NAMES_WHAT_IT_HOLDS.iter().any(|n| text.contains(n))).then(|| text.to_string())
+}
+
+/// What taking a message out of what a session's harness holds did (`Conversation::unqueue`).
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct Unqueued {
+    /// One sentence: what was taken out, and what went back in.
+    pub message: String,
+    /// The others it held that went back in after it, where its harness gives back everything it
+    /// holds at once (Claude Code): each under the id it has now.
+    pub requeued: Vec<Requeued>,
+}
+
+/// A held message that went back in after another was taken out.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct Requeued {
+    pub was: String,
+    pub now: String,
+}
+
+impl From<api::Unqueued> for Unqueued {
+    fn from(u: api::Unqueued) -> Unqueued {
+        Unqueued { message: u.message, requeued: u.requeued.into_iter().map(|r| Requeued { was: r.was, now: r.now }).collect() }
+    }
 }
 
 /// A mode a session's agent offers, or the one it's in (`SessionMode`).
@@ -505,6 +602,14 @@ impl Core {
     pub fn quiet(&self, keys: Vec<String>, quiet: bool) -> Result<(), CoreError> {
         self.sorted(&keys);
         each_mac(&keys, |device, keys| self.client.quiet(device, keys, quiet))
+    }
+
+    /// Moves sessions to the top of what waits on you, or back in line with `raised` false, on the
+    /// Macs they're on: every queue there and here goes to them first until you take them up. One
+    /// whose turn was over and seen waits on you again. Macs before 2026-10-29 refuse it.
+    pub fn raise(&self, keys: Vec<String>, raised: bool) -> Result<(), CoreError> {
+        self.sorted(&keys);
+        each_mac(&keys, |device, keys| self.client.raise(device, keys, raised).map_err(|e| older_mac(e, &self.client, device, "move a session to the top from here")))
     }
 
     /// Pins sessions at the top of their Macs' pins, or unpins them.
@@ -721,7 +826,7 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 effort: s.effort.clone(),
                 mode: s.mode.as_ref().map(ModeChoice::from),
                 modes: s.modes.iter().map(ModeChoice::from).collect(),
-                queued: s.queued.iter().map(|m| HeldMessage { id: m.id.clone(), at: m.at, text: m.text.clone() }).collect(),
+                queued: s.queued.iter().map(|m| HeldMessage { id: m.id.clone(), at: m.at, text: m.text.clone(), words: held_words(&m.text) }).collect(),
                 queued_at: s.queued_at,
                 flagged: s.flagged,
                 cut_off: s.cut_off.filter(|_| status != Status::Working).map(|_| CUT_OFF.to_string()),
@@ -741,6 +846,9 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 emblem: s.emblem.as_ref().map(Emblem::from),
                 id: s.id.clone(),
                 archived: s.archived,
+                raised: s.raised.as_ref().map(Raised::from),
+                agent_seen: s.agent_seen.as_ref().map(agent_seen_words),
+                side_answer: s.side_answer.as_ref().map(|a| SideAnswer { id: a.id.clone(), open: a.open, at: a.at }),
             };
             if listed { sessions.push(row) } else { unlisted.push(row) }
         }
@@ -887,15 +995,17 @@ fn section(status: Status, snoozed_until: Option<i64>) -> InboxSection {
 }
 
 /// The inbox's order, the Mac's Sessions view's (SessionsView.tsx `timeSections`): section by
-/// section, Needs you the longest wait first, so a new one can't keep pushing an old one down;
-/// Your turn and Working, which read as a feed, the newest status first; snoozed ones the soonest
-/// back first; the rest by the one you last sent a prompt. A status's time doesn't move while it
-/// lasts, so rows hold their places, and send and next goes down the list as it reads.
+/// section, the ones moved to the top first in theirs (`raised_order`), then Needs you the longest
+/// wait first, so a new one can't keep pushing an old one down; Your turn and Working, which read
+/// as a feed, the newest status first; snoozed ones the soonest back first; the rest by the one
+/// you last sent a prompt. A status's time doesn't move while it lasts, so rows hold their places,
+/// and send and next goes down the list as it reads.
 fn inbox_order(a: &SessionRow, b: &SessionRow) -> std::cmp::Ordering {
     let since = |s: &SessionRow| s.status_since.unwrap_or(s.last_activity);
     let rank = |s: &SessionRow| s.section as u8;
     rank(a)
         .cmp(&rank(b))
+        .then_with(|| raised_order(a.raised.as_ref(), b.raised.as_ref()))
         .then_with(|| match a.section {
             InboxSection::NeedsYou => since(a).cmp(&since(b)),
             InboxSection::YourTurn | InboxSection::Working => since(b).cmp(&since(a)),
@@ -1496,6 +1606,16 @@ impl Conversation {
         let params = serde_json::to_value(api::params::Steer { key: self.key.clone(), id }).map_err(|e| CoreError::Failed(e.to_string()))?;
         let said = self.client.ask(&self.device, api::SESSION_STEER, params, ACT_WAIT).map_err(|e| older_mac(e, &self.client, &self.device, "send a queued message now from here"))?;
         Ok(said.as_str().map(str::to_string).unwrap_or_else(|| "Sent into the turn.".into()))
+    }
+
+    /// Takes a message its harness holds until the turn ends (`id`, one of its row's `queued`) out
+    /// of what it holds, so it never goes, as the trash beside a queued message in the Codex app
+    /// does. Macs before 2026-10-29 refuse it.
+    pub fn unqueue(&self, id: String) -> Result<Unqueued, CoreError> {
+        let params = serde_json::to_value(api::params::Steer { key: self.key.clone(), id }).map_err(|e| CoreError::Failed(e.to_string()))?;
+        let said = self.client.ask(&self.device, api::SESSION_UNQUEUE, params, ACT_WAIT).map_err(|e| older_mac(e, &self.client, &self.device, "take a queued message out from here"))?;
+        let done: api::Unqueued = serde_json::from_value(said).map_err(|e| CoreError::Failed(e.to_string()))?;
+        Ok(done.into())
     }
 
     /// How a message sent to it would reach it, as its Mac says; None for one Codealong runs, and
@@ -2568,6 +2688,9 @@ mod order_tests {
             emblem: None,
             id: key.into(),
             archived: false,
+            raised: None,
+            agent_seen: None,
+            side_answer: None,
         }
     }
 
@@ -2596,6 +2719,57 @@ mod order_tests {
         assert!(!by("asks").unattended, "one that needs you waits on you");
         assert!(!by("lone").unattended && !by("gone").unattended, "listed as sessions of their own");
         assert_eq!(by("lone").runs, 0);
+    }
+
+    #[test]
+    fn a_row_says_who_moved_it_to_the_top_what_its_agent_saw_and_what_answered_on_the_side() {
+        use codealong_peer::client::Device;
+        use codealong_peer::feed::Replica;
+        use codealong_peer::model::{AgentSeen, Raised as Sent, SideAnswer as Answer};
+        let mac = Device { key: "m".into(), short: "m".into(), name: "Mac".into(), online: true, since: None, last_seen: None, remote_control: true, app: String::new(), loading: false, linked_back: true };
+        let mut lane = codealong_peer::model::Lane::new("/src/app", "App", "app");
+        let mine = Session { raised: Some(Sent { at: 5, ..Sent::default() }), ..Session::new(Harness::Claude, "claude", "mine") };
+        let agents = Session { raised: Some(Sent { at: 6, agent: true, by_title: Some("Orchestrator".into()), note: Some("The deploy waits on it.".into()), ..Sent::default() }), ..Session::new(Harness::Claude, "claude", "agents") };
+        let seen = Session { agent_seen: Some(AgentSeen { at: 7, note: Some("Nothing new".into()) }), ..Session::new(Harness::Claude, "claude", "seen") };
+        let side = Session { side_answer: Some(Answer { id: "1793-4".into(), open: true, at: 8 }), ..Session::new(Harness::Claude, "claude", "side") };
+        lane.sessions = vec![mine, agents, seen, side];
+        let replica = Replica { lanes: vec![lane], ..Replica::default() };
+        let rows = all_rows(&[(mac, &replica)]);
+        let row = |id: &str| rows.iter().find(|r| r.id == id).unwrap();
+        assert_eq!(row("mine").raised.as_ref().map(|r| r.says.as_str()), Some("Moved to the top. It\u{2019}s first in every queue until you send it something or see its finished turn."));
+        let up = row("agents").raised.clone().unwrap();
+        assert_eq!((up.at, up.agent), (6, true));
+        assert!(up.says.starts_with("Moved to the top by Orchestrator: The deploy waits on it. It\u{2019}s"), "{}", up.says);
+        assert_eq!(row("seen").agent_seen.as_deref(), Some("Seen by its agent, which said this turn needs nothing from you: Nothing new. Mark as unread makes it Your turn again."));
+        assert_eq!(row("side").side_answer, Some(SideAnswer { id: "1793-4".into(), open: true, at: 8 }));
+        // From a Mac before these, a row says none of it.
+        assert_eq!((row("side").raised.clone(), row("side").agent_seen.clone(), row("seen").side_answer.clone()), (None, None, None));
+    }
+
+    #[test]
+    fn a_held_message_can_be_written_again_unless_it_only_names_part_of_itself() {
+        assert_eq!(held_words("Run the tests").as_deref(), Some("Run the tests"));
+        // Square brackets of its own are words like any.
+        assert_eq!(held_words("See [Image] and [#3]").as_deref(), Some("See [Image] and [#3]"));
+        assert_eq!(held_words("Look at [Image #1]"), None);
+        assert_eq!(held_words("[Pasted text #2 +40 lines]"), None);
+        assert_eq!(held_words("Before [...Truncated text #3 +9 lines] after"), None);
+    }
+
+    #[test]
+    fn moved_to_the_top_goes_first_in_its_section_and_stays_in_it() {
+        let raised = |row: SessionRow, at: i64, agent: bool| SessionRow { raised: Some(Raised { at, agent, says: String::new() }), ..row };
+        let mut rows = vec![
+            row("older", Status::Needs, 10, None, 0),
+            row("newer", Status::Needs, 20, None, 0),
+            raised(row("agents", Status::Needs, 30, None, 0), 900, true),
+            raised(row("yours", Status::Needs, 40, None, 0), 100, false),
+            // Your turn reads newest first, and a move to the top leads it too; but it's still Your turn.
+            row("ended", Status::Unread, 50, None, 0),
+            raised(row("read", Status::Unread, 5, None, 0), 100, false),
+        ];
+        rows.sort_by(inbox_order);
+        assert_eq!(rows.iter().map(|r| r.key.as_str()).collect::<Vec<_>>(), ["yours", "agents", "older", "newer", "read", "ended"]);
     }
 
     #[test]

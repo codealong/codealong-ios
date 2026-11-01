@@ -151,7 +151,8 @@ pub(crate) fn pinned_sessions(rows: &[SessionRow], project: &str, now: i64) -> V
 
 /// Sessions by project and worktree, the pinned ones left to lead apart (`pinned_sessions`): the
 /// project and the worktree with the last activity first,
-/// and in a worktree, what needs you first, then the newest. `worktrees` are the places to start,
+/// and in a worktree, what needs you first, the ones moved to the top first among their kind, then
+/// the newest, as the Mac's lanes sort them. `worktrees` are the places to start,
 /// keyed by `@<device short id>:<id>`, and `shorts` each Mac's short id by its key.
 pub(crate) fn project_groups(rows: &[SessionRow], worktrees: &HashMap<String, Worktree>, shorts: &HashMap<&str, &str>, project: &str, now: i64) -> Vec<ProjectGroup> {
     let mut by_worktree: HashMap<String, (String, WorktreeGroup)> = HashMap::new();
@@ -166,7 +167,7 @@ pub(crate) fn project_groups(rows: &[SessionRow], worktrees: &HashMap<String, Wo
     let latest = |g: &WorktreeGroup| g.sessions.iter().map(|s| s.last_activity).max().unwrap_or(0);
     let mut projects: Vec<ProjectGroup> = Vec::new();
     for (project, mut group) in by_worktree.into_values() {
-        group.sessions.sort_by(|a, b| status_rank(a.status).cmp(&status_rank(b.status)).then(b.last_activity.cmp(&a.last_activity)).then_with(|| a.key.cmp(&b.key)));
+        group.sessions.sort_by(|a, b| status_rank(a.status).cmp(&status_rank(b.status)).then_with(|| crate::raised_order(a.raised.as_ref(), b.raised.as_ref())).then(b.last_activity.cmp(&a.last_activity)).then_with(|| a.key.cmp(&b.key)));
         match projects.iter_mut().find(|p| p.project == project) {
             Some(p) => p.worktrees.push(group),
             None => projects.push(ProjectGroup { project, worktrees: vec![group] }),
@@ -352,6 +353,15 @@ mod tests {
         s.worktree = worktree.into();
         s.worktree_id = format!("/src/{worktree}");
         s
+    }
+
+    #[test]
+    fn in_a_worktree_the_ones_moved_to_the_top_lead_their_kind() {
+        let up = SessionRow { raised: Some(crate::Raised { at: NOW, agent: false, says: String::new() }), ..in_worktree("up", "App", "app", Status::Unread, NOW - 5 * HOUR) };
+        let rows = [in_worktree("new", "App", "app", Status::Unread, NOW - HOUR), up, in_worktree("needs", "App", "app", Status::Needs, NOW - 9 * HOUR)];
+        let out = project_groups(&rows, &HashMap::new(), &HashMap::new(), "", NOW);
+        // What needs you still comes first, as a lane sorts them on the Mac.
+        assert_eq!(out[0].worktrees[0].sessions.iter().map(|s| s.key.as_str()).collect::<Vec<_>>(), ["needs", "up", "new"]);
     }
 
     #[test]

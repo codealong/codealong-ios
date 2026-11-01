@@ -815,6 +815,10 @@ struct QuickView: View {
                 Button(r.pinned == nil ? "Pin" : "Unpin", systemImage: r.pinned == nil ? "pin" : "pin.slash") {
                     act { try await store.pin(r.key, r.pinned == nil) }
                 }
+                Button(r.raised == nil ? "Move to top" : "Back in line", systemImage: r.raised == nil ? "arrow.up.to.line" : "arrow.uturn.down") {
+                    act { try await store.raise(r.key, r.raised == nil) }
+                }
+                .disabled(!online)
                 Menu("Snooze", systemImage: "moon.zzz") {
                     ForEach(Snooze.choices()) { c in
                         Button(c.label) { act { try await store.snooze(r.key, until: c.until) } }
