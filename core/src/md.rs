@@ -718,6 +718,14 @@ pub(crate) fn inline(text: &str) -> String {
     while i < text.len() {
         let rest = &text[i..];
         let c = rest.chars().next().expect("not at the end");
+        if c == '\\' && rest[1..].starts_with(|n: char| n.is_ascii_punctuation()) {
+            // Escaped already (by its writer, or `escaped`), so it reads as written: left as it is,
+            // or a second backslash would show, and the mark it escaped would be drawn.
+            let len = 1 + rest[1..].chars().next().map_or(0, char::len_utf8);
+            out.push_str(&rest[..len]);
+            i += len;
+            continue;
+        }
         if c == '`' {
             // A code span, left as it is: nothing in it is a mark or a link.
             if let Some(end) = rest[1..].find('`') {
@@ -925,6 +933,10 @@ mod tests {
         // What they hold ends on no space, and nothing in code is a mark.
         assert_eq!(inline("*not *this"), "\\*not \\*this");
         assert_eq!(inline("`a*b*c` *it*"), "`a*b*c` *it*");
+        // A mark escaped already stays escaped once, so it shows as itself, without a backslash;
+        // a backslash before anything else is a backslash.
+        assert_eq!(inline("\\*literal\\* and \\_x\\_ and \\\\"), "\\*literal\\* and \\_x\\_ and \\\\");
+        assert_eq!(inline("C:\\Users\\me"), "C:\\Users\\me");
     }
 
     #[test]
@@ -943,6 +955,9 @@ mod tests {
                 MdBlock::Code { text: "ls *.ts".into() },
             ]
         );
+        // A kept file's name is escaped once, so its underscores show as they are.
+        let files = "[test_result.txt](files/0123456789abcdef/test_result.txt) and [__init__.py](files/0123456789abcdef/__init__.py)";
+        assert_eq!(prompt_markdown(files.into()).into_iter().map(|p| p.block).collect::<Vec<_>>(), [para("test\\_result.txt and \\_\\_init\\_\\_.py")]);
         // A reply's lines are joined, as before.
         assert_eq!(blocks("one\n  two"), [para("one two")]);
         // Only images: no words to show.
