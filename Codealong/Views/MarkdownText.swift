@@ -8,16 +8,22 @@ import UIKit
 /// item is indented under it here, as deep as lists nest.
 struct MarkdownText: View {
     let text: String
+    /// A prompt of yours (`PromptText`), kept as you typed it: its lines stay lines (the core's
+    /// `prompt_markdown`), a blank line between blocks is a line's height, as it was before prompts
+    /// were drawn as Markdown, and it's only as wide as it needs to be, in its bubble. Code and
+    /// tables stand on the page's color there, the bubble's tint being theirs elsewhere.
+    var written = false
+    @ScaledMetric(relativeTo: .body) private var lineHeight: CGFloat = 20
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(MarkdownCache.parts(text).enumerated()), id: \.offset) { _, part in
+        VStack(alignment: .leading, spacing: written ? lineHeight : 8) {
+            ForEach(Array(MarkdownCache.parts(text, written: written).enumerated()), id: \.offset) { _, part in
                 block(part.block, depth: Int(part.depth))
                     .padding(.leading, CGFloat(part.depth) * 18)
             }
         }
         .textSelection(.enabled)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: written ? nil : .infinity, alignment: .leading)
     }
 
     @ViewBuilder
@@ -47,9 +53,9 @@ struct MarkdownText: View {
                     Capsule().fill(.quaternary).frame(width: 3)
                 }
         case .code(let s):
-            CodeView(text: s)
+            CodeView(text: s, onPage: written)
         case .table(let align, let head, let rows):
-            TableView(align: align, head: head, rows: rows)
+            TableView(align: align, head: head, rows: rows, onPage: written)
         case .rule:
             Divider().padding(.vertical, 4)
         }
@@ -66,12 +72,18 @@ struct MarkdownText: View {
 @MainActor
 private enum MarkdownCache {
     private static var read: [String: [MdPart]] = [:]
+    private static var prompts: [String: [MdPart]] = [:]
 
-    static func parts(_ text: String) -> [MdPart] {
-        if let parts = read[text] { return parts }
-        let parts = markdown(text: text)
-        if read.count > 400 { read.removeAll() }
-        read[text] = parts
+    static func parts(_ text: String, written: Bool) -> [MdPart] {
+        if let parts = written ? prompts[text] : read[text] { return parts }
+        let parts = written ? promptMarkdown(text: text) : markdown(text: text)
+        if written {
+            if prompts.count > 400 { prompts.removeAll() }
+            prompts[text] = parts
+        } else {
+            if read.count > 400 { read.removeAll() }
+            read[text] = parts
+        }
         return parts
     }
 }
@@ -79,6 +91,8 @@ private enum MarkdownCache {
 /// A fenced code block: as written, scrolling sideways, with a button that copies it.
 struct CodeView: View {
     let text: String
+    /// On the page's color, in a prompt's tinted bubble.
+    var onPage = false
 
     var body: some View {
         ScrollView(.horizontal) {
@@ -88,7 +102,7 @@ struct CodeView: View {
                 .padding(.trailing, 28)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background.secondary, in: .rect(cornerRadius: 8))
+        .background(onPage ? AnyShapeStyle(.background) : AnyShapeStyle(.background.secondary), in: .rect(cornerRadius: 8))
         .overlay(alignment: .topTrailing) { CopyButton(text: text) }
     }
 }
@@ -99,6 +113,8 @@ private struct TableView: View {
     let align: [MdAlign]
     let head: [String]
     let rows: [[String]]
+    /// On the page's color, in a prompt's tinted bubble.
+    var onPage = false
     /// Columns that fit a phone's width with their cells wrapping.
     private let fits = 4
     /// In a table that scrolls, a cell wraps past this, so one long cell doesn't make a column a
@@ -114,7 +130,7 @@ private struct TableView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background.secondary, in: .rect(cornerRadius: 8))
+        .background(onPage ? AnyShapeStyle(.background) : AnyShapeStyle(.background.secondary), in: .rect(cornerRadius: 8))
     }
 
     private var grid: some View {

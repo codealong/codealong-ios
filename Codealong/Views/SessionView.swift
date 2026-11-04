@@ -2563,9 +2563,10 @@ private struct UnheldView: View {
     }
 }
 
-/// A prompt of yours as you wrote it, as the Mac shows one: not read as Markdown, its web links
-/// opening, the images Codealong kept for it shown above its words (read from its Mac), and the
-/// files named.
+/// A prompt of yours, as the Mac's thread draws one now: its Markdown drawn as an agent's reply's
+/// is (headings, lists, code, tables, bold), but kept as you typed it, its line breaks and
+/// indentation as they were (the core's `prompt_markdown`); its web links opening; the images
+/// Codealong kept for it shown above its words (read from its Mac), and the files named.
 struct PromptText: View {
     let text: String
     @Environment(\.imageMac) private var mac
@@ -2573,7 +2574,6 @@ struct PromptText: View {
     var body: some View {
         let parts = promptParts(text: text)
         let images = mac == nil ? [] : parts.compactMap { $0.kind == .image ? $0.url : nil }
-        let words = images.isEmpty ? parts : Self.trimmed(parts.filter { $0.kind != .image })
         VStack(alignment: .trailing, spacing: 8) {
             // One big; more three to a row, small enough for the narrowest phone's bubble.
             if let mac, !images.isEmpty {
@@ -2584,43 +2584,10 @@ struct PromptText: View {
                     }
                 }
             }
-            if !words.isEmpty {
-                prompt(words)
+            if PinnedPrompt.hasWords(text) {
+                MarkdownText(text: text, written: true)
             }
         }
-    }
-
-    /// The words left once the images are taken out, without the lines they stood on.
-    private static func trimmed(_ parts: [PromptPart]) -> [PromptPart] {
-        var parts = parts
-        if let first = parts.first, first.kind == .text {
-            parts[0] = PromptPart(kind: .text, text: String(first.text.drop { $0.isWhitespace }), url: nil)
-        }
-        if let last = parts.last, last.kind == .text {
-            parts[parts.count - 1] = PromptPart(kind: .text, text: String(last.text.reversed().drop { $0.isWhitespace }.reversed()), url: nil)
-        }
-        return parts.filter { $0.kind != .text || !$0.text.isEmpty }
-    }
-
-    private func prompt(_ parts: [PromptPart]) -> Text {
-        var out = Text(verbatim: "")
-        for part in parts {
-            let piece: Text
-            switch part.kind {
-            case .text:
-                piece = Text(verbatim: part.text)
-            case .link:
-                var link = AttributedString(part.text)
-                link.link = part.url.flatMap(URL.init(string:))
-                piece = Text(link)
-            case .image:
-                piece = Text("\(Image(systemName: "photo")) \(part.text)").foregroundStyle(.secondary)
-            case .file:
-                piece = Text("\(Image(systemName: "doc")) \(part.text)").foregroundStyle(.secondary)
-            }
-            out = Text("\(out)\(piece)")
-        }
-        return out
     }
 }
 

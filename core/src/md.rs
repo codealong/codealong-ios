@@ -3,9 +3,11 @@
 //! block's text left as inline Markdown for Swift's `AttributedString` to draw (emphasis, code
 //! spans, links). Links are settled here, as the Mac settles them: a web link, written as a link or
 //! bare, opens; a bare link to a GitHub PR reads `name#123`, as GitHub shortens it; a link to
-//! anything else shows as its text. A tool's output isn't Markdown, but its web links open too
-//! (`linked_output`). Your prompts aren't read as Markdown either: they show as you wrote them,
-//! with their web links, and the files and images Codealong kept for them (`prompt_parts`).
+//! anything else shows as its text. Bold and italics open where the Mac's emphasis.ts has them
+//! open, so a glob or a path written without backticks (`apps/*, libs/*`, `*.ts`) reads as written
+//! (`emphasis_at`). Your prompts are read as Markdown too, kept as you typed them: their line breaks
+//! and indentation stay (`prompt_markdown`), and the images Codealong kept for them are shown apart
+//! (`prompt_parts`). A tool's output isn't Markdown, but its web links open too (`linked_output`).
 
 /// A block of what an agent wrote.
 #[derive(uniffi::Enum, Clone, Debug, PartialEq)]
@@ -65,8 +67,45 @@ fn settled(b: MdBlock) -> MdBlock {
     }
 }
 
-/// One line of inline Markdown with its links settled, for text that isn't read as blocks (your
-/// prompts, notes).
+/// A prompt of yours as Markdown, as the Mac's thread draws one (Markdown.tsx `written`): blocks as
+/// an agent's reply has them, but a paragraph's, a quote's or an item's lines stay lines, each with
+/// its indentation, as you typed them. The images Codealong kept for it are left out, with the line
+/// each stood alone on, since they're shown apart (`prompt_parts`); a file it kept is its name.
+#[uniffi::export]
+pub fn prompt_markdown(text: String) -> Vec<MdPart> {
+    parts_as(&prompt_words(&text), true)
+        .into_iter()
+        .map(|(depth, b)| MdPart { depth, block: settled(b) })
+        .collect()
+}
+
+/// A prompt's words as Markdown: the images Codealong kept for it out, and the files it kept as
+/// their names.
+fn prompt_words(text: &str) -> String {
+    let mut words = String::with_capacity(text.len());
+    let mut rest = text;
+    while !rest.is_empty() {
+        if let Some((part, len)) = kept_at(rest) {
+            rest = &rest[len..];
+            if part.kind == PromptPartKind::Image {
+                // Alone on its line, the line goes with it.
+                if (words.is_empty() || words.ends_with('\n')) && rest.starts_with('\n') {
+                    rest = &rest[1..];
+                }
+            } else {
+                words.push_str(&escaped(&part.text));
+            }
+            continue;
+        }
+        let c = rest.chars().next().expect("not empty");
+        words.push(c);
+        rest = &rest[c.len_utf8()..];
+    }
+    words
+}
+
+/// One line of inline Markdown with its links settled, for text that isn't read as blocks
+/// (notes).
 #[uniffi::export]
 pub fn inline_markdown(text: String) -> String {
     inline(&text)
@@ -368,20 +407,27 @@ pub(crate) fn blocks(src: &str) -> Vec<MdBlock> {
     parts(src).into_iter().map(|(_, b)| b).collect()
 }
 
-/// The text's blocks, as the Mac's `blocks` reads them, each with how deep in lists it is. A
-/// paragraph's lines are joined with spaces, as Markdown joins them; a blank line, or the start of
-/// another kind of block, ends it.
+/// An agent's reply's blocks (`parts_as`).
 pub(crate) fn parts(src: &str) -> Vec<(u8, MdBlock)> {
+    parts_as(src, false)
+}
+
+/// The text's blocks, as the Mac's `blocks` reads them, each with how deep in lists it is. A
+/// paragraph's lines are joined with spaces, as Markdown joins them, or `written` (a prompt's),
+/// kept as lines; a blank line, or the start of another kind of block, ends it.
+pub(crate) fn parts_as(src: &str, written: bool) -> Vec<(u8, MdBlock)> {
     let src = src.replace("\r\n", "\n").replace('\r', "\n");
     let mut out = Vec::new();
-    read_blocks(&src, 0, &mut out);
+    read_blocks(&src, 0, written, &mut out);
     out
 }
 
 /// Reads `src`'s blocks into `out` at `depth`: what's indented under a list's item is read the
-/// same way, a level deeper.
-fn read_blocks(src: &str, depth: u8, out: &mut Vec<(u8, MdBlock)>) {
+/// same way, a level deeper. `written`: a paragraph's, a quote's or an item's lines stay lines,
+/// a paragraph's with their indentation.
+fn read_blocks(src: &str, depth: u8, written: bool, out: &mut Vec<(u8, MdBlock)>) {
     let lines: Vec<&str> = src.split('\n').collect();
+    let joint = if written { "\n" } else { " " };
     let mut i = 0;
     while i < lines.len() {
         let line = lines[i];
@@ -460,7 +506,7 @@ fn read_blocks(src: &str, depth: u8, out: &mut Vec<(u8, MdBlock)>) {
                 i += 1;
                 // Its wrapped lines: indented under it, and no block of their own.
                 while i < lines.len() && !lines[i].trim().is_empty() && indent_of(lines[i]) > at && !starts_block(lines[i]) {
-                    own.push(' ');
+                    own.push_str(joint);
                     own.push_str(lines[i].trim());
                     i += 1;
                 }
@@ -494,7 +540,7 @@ fn read_blocks(src: &str, depth: u8, out: &mut Vec<(u8, MdBlock)>) {
                     }
                     let cut = under.iter().filter(|m| !m.trim().is_empty()).map(|m| leading_spaces(m)).min().unwrap_or(0);
                     let inner: Vec<&str> = under.iter().map(|m| &m[leading_spaces(m).min(cut)..]).collect();
-                    read_blocks(&inner.join("\n"), depth + 1, out);
+                    read_blocks(&inner.join("\n"), depth + 1, written, out);
                 }
             }
             if !items.is_empty() {
@@ -509,7 +555,7 @@ fn read_blocks(src: &str, depth: u8, out: &mut Vec<(u8, MdBlock)>) {
                 body.push(l.strip_prefix(' ').unwrap_or(l));
                 i += 1;
             }
-            out.push((depth, MdBlock::Quote { text: body.join(" ") }));
+            out.push((depth, MdBlock::Quote { text: body.join(joint) }));
             continue;
         }
         let mut body = Vec::new();
@@ -518,10 +564,10 @@ fn read_blocks(src: &str, depth: u8, out: &mut Vec<(u8, MdBlock)>) {
             if l.trim().is_empty() || heading(l).is_some() || is_fence(l) || is_quote(l) || item(l).is_some() || table_at(&lines, i) {
                 break;
             }
-            body.push(l.trim());
+            body.push(if written { l.trim_end() } else { l.trim() });
             i += 1;
         }
-        out.push((depth, MdBlock::Paragraph { text: body.join(" ") }));
+        out.push((depth, MdBlock::Paragraph { text: body.join(joint) }));
     }
 }
 
@@ -617,10 +663,54 @@ fn link_at(s: &str, empty: bool) -> Option<(&str, &str, usize)> {
     Some((words, target, close + 2 + end + 1))
 }
 
+/// A word's character, as JavaScript's `\w` has it, which the Mac's patterns go by.
+fn word_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// Bold or italics opening at the start of `rest`, as the Mac's emphasis.ts has them, `before`
+/// being the character before it: the mark, what it holds, and how long it is with its marks.
+/// They open where a glob or a path written without backticks can't: the marks come after no
+/// slash, backslash or other mark, and what they hold starts on neither a space nor a slash and
+/// ends on no space. Italics come after no word's character either (`2*3*4`) and don't start on
+/// the punctuation a glob goes on with (`*, `, `*.`); underscores, which names are full of, come
+/// after and close before no word's character. Bold can be part of a word (`light**house**`).
+fn emphasis_at(rest: &str, before: Option<char>) -> Option<(&'static str, &str, usize)> {
+    // What a mark holds: up to the next of its own character, which it doesn't hold, starting on
+    // a character `starts` allows and ending on no space; then the mark again.
+    fn held<'a>(rest: &'a str, mark: &str, starts: impl Fn(char) -> bool) -> Option<(&'a str, usize)> {
+        let body = rest.strip_prefix(mark)?;
+        let end = body.find(mark.chars().next()?)?;
+        let inner = &body[..end];
+        let (first, last) = (inner.chars().next()?, inner.chars().next_back()?);
+        (starts(first) && !last.is_whitespace() && body[end..].starts_with(mark)).then_some((inner, inner.len() + 2 * mark.len()))
+    }
+    let not_after = |marks: &str, word: bool| before.is_none_or(|b| !marks.contains(b) && !(word && word_char(b)));
+    if rest.starts_with("**") && not_after("/\\*", false) {
+        if let Some((inner, len)) = held(rest, "**", |c| !c.is_whitespace() && c != '/') {
+            return Some(("**", inner, len));
+        }
+    }
+    if rest.starts_with("__") && not_after("/\\", true) {
+        if let Some((inner, len)) = held(rest, "__", |c| !c.is_whitespace() && c != '/') {
+            if !rest[len..].starts_with(word_char) {
+                return Some(("__", inner, len));
+            }
+        }
+    }
+    if rest.starts_with('*') && not_after("/\\*", true) {
+        if let Some((inner, len)) = held(rest, "*", |c| !c.is_whitespace() && !"/.,;:!?)]}".contains(c)) {
+            return Some(("*", inner, len));
+        }
+    }
+    None
+}
+
 /// Inline Markdown with its links settled, as the Mac's `inline` draws them: code spans as they
 /// are; a link to the web kept, and its words not made links again; a link to anything else as
 /// its words; `<https://…>` and bare web links as links. An image (`![alt](…)`), which the phone
-/// isn't sent, reads as its words in italics.
+/// isn't sent, reads as its words in italics. Bold and italics are kept where the Mac draws them
+/// (`emphasis_at`), and any other `*` or `_` is escaped, so Swift's reading draws it as written.
 pub(crate) fn inline(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
@@ -668,6 +758,16 @@ pub(crate) fn inline(text: &str) -> String {
                 i += len;
                 continue;
             }
+        } else if c == '*' || c == '_' {
+            if let Some((mark, inner, len)) = emphasis_at(rest, text[..i].chars().next_back()) {
+                out.push_str(mark);
+                out.push_str(&inline(inner));
+                out.push_str(mark);
+                i += len;
+                continue;
+            }
+            // A mark the Mac doesn't draw reads as it's written.
+            out.push('\\');
         }
         out.push(c);
         i += c.len_utf8();
@@ -806,6 +906,47 @@ mod tests {
         assert_eq!(inline("**bold** and *it*"), "**bold** and *it*");
         // A word that runs into the scheme isn't a link.
         assert_eq!(inline("xhttps://a.b"), "xhttps://a.b");
+    }
+
+    #[test]
+    fn bold_and_italics_open_where_a_glob_cant() {
+        // Globs and paths written without backticks read as written.
+        assert_eq!(inline("apps/*, libs/*"), "apps/\\*, libs/\\*");
+        assert_eq!(inline("*.ts and Button*.tsx"), "\\*.ts and Button\\*.tsx");
+        assert_eq!(inline("src/**/*.ts"), "src/\\*\\*/\\*.ts");
+        assert_eq!(inline("2*3*4"), "2\\*3\\*4");
+        assert_eq!(inline("snake_case and _private_"), "snake\\_case and \\_private\\_");
+        // Bold can be part of a word; italics and underscores can't start after a letter.
+        assert_eq!(inline("light**house** and a*b*"), "light**house** and a\\*b\\*");
+        assert_eq!(inline("__init__ and a__b__"), "__init__ and a\\_\\_b\\_\\_");
+        // Marks inside one another, and a bold that holds an italic, which isn't one.
+        assert_eq!(inline("__very *important*__"), "__very *important*__");
+        assert_eq!(inline("**the *our* part**"), "\\*\\*the *our* part\\*\\*");
+        // What they hold ends on no space, and nothing in code is a mark.
+        assert_eq!(inline("*not *this"), "\\*not \\*this");
+        assert_eq!(inline("`a*b*c` *it*"), "`a*b*c` *it*");
+    }
+
+    #[test]
+    fn a_prompt_reads_as_markdown_kept_as_it_was_typed() {
+        let shot = "![shot](images/0123456789abcdef.png)";
+        let file = "[log.txt](files/0123456789abcdef/log.txt)";
+        let src = format!("{shot}\nFix **this**, see {file}:\n  indented\nlast line\n\n- one\n  wrapped\n- two\n\n> said\n> twice\n\n```\nls *.ts\n```");
+        let shown: Vec<MdBlock> = prompt_markdown(src).into_iter().map(|p| p.block).collect();
+        assert_eq!(
+            shown,
+            [
+                // Its lines stay lines, with their indentation; the image goes with its line.
+                para("Fix **this**, see log.txt:\n  indented\nlast line"),
+                list(false, 1, &["one\nwrapped", "two"]),
+                MdBlock::Quote { text: "said\ntwice".into() },
+                MdBlock::Code { text: "ls *.ts".into() },
+            ]
+        );
+        // A reply's lines are joined, as before.
+        assert_eq!(blocks("one\n  two"), [para("one two")]);
+        // Only images: no words to show.
+        assert_eq!(prompt_markdown(shot.into()), []);
     }
 
     #[test]
