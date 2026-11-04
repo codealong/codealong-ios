@@ -54,11 +54,14 @@ to wait on you, as the Mac's do: a pop when it needs you, a lighter tink when it
 either off in the Macs sheet; neither plays with the phone silenced).
 
 **Read any conversation.** Each session's conversation shows as it does on the Mac: replies as
-formatted text with tables, nested lists and code you can copy, your prompts with their images, the commands that ran and
+formatted text with tables, nested lists and code you can copy, your prompts with their images
+and their Markdown drawn too (kept as you typed them), the commands that ran and
 what they printed, and the questions an agent asked with what you picked. Scroll up to read
 further back, with the prompt you're reading the answer to pinned at the top and a button at the
 foot that goes back down to the newest. A session running
-inside Codealong on your Mac streams its reply as it's written.
+inside Codealong on your Mac streams its reply as it's written, and one that only waits on a command
+says which at the end of its conversation: one you allowed in your terminal (*Running in Ghostty*)
+or one its turn left running in the background.
 
 **Work through what's waiting.** Sessions that need you, PRs waiting on your review and finished
 turns come one after another, in the Mac's order: the ones moved to the top first, then each kind
@@ -102,7 +105,8 @@ need you, as on the Mac.
 A running Claude Code session with Remote Control on opens in the Claude app from its menu.
 
 Renaming, archiving, marking seen, *Mark as unread*, *Move to top* (first in every queue, on every
-device, until you send it something or see its finished turn; *Back in line* undoes it), *Snooze*
+device, and listed under *Moved to top*, until you send it something or see its finished turn;
+*Back in line* undoes it), *Snooze*
 (off what waits on you until the time you pick, on every device) and *Quiet* (its turns stop waiting
 on you; it comes to you only when it needs you) work with any Mac, remote control or not. A turn its
 own agent marked seen says so rather than waiting on you.
