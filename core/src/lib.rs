@@ -274,8 +274,11 @@ pub struct WaitsOn {
     /// What it says first: "Running in Ghostty", "Waiting on", or "Waiting on a command in the
     /// background" when its Mac couldn't read the command.
     pub lead: String,
-    /// The command, on one line; none when its Mac couldn't read it.
+    /// The command, on one line, to show; none when its Mac couldn't read it.
     pub command: Option<String>,
+    /// The command as its Mac sent it, its lines and spacing as written, to copy: one line of it
+    /// would be another command.
+    pub written: Option<String>,
     /// It runs in a terminal of yours, not in the background of the session's turn.
     pub in_terminal: bool,
 }
@@ -288,12 +291,14 @@ fn waits_on(s: &Session) -> Option<WaitsOn> {
         return None;
     }
     let one_line = |c: &str| Some(c.split_whitespace().collect::<Vec<_>>().join(" ")).filter(|c| !c.is_empty());
+    let written = |c: &str| Some(c.trim().to_string()).filter(|c| !c.is_empty());
     if let Some(run) = &s.running {
-        return Some(WaitsOn { lead: format!("Running in {}", run.terminal), command: one_line(&run.command), in_terminal: true });
+        return Some(WaitsOn { lead: format!("Running in {}", run.terminal), command: one_line(&run.command), written: written(&run.command), in_terminal: true });
     }
-    let command = one_line(s.background.as_deref()?);
+    let background = s.background.as_deref()?;
+    let command = one_line(background);
     let lead = if command.is_some() { "Waiting on" } else { "Waiting on a command in the background" };
-    Some(WaitsOn { lead: lead.into(), command, in_terminal: false })
+    Some(WaitsOn { lead: lead.into(), command, written: written(background), in_terminal: false })
 }
 
 /// A session moved to the top of what waits on you (`Session::raised`).
@@ -2825,14 +2830,18 @@ mod order_tests {
     fn a_working_session_says_what_it_waits_on_a_run_in_your_terminal_first() {
         use codealong_peer::model::RunningIn;
         let working = |id: &str| Session { status: PeerStatus::Working, ..Session::new(Harness::Claude, "claude", id) };
-        let run = RunningIn { terminal: "Ghostty".into(), command: "npm run\n  deploy".into() };
+        // Shown on one line, and copied as it was written: its lines, and the spaces it quotes.
+        let run = RunningIn { terminal: "Ghostty".into(), command: "echo first\n  echo 'a  b'\n".into() };
         let both = Session { running: Some(run), background: Some("make watch".into()), ..working("both") };
-        assert_eq!(waits_on(&both), Some(WaitsOn { lead: "Running in Ghostty".into(), command: Some("npm run deploy".into()), in_terminal: true }));
+        assert_eq!(
+            waits_on(&both),
+            Some(WaitsOn { lead: "Running in Ghostty".into(), command: Some("echo first echo 'a b'".into()), written: Some("echo first\n  echo 'a  b'".into()), in_terminal: true })
+        );
         let background = Session { background: Some("make watch".into()), ..working("bg") };
-        assert_eq!(waits_on(&background), Some(WaitsOn { lead: "Waiting on".into(), command: Some("make watch".into()), in_terminal: false }));
+        assert_eq!(waits_on(&background), Some(WaitsOn { lead: "Waiting on".into(), command: Some("make watch".into()), written: Some("make watch".into()), in_terminal: false }));
         // Its Mac couldn't read the command.
         let unread = Session { background: Some("  ".into()), ..working("unread") };
-        assert_eq!(waits_on(&unread).map(|w| (w.lead, w.command)), Some(("Waiting on a command in the background".into(), None)));
+        assert_eq!(waits_on(&unread).map(|w| (w.lead, w.command, w.written)), Some(("Waiting on a command in the background".into(), None, None)));
         // A turn that runs, one stalled, and one no longer working wait on nothing.
         assert_eq!(waits_on(&working("turn")), None);
         assert_eq!(waits_on(&Session { stalled_since: Some(5), ..both.clone() }), None);

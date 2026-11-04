@@ -2843,8 +2843,8 @@ private struct WaitsOnLine: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
         .contextMenu {
-            if let command = waits.command {
-                Button("Copy command", systemImage: "doc.on.doc") { UIPasteboard.general.string = command }
+            if let written = waits.written {
+                Button("Copy command", systemImage: "doc.on.doc") { UIPasteboard.general.string = written }
             }
         }
     }
