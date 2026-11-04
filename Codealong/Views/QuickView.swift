@@ -559,7 +559,7 @@ struct QuickView: View {
                 }
             } header: {
                 HStack {
-                    GroupHeading(title: section.group.title, count: Int(section.count), symbol: section.group == .pinned ? "pin.fill" : nil)
+                    GroupHeading(title: section.group.title, count: Int(section.count), symbol: section.group == .pinned ? "pin.fill" : section.group == .top ? "arrow.up" : nil)
                     if section.group == .sessions && (withArchived || quick.archivedFound > 0) {
                         Spacer()
                         archivedToggle(found: Int(quick.archivedFound))
@@ -1266,6 +1266,7 @@ extension QuickGroup {
     var title: String {
         switch self {
         case .pinned: "Pinned"
+        case .top: "Moved to top"
         case .needsYou: "Needs you"
         case .yourTurn: "Your turn"
         case .reviews: "Review requested"

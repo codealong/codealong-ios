@@ -260,6 +260,40 @@ pub struct SessionRow {
     /// The side conversation that answered last since you saw it, which its page brings up as you
     /// come to it. None from Macs before 2026-10-30.
     pub side_answer: Option<SideAnswer>,
+    /// What it waits on while it works only in that it waits on a command, said at the end of its
+    /// conversation where a turn's progress would be (`waits_on`).
+    pub waits_on: Option<WaitsOn>,
+}
+
+/// A command a working session waits on, as the Mac says it at the end of its conversation in the
+/// working line's place (Working.tsx `Waiting`): one you allowed in your terminal, which its agent
+/// waits on (`Session::running`, from Macs since 2026-11-04), or one its turn left running in the
+/// background (`Session::background`).
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct WaitsOn {
+    /// What it says first: "Running in Ghostty", "Waiting on", or "Waiting on a command in the
+    /// background" when its Mac couldn't read the command.
+    pub lead: String,
+    /// The command, on one line; none when its Mac couldn't read it.
+    pub command: Option<String>,
+    /// It runs in a terminal of yours, not in the background of the session's turn.
+    pub in_terminal: bool,
+}
+
+/// What a working session waits on (`WaitsOn`), as the Mac's SessionThread.tsx shows its
+/// `Waiting` line: working and not stalled, waiting on a run in your terminal before a command in
+/// the background. None while its turn runs.
+fn waits_on(s: &Session) -> Option<WaitsOn> {
+    if s.status != PeerStatus::Working || s.stalled_since.is_some() {
+        return None;
+    }
+    let one_line = |c: &str| Some(c.split_whitespace().collect::<Vec<_>>().join(" ")).filter(|c| !c.is_empty());
+    if let Some(run) = &s.running {
+        return Some(WaitsOn { lead: format!("Running in {}", run.terminal), command: one_line(&run.command), in_terminal: true });
+    }
+    let command = one_line(s.background.as_deref()?);
+    let lead = if command.is_some() { "Waiting on" } else { "Waiting on a command in the background" };
+    Some(WaitsOn { lead: lead.into(), command, in_terminal: false })
 }
 
 /// A session moved to the top of what waits on you (`Session::raised`).
@@ -314,6 +348,27 @@ pub struct SideAnswer {
     pub open: bool,
     /// When it finished answering, by the clock of the session's Mac.
     pub at: i64,
+}
+
+/// Whether what a side conversation answered comes up as you come to its session, as the Mac's
+/// side.ts `broughtBefore` has it, and if so, when the answers put away go up to from then. Not
+/// when one as late was put away on this phone before (`put_away`, kept across launches), nor when
+/// it came up already since the app opened (`last`). One open when it came up and closed since
+/// with nothing more asked comes up again, closed: its Mac's restart closes every open one, and it
+/// no longer shows by itself. Only a closed one is kept as put away: an open one shows by itself,
+/// and closing it says you've read it. A session waiting on a question it asked can't be marked
+/// seen, so it keeps its answer, and one closed brought up anew at each launch kept coming back.
+#[uniffi::export]
+pub fn side_answer_due(answer: SideAnswer, last: Option<SideAnswer>, put_away: i64) -> Option<i64> {
+    if put_away >= answer.at {
+        return None;
+    }
+    if let Some(l) = last {
+        if l.at > answer.at || (l.at == answer.at && (answer.open || !l.open)) {
+            return None;
+        }
+    }
+    Some(if answer.open { put_away } else { answer.at })
 }
 
 /// A session's worktree's PR: where its menu's Open PR goes.
@@ -849,6 +904,7 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 raised: s.raised.as_ref().map(Raised::from),
                 agent_seen: s.agent_seen.as_ref().map(agent_seen_words),
                 side_answer: s.side_answer.as_ref().map(|a| SideAnswer { id: a.id.clone(), open: a.open, at: a.at }),
+                waits_on: waits_on(s),
             };
             if listed { sessions.push(row) } else { unlisted.push(row) }
         }
@@ -2691,6 +2747,7 @@ mod order_tests {
             raised: None,
             agent_seen: None,
             side_answer: None,
+            waits_on: None,
         }
     }
 
@@ -2744,6 +2801,42 @@ mod order_tests {
         assert_eq!(row("side").side_answer, Some(SideAnswer { id: "1793-4".into(), open: true, at: 8 }));
         // From a Mac before these, a row says none of it.
         assert_eq!((row("side").raised.clone(), row("side").agent_seen.clone(), row("seen").side_answer.clone()), (None, None, None));
+    }
+
+    #[test]
+    fn a_side_answer_comes_up_once_and_a_closed_one_put_away_stays_away() {
+        let answer = |at: i64, open: bool| SideAnswer { id: format!("s{at}"), open, at };
+        // The first time, a closed one is kept as put away; an open one isn't.
+        assert_eq!(side_answer_due(answer(8, false), None, 0), Some(8));
+        assert_eq!(side_answer_due(answer(8, true), None, 3), Some(3));
+        // Put away before, here or before the app last opened.
+        assert_eq!(side_answer_due(answer(8, false), None, 8), None);
+        assert_eq!(side_answer_due(answer(8, true), None, 9), None);
+        // Up already since it opened.
+        assert_eq!(side_answer_due(answer(8, true), Some(answer(8, true)), 0), None);
+        assert_eq!(side_answer_due(answer(7, true), Some(answer(8, false)), 0), None);
+        // Open as it came up, closed since with nothing more asked: up again, closed, and kept.
+        assert_eq!(side_answer_due(answer(8, false), Some(answer(8, true)), 0), Some(8));
+        // A later answer comes up.
+        assert_eq!(side_answer_due(answer(9, true), Some(answer(8, false)), 8), Some(8));
+    }
+
+    #[test]
+    fn a_working_session_says_what_it_waits_on_a_run_in_your_terminal_first() {
+        use codealong_peer::model::RunningIn;
+        let working = |id: &str| Session { status: PeerStatus::Working, ..Session::new(Harness::Claude, "claude", id) };
+        let run = RunningIn { terminal: "Ghostty".into(), command: "npm run\n  deploy".into() };
+        let both = Session { running: Some(run), background: Some("make watch".into()), ..working("both") };
+        assert_eq!(waits_on(&both), Some(WaitsOn { lead: "Running in Ghostty".into(), command: Some("npm run deploy".into()), in_terminal: true }));
+        let background = Session { background: Some("make watch".into()), ..working("bg") };
+        assert_eq!(waits_on(&background), Some(WaitsOn { lead: "Waiting on".into(), command: Some("make watch".into()), in_terminal: false }));
+        // Its Mac couldn't read the command.
+        let unread = Session { background: Some("  ".into()), ..working("unread") };
+        assert_eq!(waits_on(&unread).map(|w| (w.lead, w.command)), Some(("Waiting on a command in the background".into(), None)));
+        // A turn that runs, one stalled, and one no longer working wait on nothing.
+        assert_eq!(waits_on(&working("turn")), None);
+        assert_eq!(waits_on(&Session { stalled_since: Some(5), ..both.clone() }), None);
+        assert_eq!(waits_on(&Session { status: PeerStatus::Needs, ..both }), None);
     }
 
     #[test]

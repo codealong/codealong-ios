@@ -75,6 +75,11 @@ final class Store {
     var drafts: [String: String] = [:]
     /// The images attached to each session's reply and not sent, by key, kept as its draft is.
     var attached: [String: [AttachedImage]] = [:]
+    /// Your picks and words so far for the questions each session waits on you to answer, by key,
+    /// for the call they're for: there again as you go to another session and back, until the call
+    /// is answered, as the Mac keeps them (drafts.ts `AnswersDraft`). Kept while the app runs, as
+    /// what you write in a box is.
+    @ObservationIgnored private var answers: [String: KeptAnswers] = [:]
     /// The images Macs keep for prompts, as read from them.
     @ObservationIgnored let images = ImageCache()
     /// Messages on their way to each session, by key, oldest first: shown in its conversation at
@@ -104,9 +109,17 @@ final class Store {
     /// Messages a session's harness held, taken out from here: gone from the conversation at once,
     /// until its Mac no longer lists them, and `going` while it's at it.
     private(set) var removals: [String: [Removal]] = [:]
-    /// The answer each session's side conversations last brought up here, by when it came: put
+    /// The answer each session's side conversations last brought up since the app opened: put
     /// away, it doesn't come back up.
-    @ObservationIgnored private var broughtUp: [String: Int64] = [:]
+    @ObservationIgnored private var broughtUp: [String: SideAnswer] = [:]
+    /// The latest of each session's closed side conversations' answers brought up, by when it came,
+    /// kept across launches (`side_answer_due`): a session waiting on a question it asked can't be
+    /// marked seen, so its Mac goes on sending the answer.
+    @ObservationIgnored private var putAway: [String: Int64] = (UserDefaults.standard.dictionary(forKey: "sideAnswersPutAway") as? [String: Int64]) ?? [:]
+    private static let putAwayKey = "sideAnswersPutAway"
+    /// How many sessions' put-away answers are kept: the latest, since a session not seen for a
+    /// while is done with, or its answer was seen.
+    private static let putAwayKept = 200
     /// Sessions whose messages are going now: one at a time each, so they arrive in order.
     @ObservationIgnored private var pumping: Set<String> = []
 
@@ -623,11 +636,36 @@ final class Store {
     }
 
     /// Whether what a side conversation answered comes up now: once for each answer, however you
-    /// come back to the session.
+    /// come back to the session, and a closed one put away not again after a relaunch.
     func bringUp(_ key: String, _ answer: SideAnswer) -> Bool {
-        if (broughtUp[key] ?? 0) >= answer.at { return false }
-        broughtUp[key] = answer.at
+        let was = putAway[key] ?? 0
+        guard let keep = sideAnswerDue(answer: answer, last: broughtUp[key], putAway: was) else { return false }
+        broughtUp[key] = answer
+        if keep != was {
+            putAway[key] = keep
+            if putAway.count > Self.putAwayKept {
+                let latest = putAway.sorted { $0.value > $1.value }.prefix(Self.putAwayKept)
+                putAway = Dictionary(uniqueKeysWithValues: latest.map { ($0.key, $0.value) })
+            }
+            UserDefaults.standard.set(putAway, forKey: Self.putAwayKey)
+        }
         return true
+    }
+
+    /// What was picked and written for the questions of the call `call` a session waits on, if
+    /// any was.
+    func keptAnswers(_ key: String, call: String) -> KeptAnswers? {
+        answers[key].flatMap { $0.call == call ? $0 : nil }
+    }
+
+    /// Keeps what's picked and written for a call's questions, or with nothing, forgets them.
+    func keepAnswers(_ key: String, _ kept: KeptAnswers) {
+        answers[key] = kept.isEmpty ? nil : kept
+    }
+
+    /// Forgets what was picked for a session's questions: they're answered, or declined.
+    func forgetAnswers(_ key: String) {
+        answers[key] = nil
     }
 
     /// Pins a session at the top of its Mac's pins, or unpins it.
@@ -1121,6 +1159,24 @@ enum Waiting: Equatable {
         case .session(let row): QueuePlace(key: key, waits: row.section == .needsYou ? .needs : .unread, since: since, raised: row.raised)
         case .pr: QueuePlace(key: key, waits: .reviews, since: since, raised: nil)
         }
+    }
+}
+
+/// Your picks and words for the questions of one call a session waits on, and the question
+/// showing (`Store.keptAnswers`).
+struct KeptAnswers: Equatable {
+    /// The call they're for (`Pending.id`), which holds while it waits, through a restart of its
+    /// Mac's server too: another call's questions start afresh, though they ask the same.
+    let call: String
+    /// The choices picked, by question. They were picked among the questions as asked then, which
+    /// can change as it waits (a background job's take more from its transcript), so the card
+    /// takes only those still offered.
+    var picks: [String: [String]]
+    var own: [String: String]
+    var at: Int
+
+    var isEmpty: Bool {
+        picks.values.allSatisfy(\.isEmpty) && own.values.allSatisfy(\.isEmpty) && at == 0
     }
 }
 

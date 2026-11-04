@@ -319,8 +319,12 @@ struct SessionView: View {
                         case .tools(let calls): ToolRun(calls: calls)
                         }
                     }
+                    // A reply being written, or what it works on while it only waits on a command,
+                    // where the Mac's thread has its working line.
                     if let live {
-                        LiveReply(live: live)
+                        LiveReply(live: live, waits: row?.waitsOn, waitsInBackground: row?.waitsInBackground == true)
+                    } else if let waits = row?.waitsOn, !(loading && items.isEmpty) {
+                        WaitsOnLine(waits: waits, waitsInBackground: row?.waitsInBackground == true)
                     }
                     ForEach(outgoingShown) { o in
                         OutgoingView(outgoing: o, held: o.held(in: row)) { store.dismissOutgoing(key, id: o.id) }
@@ -523,7 +527,7 @@ struct SessionView: View {
                         Task { await answer(pending, choice) }
                     }
                 } else {
-                    QuestionsCard(pending: pending, account: row?.account ?? "It", hosted: row?.hosted == true, canAct: canAct, why: whyNot, answering: answering, writing: typing) { answers in
+                    QuestionsCard(key: key, pending: pending, account: row?.account ?? "It", hosted: row?.hosted == true, canAct: canAct, why: whyNot, answering: answering, writing: typing) { answers in
                         Task { await answer(pending, .allow, questions: answers) }
                     } decline: {
                         Task { await answer(pending, .deny) }
@@ -1267,6 +1271,7 @@ struct SessionView: View {
             }.value
             answered = p.id
             pending = nil
+            store.forgetAnswers(key)
             let outcome = questions != nil ? "Answered “\(title)”." : choice == .deny ? "Denied “\(title)”." : "Allowed “\(title)” to go on."
             done(result, outcome: outcome)
         } catch {
@@ -1671,6 +1676,8 @@ private struct ApprovalCard: View {
 /// question and its choices covered most of the screen. A tap opens it, and folds it again, as
 /// starting to write in the reply box does.
 private struct QuestionsCard: View {
+    /// The session's: what's picked is kept under it (`Store.keptAnswers`).
+    let key: String
     let pending: Pending
     let account: String
     let hosted: Bool
@@ -1681,6 +1688,7 @@ private struct QuestionsCard: View {
     var writing = false
     let answer: ([QuestionAnswer]) -> Void
     let decline: () -> Void
+    @Environment(Store.self) private var store
     @State private var picks: [String: [String]] = [:]
     @State private var own: [String: String] = [:]
     /// The question showing.
@@ -1726,13 +1734,47 @@ private struct QuestionsCard: View {
         .onChange(of: writing) { _, now in
             if now { withAnimation(.snappy) { open = false } }
         }
-        // Another set of questions starts folded, at its first, with nothing picked.
+        // What was picked for these before you went to another session, or before this card was
+        // drawn again, is here again; another set of questions starts folded, at its first, with
+        // nothing picked, unless some were picked for it before.
+        .onAppear { take() }
         .onChange(of: pending.id) { _, _ in
             open = false
-            at = 0
-            picks = [:]
-            own = [:]
+            take()
         }
+        // What it asks can change as it waits: only the picks still offered stay.
+        .onChange(of: pending.questions) { _, now in
+            let offered = Self.stillOffered(now, picks)
+            if offered != picks {
+                picks = offered
+                keep()
+            }
+        }
+    }
+
+    /// Takes up what was picked and written for these questions, if any was.
+    private func take() {
+        let kept = store.keptAnswers(key, call: pending.id)
+        picks = Self.stillOffered(pending.questions, kept?.picks ?? [:])
+        own = kept?.own ?? [:]
+        at = kept?.at ?? 0
+    }
+
+    /// Keeps what's picked and written so far, for when you come back.
+    private func keep() {
+        store.keepAnswers(key, KeptAnswers(call: pending.id, picks: picks, own: own, at: at))
+    }
+
+    /// The picks the questions still offer, as the Mac's SessionReply.tsx `stillOffered` keeps
+    /// them: one that takes one keeps one.
+    private static func stillOffered(_ questions: [Question], _ picks: [String: [String]]) -> [String: [String]] {
+        var kept: [String: [String]] = [:]
+        for q in questions {
+            guard let labels = picks[q.question] else { continue }
+            let offered = labels.filter { l in q.options.contains { $0.label == l } }
+            if !offered.isEmpty || labels.isEmpty { kept[q.question] = q.multiSelect ? offered : Array(offered.prefix(1)) }
+        }
+        return kept
     }
 
     /// What it asks, on the line it folds to: the question, or with several, how many and their
@@ -1865,6 +1907,7 @@ private struct QuestionsCard: View {
 
     private func go(_ i: Int) {
         withAnimation(.snappy) { at = i }
+        keep()
     }
 
     /// One answer to a question that takes one: a choice clears what was written, as on the Mac,
@@ -1876,11 +1919,13 @@ private struct QuestionsCard: View {
             own[q.question] = ""
             if let next = nextQuestion(after: min(at, pending.questions.count - 1)) { go(next) }
         }
+        keep()
     }
 
     private func type(_ q: Question, _ text: String) {
         own[q.question] = text
         if !q.multiSelect && !text.trimmingCharacters(in: .whitespaces).isEmpty { picks[q.question] = [] }
+        keep()
     }
 
     private func answered(_ q: Question) -> Bool {
@@ -2745,21 +2790,63 @@ private func inline(_ s: String) -> AttributedString {
 /// The reply a session Codealong runs is writing, as it comes, and the tool it's running.
 private struct LiveReply: View {
     let live: Live
+    /// What it waits on, said in place of the tool it runs: a command in your terminal says more
+    /// than the call that waits on it.
+    var waits: WaitsOn?
+    var waitsInBackground = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if !live.text.isEmpty {
                 MarkdownText(text: live.text)
             }
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.mini)
-                Text(live.tool.map { Clock.text($0, now: .now) } ?? AttributedString("Writing…"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+            if let waits {
+                WaitsOnLine(waits: waits, waitsInBackground: waitsInBackground)
+            } else {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text(live.tool.map { Clock.text($0, now: .now) } ?? AttributedString("Writing…"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// At the end of the conversation of a session that works only in that it waits on a command, as
+/// the Mac's thread says it in its working line's place (Working.tsx `Waiting`): "Running in
+/// Ghostty" and the command you allowed there, which its agent waits on, or "Waiting on" one its
+/// turn left running in the background. The command on a line; held, it can be copied whole.
+private struct WaitsOnLine: View {
+    let waits: WaitsOn
+    let waitsInBackground: Bool
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            StatusMark(status: .working, stalled: false, waiting: waitsInBackground)
+            Text(waits.lead)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+                .layoutPriority(1)
+            if let command = waits.command {
+                Text(verbatim: command)
+                    .font(.caption.monospaced())
+                    .lineLimit(1)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(.background.secondary, in: .rect(cornerRadius: 4))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .contextMenu {
+            if let command = waits.command {
+                Button("Copy command", systemImage: "doc.on.doc") { UIPasteboard.general.string = command }
+            }
+        }
     }
 }
 
@@ -2948,7 +3035,7 @@ struct SessionGlance: View {
                 if pending.questions.isEmpty || pending.cannot != nil {
                     ApprovalCard(pending: pending, hosted: row?.hosted == true, canAct: canAct, why: why, answering: nil) { _ in }
                 } else {
-                    QuestionsCard(pending: pending, account: row?.account ?? "It", hosted: row?.hosted == true, canAct: canAct, why: why, answering: nil) { _ in } decline: {}
+                    QuestionsCard(key: key, pending: pending, account: row?.account ?? "It", hosted: row?.hosted == true, canAct: canAct, why: why, answering: nil) { _ in } decline: {}
                 }
             }
             if let limit = row?.limit {
