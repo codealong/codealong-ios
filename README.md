@@ -90,7 +90,8 @@ need you, as on the Mac.
   now* to put it in the turn at once, *Edit* to take it out into the box, and *Remove* so it's never
   sent;
 - allow or deny what it wants to run (or deny it and say what to do instead), and answer its
-  questions;
+  questions, folded to a line over the box while you read and brought up from that line or from
+  the question's own line in the conversation;
 - stop its turn, with the square that takes send's place while it runs;
 - switch a running session's model, effort or mode (a Codex app thread's from its next turn);
 - resume one that isn't running, where and on what model you pick;
