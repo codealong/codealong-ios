@@ -1246,6 +1246,23 @@ fn question_of(q: &api::Question, answers: Option<&std::collections::BTreeMap<St
     }
 }
 
+/// Whether the conversation's last item is the line of the call whose questions the card below
+/// shows (`pending`), as the Mac's questionsBox.ts tells it: a call with no answer yet, asking the
+/// same questions with the same choices. Its line then opens no copy of them, which couldn't be
+/// answered, and shows the card instead. Known by what it asks, not by its id: a session can wait
+/// on two calls at once (a subagent's and its own), and the card shows the one asked first where
+/// the conversation's last is the latest; another's line opens its own copy as before. Not by
+/// headers nor by whether a question takes several, which a background job's record doesn't say
+/// (the engine's claude/registry.rs `job_questions`).
+#[uniffi::export]
+pub fn questions_below(last: Item, pending: Pending) -> bool {
+    fn asked(questions: &[Question]) -> Vec<(&str, Vec<&str>)> {
+        questions.iter().map(|q| (q.question.trim(), q.options.iter().map(|o| o.label.trim()).collect())).collect()
+    }
+    let waiting = last.kind == ItemKind::Tool && last.output.is_none() && !last.failed && !last.questions.iter().any(|q| q.answered);
+    waiting && !pending.questions.is_empty() && asked(&last.questions) == asked(&pending.questions)
+}
+
 /// How to answer what a session waits on.
 #[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Choice {
@@ -1972,6 +1989,47 @@ mod tests {
         let answers = |a: &[(&str, bool, &[&str])]| answers_json(&a.iter().map(|(q, m, p)| QuestionAnswer { question: q.to_string(), multi_select: *m, picks: p.iter().map(|s| s.to_string()).collect() }).collect::<Vec<_>>());
         assert_eq!(answers(&[("Which?", true, &["Red", "Blue"]), ("Why?", false, &["Because", "ignored"]), ("Skipped", false, &[" "])]), Some(serde_json::json!({ "Which?": ["Red", "Blue"], "Why?": "Because" })));
         assert_eq!(answers(&[("Which?", false, &[])]), None);
+    }
+
+    #[test]
+    fn the_line_of_the_call_the_questions_card_shows_points_at_the_card() {
+        let ask = |question: &str, labels: &[&str], header: Option<&str>, multi: bool| api::Question {
+            question: question.into(),
+            header: header.map(String::from),
+            options: labels.iter().map(|l| api::Choice { label: l.to_string(), description: None }).collect(),
+            multi_select: multi,
+        };
+        let card = |qs: &[api::Question]| Pending {
+            id: "call-1".into(),
+            label: "AskUserQuestion".into(),
+            input: None,
+            cannot: None,
+            always: false,
+            no_once: false,
+            plan: false,
+            questions: qs.iter().map(|q| question_of(q, None)).collect(),
+            unwritten: false,
+        };
+        let line = |qs: &[api::Question], result: Option<api::Item>| {
+            let mut call = item("tool", 20, Some("call-2"), None);
+            call.questions = qs.to_vec();
+            let mut t = Thread::default();
+            t.take(api::Page { items: [Some(call), result].into_iter().flatten().collect(), before: None, after: 40 }, false);
+            t.shown().pop().unwrap()
+        };
+        let which = ask("Which color?", &["Red", "Blue"], Some("Color"), false);
+        // The same questions and choices, though the call's id isn't the card's, and its record
+        // says no header nor whether it takes several, as a background job's doesn't.
+        assert!(questions_below(line(&[which.clone()], None), card(&[ask(" Which color? ", &["Red ", "Blue"], None, true)])));
+        // Other choices, or other questions, are another call's: its line opens its own.
+        assert!(!questions_below(line(&[which.clone()], None), card(&[ask("Which color?", &["Red", "Green"], Some("Color"), false)])));
+        assert!(!questions_below(line(&[which.clone()], None), card(&[which.clone(), ask("Why?", &["Because"], None, false)])));
+        // Answered, or with no questions on the card, it opens to what was asked as before.
+        let mut answered = item("result", 30, Some("call-2"), Some("ok"));
+        answered.answers = [("Which color?".to_string(), vec!["Red".to_string()])].into();
+        assert!(!questions_below(line(&[which.clone()], Some(answered)), card(&[which.clone()])));
+        assert!(!questions_below(line(&[which.clone()], None), card(&[])));
+        assert!(!questions_below(line(&[], None), card(&[])));
     }
 
     #[test]

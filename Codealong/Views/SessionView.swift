@@ -80,6 +80,9 @@ struct SessionView: View {
     /// only what it means (a page to read, a prompt to pin) should redraw.
     @State private var scroll = ScrollSpot()
     @State private var pending: Pending?
+    /// The questions card is open, not folded to its line: the conversation's line for its call
+    /// opens it too (`questionsLine`).
+    @State private var questionsOpen = false
     /// An answer on its way to the Mac: the card takes no other until it's there, so a second tap
     /// can't send another whose failure hides how the first went.
     @State private var answering: Choice?
@@ -316,7 +319,8 @@ struct SessionView: View {
                                 }
                                 .id(item.id)
                         case .said(let item): ItemView(item: item)
-                        case .tools(let calls): ToolRun(calls: calls)
+                        case .tools(let calls):
+                            ToolRun(calls: calls, below: calls.last.map(\.id) == questionsLine ? QuestionsBelow(open: questionsOpen) { withAnimation(.snappy) { questionsOpen = true } } : nil)
                         }
                     }
                     // A reply being written, or what it works on while it only waits on a command,
@@ -388,6 +392,9 @@ struct SessionView: View {
             }
             .onChange(of: promptPlaces) { _, _ in repin() }
             .onChange(of: earlier?.id) { _, _ in repin() }
+            // Another call's questions start folded, as the card did when it had its own state:
+            // the card isn't there between the two to see it change.
+            .onChange(of: pending?.id) { _, _ in questionsOpen = false }
             // Takes no room: it floats over the top of the conversation while it has a prompt.
             .overlay(alignment: .top) {
                 VStack(spacing: 0) {
@@ -527,7 +534,7 @@ struct SessionView: View {
                         Task { await answer(pending, choice) }
                     }
                 } else {
-                    QuestionsCard(key: key, pending: pending, account: row?.account ?? "It", hosted: row?.hosted == true, canAct: canAct, why: whyNot, answering: answering, writing: typing) { answers in
+                    QuestionsCard(key: key, pending: pending, account: row?.account ?? "It", hosted: row?.hosted == true, canAct: canAct, why: whyNot, answering: answering, open: $questionsOpen, writing: typing) { answers in
                         Task { await answer(pending, .allow, questions: answers) }
                     } decline: {
                         Task { await answer(pending, .deny) }
@@ -770,6 +777,14 @@ struct SessionView: View {
     }
 
     private var whyNot: String? { store.cannotReach(row) }
+
+    /// The conversation's line for the call whose questions the card below shows (the core's
+    /// `questionsBelow`), as the Mac's questionsBox.ts has it: it opens the card once it's folded,
+    /// rather than a copy of them, which couldn't be answered and read as the card losing its picks.
+    private var questionsLine: String? {
+        guard let pending, pending.cannot == nil, let last = items.last, questionsBelow(last: last, pending: pending) else { return nil }
+        return last.id
+    }
 
     private func open() async {
         store.showing = key
@@ -1377,6 +1392,12 @@ struct SessionView: View {
             if let held { await removeHeld(held) }
         case "edit":
             if let held, let words = store.heldWords(key, held) { await editHeld(held, words: words) }
+        // What the conversation's line for the card's questions does, once the screen has settled
+        // as a tap would find it: animated while the bars' insets still come in, the box went
+        // below the screen.
+        case "questions":
+            try? await Task.sleep(for: .seconds(2))
+            if questionsLine != nil { withAnimation(.snappy) { questionsOpen = true } }
         default: break
         }
     }
@@ -1674,7 +1695,7 @@ private struct ApprovalCard: View {
 /// go back as its answer, as the Mac's panel sends them. Decline stops the turn. It starts folded
 /// to a line of what it asks, so the conversation it came with can be read above it: open, a long
 /// question and its choices covered most of the screen. A tap opens it, and folds it again, as
-/// starting to write in the reply box does.
+/// starting to write in the reply box does; the conversation's line for the call opens it too.
 private struct QuestionsCard: View {
     /// The session's: what's picked is kept under it (`Store.keptAnswers`).
     let key: String
@@ -1684,6 +1705,9 @@ private struct QuestionsCard: View {
     let canAct: Bool
     let why: String?
     let answering: Choice?
+    /// Open, not folded to its line: the screen's, which the conversation's line for the call
+    /// opens too.
+    @Binding var open: Bool
     /// The reply box has the keyboard.
     var writing = false
     let answer: ([QuestionAnswer]) -> Void
@@ -1693,7 +1717,6 @@ private struct QuestionsCard: View {
     @State private var own: [String: String] = [:]
     /// The question showing.
     @State private var at = 0
-    @State private var open = false
 
     var body: some View {
         let questions = pending.questions
@@ -2280,8 +2303,10 @@ private enum Entry: Identifiable {
         var out: [Entry] = []
         var run: [Item] = []
         for item in items {
-            // A call that made a page, or handed you files, stays in view.
-            if item.kind == .tool && item.link == nil && item.files.isEmpty {
+            // A call that made a page, handed you files or asked you questions stays in view, as
+            // the Mac's thread keeps it (SessionThread.tsx `rowsOf`): the line of the questions the
+            // card below shows is then one of its own.
+            if item.kind == .tool && item.link == nil && item.files.isEmpty && item.questions.isEmpty {
                 run.append(item)
                 continue
             }
@@ -2596,6 +2621,8 @@ struct PromptText: View {
 /// the calls are the quiet part of the conversation.
 private struct ToolRun: View {
     let calls: [Item]
+    /// The card below shows its last call's questions.
+    var below: QuestionsBelow?
     @State private var open = false
 
     var body: some View {
@@ -2620,7 +2647,7 @@ private struct ToolRun: View {
                 ForEach(calls.dropLast(), id: \.id) { ToolLine(item: $0) }
             }
             if let last = calls.last {
-                ToolLine(item: last)
+                ToolLine(item: last, below: below)
             }
         }
     }
@@ -2640,27 +2667,49 @@ private struct ToolRun: View {
     }
 }
 
+/// The questions card below shows a call's questions: whether it's open, and what opens it.
+private struct QuestionsBelow {
+    let open: Bool
+    let show: () -> Void
+}
+
 /// A tool call as one quiet line, red when it failed, that opens to what went in and came out. A
-/// call that asked you questions says so and opens to them, with what you picked; a page on the
-/// web it made or opened (an artifact Claude Code published) is a link under it.
+/// call that asked you questions says so and opens to them, with what you picked, unless the card
+/// below shows them: then it opens the card, once it's folded, and is still while it's open. A page
+/// on the web it made or opened (an artifact Claude Code published) is a link under it.
 private struct ToolLine: View {
     let item: Item
+    var below: QuestionsBelow?
     @State private var open = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Button {
-                withAnimation(.snappy) { open.toggle() }
+                if let below {
+                    below.show()
+                } else {
+                    withAnimation(.snappy) { open.toggle() }
+                }
             } label: {
-                Text(inline(label))
-                    .font(.caption)
-                    .foregroundStyle(item.failed ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
-                    .lineLimit(open ? nil : 1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(.rect)
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(inline(label))
+                        .font(.caption)
+                        .foregroundStyle(item.failed ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+                        .lineLimit(open && below == nil ? nil : 1)
+                    // It opens what's below, as the card's own head says.
+                    if below?.open == false {
+                        Image(systemName: "chevron.up")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(.rect)
             }
             .buttonStyle(.plain)
+            .disabled(below?.open == true)
             .accessibilityLabel(item.failed ? "Failed: \(label)" : label)
+            .accessibilityHint(below?.open == false ? "Shows its questions below, to answer" : "")
             if let link = item.link, let url = URL(string: link.url) {
                 HStack(spacing: 6) {
                     Link(destination: url) {
@@ -2690,7 +2739,7 @@ private struct ToolLine: View {
                     }
                 }
             }
-            if open {
+            if open && below == nil {
                 if !item.questions.isEmpty {
                     AskedList(questions: item.questions)
                     // Declined, or refused: why, from its result. Answered, the picks say it all.
@@ -3002,7 +3051,7 @@ struct SessionGlance: View {
                 if pending.questions.isEmpty || pending.cannot != nil {
                     ApprovalCard(pending: pending, hosted: row?.hosted == true, canAct: canAct, why: why, answering: nil) { _ in }
                 } else {
-                    QuestionsCard(key: key, pending: pending, account: row?.account ?? "It", hosted: row?.hosted == true, canAct: canAct, why: why, answering: nil) { _ in } decline: {}
+                    QuestionsCard(key: key, pending: pending, account: row?.account ?? "It", hosted: row?.hosted == true, canAct: canAct, why: why, answering: nil, open: .constant(false)) { _ in } decline: {}
                 }
             }
             if let limit = row?.limit {
