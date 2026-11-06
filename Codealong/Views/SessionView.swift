@@ -228,6 +228,11 @@ struct SessionView: View {
         }
         // The Mac's feed says the session moved: bring in what came since.
         .onChange(of: row?.lastActivity) { _, _ in Task { await refresh() } }
+        // What it asks can reach its Mac after it says it waits, and a command's request to run in
+        // your terminal comes back under a new id once a relaunched Mac is up. Neither moves
+        // `lastActivity`: when it began waiting and its line do, as the Mac's own box goes by
+        // (SessionReply.tsx `Approval`).
+        .onChange(of: "\(row?.statusSince ?? 0) \(row?.detail ?? "")") { _, _ in Task { await readPending() } }
         // A message its Mac took: read for it at once.
         .task(id: awaitingRecord) { await followSent() }
         // Opened from the feeds saved before its Mac connected, or back after it went away: read
@@ -959,7 +964,12 @@ struct SessionView: View {
         } catch {
             problem = words(error)
         }
-        // What it waits on you for comes from the Mac only when it's waiting.
+        await readPending()
+    }
+
+    /// What it waits on you for, which comes from the Mac only when it's waiting.
+    private func readPending() async {
+        guard let conv = conversation else { return }
         if row?.status == .needs {
             let now = try? await Task.detached { try conv.pending() }.value
             pending = now?.id == answered ? nil : now
