@@ -89,6 +89,8 @@ struct SessionView: View {
     /// The call last answered here. The Mac can still say it waits on it for a moment after, and
     /// it isn't offered again.
     @State private var answered: String?
+    /// The latest read of what it waits on you for (`readPending`).
+    @State private var pendingRead = 0
     @State private var problem: String?
     @State private var loading = true
     /// A swipe across the screen, while it goes, and what's beside it.
@@ -967,15 +969,20 @@ struct SessionView: View {
         await readPending()
     }
 
-    /// What it waits on you for, which comes from the Mac only when it's waiting.
+    /// What it waits on you for, which comes from the Mac only when it's waiting. Only the latest
+    /// read counts: the Mac answers them in any order, and one that was overtaken could bring back
+    /// a request that's gone.
     private func readPending() async {
         guard let conv = conversation else { return }
-        if row?.status == .needs {
-            let now = try? await Task.detached { try conv.pending() }.value
-            pending = now?.id == answered ? nil : now
-        } else {
+        pendingRead += 1
+        let read = pendingRead
+        guard row?.status == .needs else {
             pending = nil
+            return
         }
+        let now = try? await Task.detached { try conv.pending() }.value
+        guard read == pendingRead else { return }
+        pending = now?.id == answered ? nil : now
     }
 
     /// The scroll view moved, or what's in it changed size.
