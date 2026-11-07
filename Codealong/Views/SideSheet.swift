@@ -53,11 +53,13 @@ struct SideSheet: View {
     /// The earlier ones show in the open one's place while there's none.
     private var showing: Shown { shown == .open && open == nil ? .list : shown }
 
-    /// What changes at the open one's end as its copy answers: its answer, the tool it runs, what
-    /// it ran, and whether it's done, which takes the working line away.
+    /// What changes the open one's height as its copy answers, in every turn: the one it's on can
+    /// be above a question asked after it, which its answer pushes down. Each turn's answer, the
+    /// tool it runs, what it ran, and whether it's done, which takes the working line away.
     private var endKey: String {
-        guard let last = open?.turns.last else { return "" }
-        return "\(last.answer.count):\(last.tool ?? ""):\(last.tools.count):\(last.done):\(open?.running == true)"
+        guard let open else { return "" }
+        let turns = open.turns.map { "\($0.answer.count):\($0.tool ?? ""):\($0.tools.count):\($0.done)" }
+        return turns.joined(separator: "|") + ":\(open.running)"
     }
 
     /// The one read, from what its Mac keeps, or as it answers when it was closed answering.
