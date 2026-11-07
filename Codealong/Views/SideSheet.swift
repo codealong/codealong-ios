@@ -53,6 +53,13 @@ struct SideSheet: View {
     /// The earlier ones show in the open one's place while there's none.
     private var showing: Shown { shown == .open && open == nil ? .list : shown }
 
+    /// What changes at the open one's end as its copy answers: its answer, the tool it runs, what
+    /// it ran, and whether it's done, which takes the working line away.
+    private var endKey: String {
+        guard let last = open?.turns.last else { return "" }
+        return "\(last.answer.count):\(last.tool ?? ""):\(last.tools.count):\(last.done):\(open?.running == true)"
+    }
+
     /// The one read, from what its Mac keeps, or as it answers when it was closed answering.
     private var past: (kept: SideKept, turns: [SideTurn], running: Bool)? {
         guard case .past(let id) = shown, let kept = earlier.first(where: { $0.id == id }) else { return nil }
@@ -78,7 +85,12 @@ struct SideSheet: View {
                 .defaultScrollAnchor(.bottom, for: .initialOffset)
                 .scrollDismissesKeyboard(.immediately)
                 .onScrollGeometryChange(for: Bool.self) { $0.atEnd } action: { _, now in atBottom = now }
-                .onChange(of: open?.turns.last?.answer) { _, _ in
+                // A question asked comes into view with the line under it, and what follows it as it
+                // comes while you're at the end: the answer, the tool it runs, the line going.
+                .onChange(of: open?.turns.count) { _, _ in
+                    if showing == .open { proxy.scrollTo("end", anchor: .bottom) }
+                }
+                .onChange(of: endKey) { _, _ in
                     if showing == .open && atBottom { proxy.scrollTo("end", anchor: .bottom) }
                 }
                 .onChange(of: showing) { _, now in
@@ -393,29 +405,55 @@ private struct SideTurns: View {
                 if !turn.answer.isEmpty {
                     MarkdownText(text: turn.answer)
                 }
-                if let error = turn.error {
-                    Text(error).font(.footnote).foregroundStyle(.red)
-                }
                 if running && !turn.done {
-                    HStack(spacing: 6) {
-                        ProgressView().controlSize(.mini)
-                        Text(state(turn, first: !turns[..<i].contains { !$0.done }))
+                    // The tool it runs, still, as the Mac's strip shows it, with the working line
+                    // under it.
+                    if let tool = turn.tool {
+                        Text(Clock.text(tool, now: .now))
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                            .lineLimit(2)
                     }
+                    if let line = sideTurnLine(turn: turn, current: !turns[..<i].contains { !$0.done }) {
+                        SideTurnLineView(line: line)
+                    }
+                }
+                if let error = turn.error {
+                    Text(error).font(.footnote).foregroundStyle(.red)
                 }
             }
         }
     }
+}
 
-    /// What a turn without its answer is doing, as the Mac's side.ts `turnState` says it: the tool
-    /// its copy runs, or reading the conversation before it starts; one after the turn the copy is
-    /// on waits.
-    private func state(_ turn: SideTurn, first: Bool) -> String {
-        if let tool = turn.tool { return tool }
-        if !first { return "Next" }
-        return turn.answer.isEmpty ? "Reading the conversation…" : "Writing…"
+/// Under a side conversation's turn while its copy answers (the core's `side_turn_line`): the turn
+/// it's on breathing, with how long since it was asked, so minutes on a slow command read as work
+/// going on, as the Mac's working line has it; one asked after it says it waits.
+private struct SideTurnLineView: View {
+    let line: SideTurnLine
+
+    var body: some View {
+        if line.waits {
+            Text(line.words)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            // Ticks as the list's clocks do: they say minutes.
+            TimelineView(.periodic(from: .now, by: 10)) { context in
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    StatusMark(status: .working, stalled: false)
+                    Text(line.words)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    if let since = line.since {
+                        Text(Clock.ago(since, now: context.date))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .accessibilityElement(children: .combine)
+            }
+        }
     }
 }
 

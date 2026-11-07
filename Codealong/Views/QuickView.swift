@@ -254,7 +254,7 @@ struct QuickView: View {
                     .accessibilityHint("They go with the session you start")
                 }
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    let placeholder = store.improving == nil ? "Find a session, or describe new work…" : "Describe how to improve Codealong…"
+                    let placeholder = store.improving == nil ? "Search or prompt…" : "Describe how to improve Codealong…"
                     ZStack(alignment: .topLeading) {
                         if text.isEmpty {
                             Text(placeholder)

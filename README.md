@@ -99,7 +99,8 @@ need you, as on the Mac.
   here*), or mark it done (closing it where its Mac can);
 - ask a Claude Code or Codex session something on the side (*Ask on the side* in its menu, or
   `/side` and a question in its box, as on the Mac): a throwaway copy of its conversation answers
-  on its Mac as you watch, and the session carries on and never hears of it. Follow-ups go to the
+  on its Mac as you watch, saying how long it has been at it, and the session carries on and never
+  hears of it. Follow-ups go to the
   same copy until you close it, and the earlier ones are there to read, go on with or delete. One
   that finishes brings its session back to what waits on you, and comes up as you open it.
 

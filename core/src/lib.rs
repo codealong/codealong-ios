@@ -1326,6 +1326,45 @@ impl From<api::SideTurn> for SideTurn {
     }
 }
 
+/// The line under a side conversation's turn that hasn't its answer yet, as the Mac's side.ts
+/// `turnState` says it: the turn the copy is on works, under the tool it runs and the answer as it
+/// comes, with how long since it was asked, until it's answered, so a copy minutes into a slow
+/// command reads as working rather than stalled; one asked after it waits its turn.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct SideTurnLine {
+    /// It waits for the turn before it: said plainly, with no mark or clock.
+    pub waits: bool,
+    pub words: String,
+    /// When it was asked, for the clock beside a turn at work: none for one kept from before its
+    /// Mac noted the time.
+    pub since: Option<i64>,
+}
+
+/// What the line under `turn` says while its side conversation's copy answers. `current` is the
+/// turn the copy is on, the first not answered. The Mac's line says it reads the conversation until
+/// the copy has done or said anything, then words of its own; the phone, which has no working
+/// words, says what it's at: working while it runs a tool (which has its own line above) or thinks
+/// after one, writing while the answer comes.
+#[uniffi::export]
+pub fn side_turn_line(turn: SideTurn, current: bool) -> Option<SideTurnLine> {
+    if turn.done {
+        return None;
+    }
+    if !current {
+        return Some(SideTurnLine { waits: true, words: "Waits for the answer above".into(), since: None });
+    }
+    let words = if turn.tool.is_some() {
+        "Working…"
+    } else if !turn.answer.is_empty() {
+        "Writing…"
+    } else if !turn.tools.is_empty() {
+        "Working…"
+    } else {
+        "Reading the conversation…"
+    };
+    Some(SideTurnLine { waits: false, words: words.into(), since: (turn.at > 0).then_some(turn.at) })
+}
+
 /// A side conversation as its Mac keeps it, to read once it's closed: the latest first in the list
 /// of a session's earlier ones.
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
@@ -2882,6 +2921,35 @@ mod order_tests {
         assert_eq!(side_answer_due(answer(8, false), Some(answer(8, true)), 0), Some(8));
         // A later answer comes up.
         assert_eq!(side_answer_due(answer(9, true), Some(answer(8, false)), 8), Some(8));
+    }
+
+    #[test]
+    fn a_side_turn_at_work_says_so_with_its_clock_until_its_answered() {
+        let turn = |answer: &str, tools: &[&str], tool: Option<&str>, done: bool, at: i64| SideTurn {
+            question: "why?".into(),
+            answer: answer.into(),
+            tools: tools.iter().map(|t| t.to_string()).collect(),
+            tool: tool.map(String::from),
+            done,
+            error: None,
+            at,
+        };
+        let working = |words: &str, since: Option<i64>| Some(SideTurnLine { waits: false, words: words.into(), since });
+        // Before the copy has done or said anything.
+        assert_eq!(side_turn_line(turn("", &[], None, false, 5), true), working("Reading the conversation…", Some(5)));
+        // A tool it runs, and thought after one, are still work: the line stays under them.
+        assert_eq!(side_turn_line(turn("", &[], Some("Bash · `gcloud logging read`"), false, 5), true), working("Working…", Some(5)));
+        assert_eq!(side_turn_line(turn("", &["Bash · `gcloud logging read`"], None, false, 5), true), working("Working…", Some(5)));
+        assert_eq!(side_turn_line(turn("Because", &["Read"], None, false, 5), true), working("Writing…", Some(5)));
+        // A tool it runs after saying something is work, not writing.
+        assert_eq!(side_turn_line(turn("I'll wait on it.", &["Bash · `sleep 150`"], Some("Bash · `sleep 150`"), false, 5), true), working("Working…", Some(5)));
+        // A turn kept from before its Mac noted when it was asked has no clock.
+        assert_eq!(side_turn_line(turn("", &[], None, false, 0), true), working("Reading the conversation…", None));
+        // One asked after the turn the copy is on waits for it.
+        assert_eq!(side_turn_line(turn("", &[], None, false, 9), false), Some(SideTurnLine { waits: true, words: "Waits for the answer above".into(), since: None }));
+        // Answered, or ended without one: nothing.
+        assert_eq!(side_turn_line(turn("Because.", &[], None, true, 5), true), None);
+        assert_eq!(side_turn_line(turn("", &[], None, true, 5), false), None);
     }
 
     #[test]
