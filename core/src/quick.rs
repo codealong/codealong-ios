@@ -621,6 +621,9 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
     // one (the main repo's peerfeed.rs), so the first that has one says where the agent stands,
     // wherever it sorts.
     let mut reviewed = std::collections::HashSet::new();
+    // The PRs, by their place in `out`, whose row is from a Mac of your account, so that whether
+    // it asks for your review is yours.
+    let mut rows_yours = std::collections::HashSet::new();
     for (d, replica) in macs {
         // Whose move a PR is, as this Mac works it out for the account it's signed in as (a Mac
         // signed in as another, a bot your agents open PRs as, has no say): none while Codealong's
@@ -658,9 +661,11 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                     // the pill, where the Mac it's asked of sent none. Macs read GitHub each on
                     // their own, so one that hasn't seen the PR change as the Mac it's asked of has
                     // can have an approval of a commit pushed over since, or ask a sign-off of a
-                    // review you've given: only one as up to date says.
+                    // review you've given: only one as up to date says. A row from a Mac signed
+                    // in as another account asks that account's review, not yours.
                     let done = matches!(out[i].state.as_str(), "merged" | "closed");
-                    let current = p.updated_at >= out[i].updated_at && out[i].review_requested;
+                    let asked = out[i].review_requested || !rows_yours.contains(&i);
+                    let current = p.updated_at >= out[i].updated_at && asked;
                     if ours && !done && current && p.auto_review.is_some() && reviewed.insert(i) {
                         out[i].agent = agent_pill(p);
                         if out[i].agent_review.is_none() {
@@ -673,6 +678,7 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
             place(&mut at, &key, &p.key, Some(out.len()));
             if ours {
                 told.insert(out.len());
+                rows_yours.insert(out.len());
                 if p.auto_review.is_some() {
                     reviewed.insert(out.len());
                 }
@@ -1351,7 +1357,7 @@ pub(crate) mod tests {
             ],
             ..Replica::default()
         };
-        let mini = Replica { prs: vec![approving(3, serde_json::json!({})), approving(10, serde_json::json!({"autoReview": {"stage": "posted", "head": "309811a5e0c4", "at": 5}}))], ..Replica::default() };
+        let mini = Replica { prs: vec![approving(3, serde_json::json!({})), approving(10, serde_json::json!({"reviewRequested": false, "waits": false, "autoReview": {"stage": "posted", "head": "309811a5e0c4", "at": 5}}))], ..Replica::default() };
         let laptop = Replica {
             prs: vec![
                 approving(5, serde_json::json!({})),
