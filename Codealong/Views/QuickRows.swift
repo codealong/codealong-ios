@@ -71,6 +71,7 @@ struct QuickSessionRow: View {
                         if row.agentSeen != nil {
                             Chip(words: "Seen by agent", symbol: "eye", tint: .secondary)
                         }
+                        ForEach(row.labels, id: \.id) { SessionLabelChip(label: $0) }
                         Text(place)
                             .font(.footnote.monospaced())
                             .foregroundStyle(.tertiary)
@@ -107,7 +108,8 @@ struct QuickSessionRow: View {
     }
 }
 
-/// A word on a row that says something of it, as the Mac's chips do: Top, Seen by agent. Its page
+/// A word on a row that says something of it, as the Mac's chips do: Top, Seen by agent (and the
+/// labels you put on it, `SessionLabelChip`). Its page
 /// says who and why, which a Mac's tooltip does there.
 private struct Chip: View {
     let words: String

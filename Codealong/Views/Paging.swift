@@ -139,8 +139,8 @@ enum Onward: Equatable {
     }
 }
 
-/// What a page is called in its bar: a session's title with its emblem, and its Mac and project
-/// under it; a PR's number; nothing for the end of what waits. Sliding to another, the page names
+/// What a page is called in its bar: a session's title with its emblem, and its Mac, project and
+/// labels under it; a PR's number; nothing for the end of what waits. Sliding to another, the page names
 /// that one: its own takes a moment to draw once the slide is over.
 struct TitleBlock: View {
     let key: String
@@ -160,7 +160,7 @@ struct TitleBlock: View {
                     }
                     Text(row.title).font(.headline).lineLimit(1)
                 }
-                Text("\(Names.short(row.deviceName)) · \(row.project)\(row.archived ? " · Archived" : "")").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                withLabels(Text("\(Names.short(row.deviceName)) · \(row.project)\(row.archived ? " · Archived" : "")"), row.labels).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
             }
         case nil where key == EndView.key:
             EmptyView()

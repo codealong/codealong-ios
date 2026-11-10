@@ -534,7 +534,8 @@ pub(crate) fn quick_list(rows: &[SessionRow], prs: &[PrRow], project: &str, quer
         .iter()
         .filter_map(|r| {
             let title = r.title.to_lowercase();
-            let hay = [r.title.as_str(), &r.account, &r.worktree, &r.repo, r.branch.as_deref().unwrap_or(""), &r.project, r.pr.as_deref().unwrap_or(""), &r.device_name].join("\n").to_lowercase();
+            let labels = r.labels.iter().map(|l| l.name.as_str());
+            let hay = [r.title.as_str(), &r.account, &r.worktree, &r.repo, r.branch.as_deref().unwrap_or(""), &r.project, r.pr.as_deref().unwrap_or(""), &r.device_name].into_iter().chain(labels).collect::<Vec<_>>().join("\n").to_lowercase();
             if has_all(&title) {
                 Some((0, 0, session(r), *r))
             } else if has_all(&hay) {
@@ -1072,6 +1073,7 @@ pub(crate) mod tests {
             id: key.into(),
             archived: false,
             raised: None,
+            labels: vec![],
             agent_seen: None,
             side_answer: None,
             waits_on: None,
@@ -1670,6 +1672,14 @@ pub(crate) mod tests {
         // Found by what was said, the better match leads.
         let said = [SaidHit { key: "a".into(), snippet: "webhook".into(), you: true, at: NOW, score: 1 }, SaidHit { key: "b".into(), snippet: "the webhook".into(), you: true, at: NOW, score: 9 }];
         assert_eq!(keys(&quick_list(&rows, &[], "", "webhook", &said, &[], false, NOW))[0].1, ["b", "a"]);
+    }
+
+    #[test]
+    fn a_session_is_found_by_a_label_it_wears() {
+        let labelled = SessionRow { labels: vec![crate::SessionLabel { id: "l-1".into(), name: "Needs design".into(), color: "pink".into() }], ..row("a", "Fix the header", Status::Idle, NOW) };
+        let rows = vec![labelled, row("b", "Fix the footer", Status::Idle, NOW - 50)];
+        assert_eq!(keys(&quick_list(&rows, &[], "", "design", &[], &[], false, NOW)), [(QuickGroup::Sessions, vec!["a".to_string()])]);
+        assert_eq!(keys(&quick_list(&rows, &[], "", "fix design", &[], &[], false, NOW)), [(QuickGroup::Sessions, vec!["a".to_string()])]);
     }
 
     #[test]

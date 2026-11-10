@@ -135,6 +135,9 @@ struct SessionView: View {
     @State private var markedUnread = false
     @State private var renaming = false
     @State private var newName = ""
+    /// New label… is asking for its name.
+    @State private var naming = false
+    @State private var newLabel = ""
     @State private var typing = false
     /// The photo picker is open, and what was picked in it.
     @State private var picking = false
@@ -227,6 +230,13 @@ struct SessionView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Its harness keeps the name, so it shows there too.")
+        }
+        .alert("New label", isPresented: $naming) {
+            TextField("Name", text: $newLabel)
+            Button("Add") { Task { await relabel(newLabel, on: true) } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Its Mac keeps it with the labels its todos wear. A name it has already is that label.")
         }
         // The Mac's feed says the session moved: bring in what came since.
         .onChange(of: row?.lastActivity) { _, _ in Task { await refresh() } }
@@ -436,7 +446,7 @@ struct SessionView: View {
         }
     }
 
-    /// The session's menu: stop, rename, fork, where it came from, done, move to top, snooze,
+    /// The session's menu: stop, rename, fork, where it came from, labels, done, move to top, snooze,
     /// quiet, seen or unread, pin, archive; then copying its ID, as the Mac's menu does.
     @ViewBuilder
     private var sessionMenu: some View {
@@ -478,6 +488,23 @@ struct SessionView: View {
             Button(origin.fork ? "Forked from “\(title)”" : "Started by “\(title)”", systemImage: "arrow.turn.left.up") { go(origin.key) }
                 .disabled(!store.sessions.contains { $0.key == origin.key })
         }
+        // The labels its Mac's sessions wear, each checked where it wears it, as the Mac's Labels ›.
+        Menu("Labels", systemImage: "tag") {
+            ForEach(store.labelChoices(key), id: \.label.name) { choice in
+                Toggle(isOn: Binding(get: { choice.worn }, set: { on in Task { await relabel(choice.label.name, on: on) } })) {
+                    Label {
+                        Text(verbatim: choice.label.name)
+                    } icon: {
+                        LabelTint.square(choice.label.color)
+                    }
+                }
+            }
+            Button("New label…", systemImage: "plus") {
+                newLabel = ""
+                naming = true
+            }
+        }
+        .disabled(!online)
         Button(finishing ? "Wrapping up…" : "Mark as done", systemImage: "checkmark.circle") { Task { await markDone() } }
             .disabled(!online || finishing)
         // An archived one is in no list to wait in or lead: unarchived, it can be.
@@ -1396,11 +1423,18 @@ struct SessionView: View {
 
     /// Quiets it, or makes it heard again, as the Mac's Quiet does.
     /// What a test asked to press: `raise` is Move to top or Back in line, `remove` and `edit` press
-    /// those beside the first message it holds, and `send:<words>` sends those.
+    /// those beside the first message it holds, `send:<words>` sends those, and `label:<name>` puts
+    /// that label on, or takes it off where it wears it, as Labels › and New label… do.
     private func pressed(_ what: String) async {
         let held = heldShown.first
         if what.hasPrefix("send:") {
             store.post(key, title: title, text: String(what.dropFirst("send:".count)), how: .send(now: false))
+            return
+        }
+        if what.hasPrefix("label:") {
+            let name = String(what.dropFirst("label:".count))
+            let worn = row?.labels.contains { $0.name.lowercased() == name.lowercased() } == true
+            await relabel(name, on: !worn)
             return
         }
         switch what {
@@ -1425,6 +1459,18 @@ struct SessionView: View {
         do {
             try await store.raise(key, on)
             said = on ? "Moved to the top: every queue goes to it first." : "Back in line."
+        } catch {
+            said = words(error)
+        }
+    }
+
+    /// Puts a label on it, by name, or takes it off, on its Mac; the feed shows it once it's there.
+    private func relabel(_ name: String, on: Bool) async {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        do {
+            try await store.label(key, add: on ? [name] : [], remove: on ? [] : [name])
+            said = on ? "Labelled \(name)." : "\(name) taken off."
         } catch {
             said = words(error)
         }
@@ -3325,12 +3371,18 @@ private struct ReplyRules {
     /// Its app takes a switch of model or effort whenever, for its next turn (the Codex app's).
     var inApp: Bool { goesOnWithIt && account?.switchesInApp == true }
 
-    /// It's running where Codealong can switch it: one Codealong runs, or one its Mac types into.
+    /// It's running where Codealong can switch it: one Codealong runs, or one whose box its Mac's
+    /// words land in as typed, its terminal or a background job's, which its account's service
+    /// pastes into (the Mac's SessionReply.tsx `typesCommands`). A message on a socket or to an
+    /// app would hand `/model` to the agent as a prompt. A Mac from before 2026-11-09 switches only
+    /// what it types into a terminal, and says so when asked to switch a job.
     private var switchable: Bool {
         guard let row, row.live else { return false }
         if row.hosted { return true }
-        if case .typed = way { return true }
-        return false
+        switch way {
+        case .typed, .background: return true
+        default: return false
+        }
     }
 
     /// It can be switched to another of its account's models, as the Mac's reply box has it: one

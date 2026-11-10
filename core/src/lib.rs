@@ -253,6 +253,10 @@ pub struct SessionRow {
     /// Moved to the top of what waits on you, here or from a Mac, by you or by an agent: every
     /// queue goes to it first until you take it up. None from Macs before 2026-10-29.
     pub raised: Option<Raised>,
+    /// The labels you put on it, in the order they were put on, as its Mac has them
+    /// (`Session::labels`). Unlike `agent_seen` or a Mac's read of a turn, they stay until you take
+    /// them off. None from Macs before 2026-11-09.
+    pub labels: Vec<SessionLabel>,
     /// What's said of a turn its own agent marked seen, which needs nothing from you and so is
     /// idle rather than Your turn (`Session::agent_seen`, LaneRow.tsx `AgentSeenChip`). None from
     /// Macs before 2026-10-30, which show such a turn as Your turn.
@@ -319,6 +323,51 @@ impl From<&codealong_peer::model::Raised> for Raised {
         let says = format!("Moved to the top{by}{}. It\u{2019}s first in every queue until you send it something or see its finished turn.", because(r.note.as_deref()));
         Raised { at: r.at, agent: r.agent, says }
     }
+}
+
+/// A label you put on a session, from the ones todos wear on its Mac (todos.json there).
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct SessionLabel {
+    pub id: String,
+    pub name: String,
+    /// One of the Mac's eight label colors (todos.rs `LABEL_COLORS`): gray, red, pink, purple,
+    /// indigo, blue, teal or green. Any other a Mac sends is gray, as it draws it.
+    pub color: String,
+}
+
+/// The colors a label can have on a Mac (todos.rs `LABEL_COLORS`).
+const LABEL_COLORS: [&str; 8] = ["gray", "red", "pink", "purple", "indigo", "blue", "teal", "green"];
+
+impl From<&codealong_peer::model::Label> for SessionLabel {
+    fn from(l: &codealong_peer::model::Label) -> SessionLabel {
+        let color = if LABEL_COLORS.contains(&l.color.as_str()) { l.color.clone() } else { "gray".into() };
+        SessionLabel { id: l.id.clone(), name: l.name.clone(), color }
+    }
+}
+
+/// A label a session's menu offers, as the Mac's Labels › does (menus.ts `labelsMenu`): checked
+/// where the session wears it, which takes it off; else it puts it on.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct LabelChoice {
+    pub label: SessionLabel,
+    pub worn: bool,
+}
+
+/// What a session's menu offers to put on or take off (`LabelChoice`): the labels its Mac's
+/// sessions wear, by name, since that's all of its Mac's labels its feed says, each as the first
+/// session to wear it has it, in order of name. A label the Mac has that no session wears is
+/// put on by its name (`Core::label`), which the Mac takes as that label rather than a new one.
+pub(crate) fn label_choices(on_mac: &[&Session], key: &str) -> Vec<LabelChoice> {
+    let worn: Vec<String> = on_mac.iter().find(|s| s.key == key).map(|s| s.labels.iter().map(|l| l.name.to_lowercase()).collect()).unwrap_or_default();
+    let mut seen = std::collections::HashSet::new();
+    let mut choices: Vec<LabelChoice> = on_mac
+        .iter()
+        .flat_map(|s| s.labels.iter())
+        .filter(|l| !l.name.trim().is_empty() && seen.insert(l.name.to_lowercase()))
+        .map(|l| LabelChoice { label: SessionLabel::from(l), worn: worn.contains(&l.name.to_lowercase()) })
+        .collect();
+    choices.sort_by(|a, b| a.label.name.to_lowercase().cmp(&b.label.name.to_lowercase()).then_with(|| a.label.name.cmp(&b.label.name)));
+    choices
 }
 
 /// A note ending what's said of a session, after a colon: `: the deploy waits on it`.
@@ -677,6 +726,26 @@ impl Core {
         each_mac(&keys, |device, keys| self.client.pin(device, keys, pinned))
     }
 
+    /// Puts labels on sessions and takes others off, on the Macs they're on, by name: a name a
+    /// Mac's labels don't have is made one there, in its next color, as its own picker makes one.
+    /// Macs before 2026-11-09 refuse it, and say so.
+    pub fn label(&self, keys: Vec<String>, add: Vec<String>, remove: Vec<String>) -> Result<(), CoreError> {
+        let add: Vec<String> = add.iter().map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).collect();
+        each_mac(&keys, |device, keys| {
+            let params = serde_json::to_value(params::Label { keys: keys.to_vec(), add: add.clone(), remove: remove.clone() }).unwrap_or_default();
+            self.client.ask(device, api::SESSION_LABEL, params, ACT_WAIT).map(|_| ()).map_err(|e| older_mac(e, &self.client, device, "label sessions from here"))
+        })
+    }
+
+    /// The labels a session's menu offers (`label_choices`), checked where it wears them.
+    pub fn label_choices(&self, key: String) -> Vec<LabelChoice> {
+        let Some((device, own)) = split_remote(&key) else { return vec![] };
+        self.client.with_feeds(|feeds| {
+            let on_mac: Vec<&Session> = feeds.iter().filter(|(d, _)| d.short == device || d.key == device).flat_map(|(_, r)| r.lanes.iter().flat_map(|l| l.sessions.iter())).collect();
+            label_choices(&on_mac, own)
+        })
+    }
+
     /// Takes away the replies suggested for a session, on its Mac, as the Mac's Dismiss does.
     pub fn dismiss_suggestions(&self, key: String) -> Result<(), CoreError> {
         let (device, own) = split_remote(&key).ok_or_else(|| CoreError::Failed("That isn't a session on one of your Macs.".into()))?;
@@ -907,6 +976,7 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 id: s.id.clone(),
                 archived: s.archived,
                 raised: s.raised.as_ref().map(Raised::from),
+                labels: s.labels.iter().map(SessionLabel::from).collect(),
                 agent_seen: s.agent_seen.as_ref().map(agent_seen_words),
                 side_answer: s.side_answer.as_ref().map(|a| SideAnswer { id: a.id.clone(), open: a.open, at: a.at }),
                 waits_on: waits_on(s),
@@ -2847,6 +2917,7 @@ mod order_tests {
             id: key.into(),
             archived: false,
             raised: None,
+            labels: vec![],
             agent_seen: None,
             side_answer: None,
             waits_on: None,
@@ -2903,6 +2974,33 @@ mod order_tests {
         assert_eq!(row("side").side_answer, Some(SideAnswer { id: "1793-4".into(), open: true, at: 8 }));
         // From a Mac before these, a row says none of it.
         assert_eq!((row("side").raised.clone(), row("side").agent_seen.clone(), row("seen").side_answer.clone()), (None, None, None));
+    }
+
+    #[test]
+    fn a_row_wears_its_labels_and_its_menu_offers_its_macs() {
+        use codealong_peer::client::Device;
+        use codealong_peer::feed::Replica;
+        use codealong_peer::model::Label;
+        let label = |id: &str, name: &str, color: &str| Label { id: id.into(), name: name.into(), color: color.into() };
+        let mac = Device { key: "m".into(), short: "m".into(), name: "Mac".into(), online: true, since: None, last_seen: None, remote_control: true, app: String::new(), loading: false, linked_back: true };
+        let mut lane = codealong_peer::model::Lane::new("/src/app", "App", "app");
+        let both = Session { labels: vec![label("l-2", "Ready", "green"), label("l-1", "bug", "plaid")], ..Session::new(Harness::Claude, "claude", "both") };
+        let other = Session { labels: vec![label("l-1", "bug", "plaid"), label("l-3", "Atlas", "indigo"), label("l-4", " ", "red")], ..Session::new(Harness::Claude, "claude", "other") };
+        let none = Session::new(Harness::Claude, "claude", "none");
+        lane.sessions = vec![both, other, none];
+        let replica = Replica { lanes: vec![lane], ..Replica::default() };
+        let rows = all_rows(&[(mac, &replica)]);
+        let row = |id: &str| rows.iter().find(|r| r.id == id).unwrap();
+        // In the order they were put on, and a color the Mac doesn't know is gray, as it draws it.
+        assert_eq!(row("both").labels, [SessionLabel { id: "l-2".into(), name: "Ready".into(), color: "green".into() }, SessionLabel { id: "l-1".into(), name: "bug".into(), color: "gray".into() }]);
+        // From a Mac before labels, none.
+        assert!(row("none").labels.is_empty());
+        // The menu offers every label its Mac's sessions wear, once each, by name, checked where it
+        // wears it; one with no name isn't offered.
+        let sessions: Vec<&Session> = replica.lanes.iter().flat_map(|l| l.sessions.iter()).collect();
+        let offered = |id: &str| label_choices(&sessions, &sessions.iter().find(|s| s.id == id).unwrap().key).into_iter().map(|c| (c.label.name, c.worn)).collect::<Vec<_>>();
+        assert_eq!(offered("both"), [("Atlas".to_string(), false), ("bug".into(), true), ("Ready".into(), true)]);
+        assert_eq!(offered("none"), [("Atlas".to_string(), false), ("bug".into(), false), ("Ready".into(), false)]);
     }
 
     #[test]

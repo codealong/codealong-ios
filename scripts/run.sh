@@ -9,8 +9,9 @@
 # seconds in, once the Macs have answered, SIDE='/side [question]' types that into the box of
 # the session OPEN opens and sends it, opening its side conversations, and PRESS=raise|remove|edit
 # presses Move to top (or Back in line) there, or Remove or Edit beside the first message it holds;
-# PRESS=send:<words> sends those to it, as the box does, and PRESS=questions presses the
-# conversation's line for the questions the card below shows.
+# PRESS=send:<words> sends those to it, as the box does, PRESS=questions presses the
+# conversation's line for the questions the card below shows, and PRESS=label:<name> puts that
+# label on it, or takes it off where it wears it.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 APP=DerivedData/Build/Products/Debug-iphonesimulator/Codealong.app

@@ -674,6 +674,18 @@ final class Store {
         try await Task.detached { try core.pin(keys: [key], pinned: on) }.value
     }
 
+    /// Puts labels on a session and takes others off, on its Mac, by name: a name its Mac's labels
+    /// don't have is made one there.
+    func label(_ key: String, add: [String], remove: [String]) async throws {
+        let core = try running()
+        try await Task.detached { try core.label(keys: [key], add: add, remove: remove) }.value
+    }
+
+    /// The labels a session's menu offers: its Mac's, checked where it wears them.
+    func labelChoices(_ key: String) -> [LabelChoice] {
+        core?.labelChoices(key: key) ?? []
+    }
+
     /// Takes away the replies suggested for a session, on its Mac.
     func dismissSuggestions(_ key: String) async throws {
         let core = try running()

@@ -93,7 +93,8 @@ need you, as on the Mac.
   questions, folded to a line over the box while you read and brought up from that line or from
   the question's own line in the conversation;
 - stop its turn, with the square that takes send's place while it runs;
-- switch a running session's model, effort or mode (a Codex app thread's from its next turn);
+- switch a running session's model, effort or mode (a Claude Code background job's too, from a Mac
+  of 0.18 or later, and a Codex app thread's from its next turn);
 - resume one that isn't running, where and on what model you pick;
 - fork it, go on from before one of your prompts with an edit of it (hold the prompt, *Edit from
   here*), or mark it done (closing it where its Mac can);
@@ -110,8 +111,10 @@ Renaming, archiving, marking seen, *Mark as unread*, *Move to top* (first in eve
 device, and listed under *Moved to top*, until you send it something or see its finished turn;
 *Back in line* undoes it), *Snooze*
 (off what waits on you until the time you pick, on every device) and *Quiet* (its turns stop waiting
-on you; it comes to you only when it needs you) work with any Mac, remote control or not. A turn its
-own agent marked seen says so rather than waiting on you.
+on you; it comes to you only when it needs you) work with any Mac, remote control or not, and so
+do *Labels*: the labels you put on a session there, as todos wear them, shown on its row and under
+its title, put on or taken off from its menu (*New label…* names one its Mac doesn't have yet), and
+found by name in the search. A turn its own agent marked seen says so rather than waiting on you.
 
 **Review and merge PRs.** The PRs that wait on your review are listed after the sessions whose
 turn ended (*Review requested*), longest waiting first. The menu's *PRs* page lists every PR your
