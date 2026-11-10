@@ -56,11 +56,22 @@ struct SessionLabelChip: View {
     }
 }
 
-/// A session's labels after what's said under its title (its Mac and project), each its square
-/// and its name, in one line of text that ends where the bar does.
-func withLabels(_ text: Text, _ labels: [SessionLabel]) -> Text {
-    labels.reduce(text) { text, label in
+/// A session's labels as text, each its square and its name, so a line of them ends where there's
+/// room: on a row with no room for them beside where it is, and after what's said under its title.
+func labelsText(_ labels: [SessionLabel]) -> Text {
+    labels.enumerated().reduce(Text(verbatim: "")) { text, each in
+        let (i, label) = each
         let square = Text(Image(systemName: "square.fill")).font(.system(size: 7)).foregroundStyle(LabelTint.of(label.color))
-        return Text("\(text)  \(square) \(Text(verbatim: label.name))")
+        return Text("\(text)\(Text(verbatim: i == 0 ? "" : "  "))\(square) \(Text(verbatim: label.name))")
     }
+}
+
+/// What VoiceOver says of a session's labels, which a line of them would read as squares.
+func labelsSaid(_ labels: [SessionLabel]) -> String {
+    labels.isEmpty ? "" : "Labels: \(labels.map(\.name).joined(separator: ", "))"
+}
+
+/// What's said under a session's title (its Mac and project) followed by its labels.
+func withLabels(_ text: Text, _ labels: [SessionLabel]) -> Text {
+    labels.isEmpty ? text : Text("\(text)  \(labelsText(labels))")
 }

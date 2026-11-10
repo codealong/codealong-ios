@@ -490,8 +490,8 @@ struct SessionView: View {
         }
         // The labels its Mac's sessions wear, each checked where it wears it, as the Mac's Labels ›.
         Menu("Labels", systemImage: "tag") {
-            ForEach(store.labelChoices(key), id: \.label.name) { choice in
-                Toggle(isOn: Binding(get: { choice.worn }, set: { on in Task { await relabel(choice.label.name, on: on) } })) {
+            ForEach(store.labelChoices(key), id: \.by) { choice in
+                Toggle(isOn: Binding(get: { choice.worn }, set: { on in Task { await relabel(choice.label.name, by: choice.by, on: on) } })) {
                     Label {
                         Text(verbatim: choice.label.name)
                     } icon: {
@@ -1433,8 +1433,11 @@ struct SessionView: View {
         }
         if what.hasPrefix("label:") {
             let name = String(what.dropFirst("label:".count))
-            let worn = row?.labels.contains { $0.name.lowercased() == name.lowercased() } == true
-            await relabel(name, on: !worn)
+            if let worn = store.labelChoices(key).first(where: { $0.worn && $0.label.name == name }) {
+                await relabel(name, by: worn.by, on: false)
+            } else {
+                await relabel(name, on: true)
+            }
             return
         }
         switch what {
@@ -1464,12 +1467,14 @@ struct SessionView: View {
         }
     }
 
-    /// Puts a label on it, by name, or takes it off, on its Mac; the feed shows it once it's there.
-    private func relabel(_ name: String, on: Bool) async {
+    /// Puts a label on it or takes it off, on its Mac, by its id there (`by`, a menu's choice) or
+    /// else its name; the feed shows it once it's there.
+    private func relabel(_ name: String, by: String? = nil, on: Bool) async {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
+        let by = by ?? name
         do {
-            try await store.label(key, add: on ? [name] : [], remove: on ? [] : [name])
+            try await store.label(key, add: on ? [by] : [], remove: on ? [] : [by])
             said = on ? "Labelled \(name)." : "\(name) taken off."
         } catch {
             said = words(error)

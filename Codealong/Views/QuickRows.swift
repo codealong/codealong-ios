@@ -64,18 +64,22 @@ struct QuickSessionRow: View {
                                 .lineLimit(2)
                         }
                     }
-                    HStack(spacing: 6) {
-                        if row.raised != nil {
-                            Chip(words: "Top", symbol: "arrow.up", tint: .orange)
+                    if row.labels.isEmpty {
+                        whereLine(labels: false)
+                    } else {
+                        // Its labels beside where it is while they fit, as on the Mac; else on a
+                        // line of their own, which ends where the row does, so where it is still shows.
+                        ViewThatFits(in: .horizontal) {
+                            whereLine(labels: true)
+                            VStack(alignment: .leading, spacing: 3) {
+                                whereLine(labels: false)
+                                labelsText(row.labels)
+                                    .font(.caption2.weight(.medium))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .accessibilityLabel(labelsSaid(row.labels))
+                            }
                         }
-                        if row.agentSeen != nil {
-                            Chip(words: "Seen by agent", symbol: "eye", tint: .secondary)
-                        }
-                        ForEach(row.labels, id: \.id) { SessionLabelChip(label: $0) }
-                        Text(place)
-                            .font(.footnote.monospaced())
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
                     }
                 }
             }
@@ -83,6 +87,25 @@ struct QuickSessionRow: View {
         .padding(.vertical, compact ? 6 : 3)
         .opacity(row.deviceOnline ? 1 : 0.55)
         .accessibilityElement(children: .combine)
+    }
+
+    /// Its marks (Top, Seen by agent), its labels with `labels`, and where it is.
+    private func whereLine(labels: Bool) -> some View {
+        HStack(spacing: 6) {
+            if row.raised != nil {
+                Chip(words: "Top", symbol: "arrow.up", tint: .orange)
+            }
+            if row.agentSeen != nil {
+                Chip(words: "Seen by agent", symbol: "eye", tint: .secondary)
+            }
+            if labels {
+                ForEach(row.labels, id: \.id) { SessionLabelChip(label: $0) }
+            }
+            Text(place)
+                .font(.footnote.monospaced())
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+        }
     }
 
     private var wantsYou: Bool {

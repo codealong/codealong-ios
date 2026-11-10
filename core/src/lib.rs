@@ -351,20 +351,25 @@ impl From<&codealong_peer::model::Label> for SessionLabel {
 pub struct LabelChoice {
     pub label: SessionLabel,
     pub worn: bool,
+    /// What to send for it, to put it on or take it off (`Core::label`): its id on the Mac.
+    pub by: String,
 }
 
 /// What a session's menu offers to put on or take off (`LabelChoice`): the labels its Mac's
-/// sessions wear, by name, since that's all of its Mac's labels its feed says, each as the first
-/// session to wear it has it, in order of name. A label the Mac has that no session wears is
-/// put on by its name (`Core::label`), which the Mac takes as that label rather than a new one.
+/// sessions wear, since that's all of its Mac's labels its feed says, each once, in order of name.
+/// Each goes by its id there (`LabelChoice::by`), which the Mac matches before any name: by name it
+/// matches case only in ASCII (todos.rs `named_ids`), so two of its labels can differ only in an
+/// accent's case, and one would be taken for the other. A label the Mac has that no session wears
+/// is put on by its name (`Core::label`), which the Mac takes as that label rather than a new one.
 pub(crate) fn label_choices(on_mac: &[&Session], key: &str) -> Vec<LabelChoice> {
-    let worn: Vec<String> = on_mac.iter().find(|s| s.key == key).map(|s| s.labels.iter().map(|l| l.name.to_lowercase()).collect()).unwrap_or_default();
+    let by = |l: &codealong_peer::model::Label| if l.id.is_empty() { l.name.clone() } else { l.id.clone() };
+    let worn: Vec<String> = on_mac.iter().find(|s| s.key == key).map(|s| s.labels.iter().map(by).collect()).unwrap_or_default();
     let mut seen = std::collections::HashSet::new();
     let mut choices: Vec<LabelChoice> = on_mac
         .iter()
         .flat_map(|s| s.labels.iter())
-        .filter(|l| !l.name.trim().is_empty() && seen.insert(l.name.to_lowercase()))
-        .map(|l| LabelChoice { label: SessionLabel::from(l), worn: worn.contains(&l.name.to_lowercase()) })
+        .filter(|l| !l.name.trim().is_empty() && seen.insert(by(l)))
+        .map(|l| LabelChoice { label: SessionLabel::from(l), worn: worn.contains(&by(l)), by: by(l) })
         .collect();
     choices.sort_by(|a, b| a.label.name.to_lowercase().cmp(&b.label.name.to_lowercase()).then_with(|| a.label.name.cmp(&b.label.name)));
     choices
@@ -726,9 +731,10 @@ impl Core {
         each_mac(&keys, |device, keys| self.client.pin(device, keys, pinned))
     }
 
-    /// Puts labels on sessions and takes others off, on the Macs they're on, by name: a name a
-    /// Mac's labels don't have is made one there, in its next color, as its own picker makes one.
-    /// Macs before 2026-11-09 refuse it, and say so.
+    /// Puts labels on sessions and takes others off, on the Macs they're on, each by its id there
+    /// (a menu's `LabelChoice::by`) or its name: a name a Mac's labels don't have is made one
+    /// there, in its next color, as its own picker makes one. Macs before 2026-11-09 refuse it,
+    /// and say so.
     pub fn label(&self, keys: Vec<String>, add: Vec<String>, remove: Vec<String>) -> Result<(), CoreError> {
         let add: Vec<String> = add.iter().map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).collect();
         each_mac(&keys, |device, keys| {
@@ -2984,23 +2990,28 @@ mod order_tests {
         let label = |id: &str, name: &str, color: &str| Label { id: id.into(), name: name.into(), color: color.into() };
         let mac = Device { key: "m".into(), short: "m".into(), name: "Mac".into(), online: true, since: None, last_seen: None, remote_control: true, app: String::new(), loading: false, linked_back: true };
         let mut lane = codealong_peer::model::Lane::new("/src/app", "App", "app");
-        let both = Session { labels: vec![label("l-2", "Ready", "green"), label("l-1", "bug", "plaid")], ..Session::new(Harness::Claude, "claude", "both") };
-        let other = Session { labels: vec![label("l-1", "bug", "plaid"), label("l-3", "Atlas", "indigo"), label("l-4", " ", "red")], ..Session::new(Harness::Claude, "claude", "other") };
+        let both = Session { labels: vec![label("l-2", "Ready", "green"), label("l-1", "bug", "plaid"), label("l-5", "Équipe", "teal")], ..Session::new(Harness::Claude, "claude", "both") };
+        // Two labels the Mac keeps apart, since it matches names' case only in ASCII.
+        let other = Session { labels: vec![label("l-1", "bug", "plaid"), label("l-3", "Atlas", "indigo"), label("l-4", " ", "red"), label("l-6", "équipe", "blue")], ..Session::new(Harness::Claude, "claude", "other") };
         let none = Session::new(Harness::Claude, "claude", "none");
         lane.sessions = vec![both, other, none];
         let replica = Replica { lanes: vec![lane], ..Replica::default() };
         let rows = all_rows(&[(mac, &replica)]);
         let row = |id: &str| rows.iter().find(|r| r.id == id).unwrap();
         // In the order they were put on, and a color the Mac doesn't know is gray, as it draws it.
-        assert_eq!(row("both").labels, [SessionLabel { id: "l-2".into(), name: "Ready".into(), color: "green".into() }, SessionLabel { id: "l-1".into(), name: "bug".into(), color: "gray".into() }]);
+        assert_eq!(row("both").labels[..2], [SessionLabel { id: "l-2".into(), name: "Ready".into(), color: "green".into() }, SessionLabel { id: "l-1".into(), name: "bug".into(), color: "gray".into() }]);
         // From a Mac before labels, none.
         assert!(row("none").labels.is_empty());
-        // The menu offers every label its Mac's sessions wear, once each, by name, checked where it
-        // wears it; one with no name isn't offered.
+        // The menu offers every label its Mac's sessions wear, once each, in order of name, checked
+        // where it wears it, each sent by its id; one with no name isn't offered.
         let sessions: Vec<&Session> = replica.lanes.iter().flat_map(|l| l.sessions.iter()).collect();
-        let offered = |id: &str| label_choices(&sessions, &sessions.iter().find(|s| s.id == id).unwrap().key).into_iter().map(|c| (c.label.name, c.worn)).collect::<Vec<_>>();
-        assert_eq!(offered("both"), [("Atlas".to_string(), false), ("bug".into(), true), ("Ready".into(), true)]);
-        assert_eq!(offered("none"), [("Atlas".to_string(), false), ("bug".into(), false), ("Ready".into(), false)]);
+        let offered = |id: &str| label_choices(&sessions, &sessions.iter().find(|s| s.id == id).unwrap().key).into_iter().map(|c| (c.label.name, c.worn, c.by)).collect::<Vec<_>>();
+        let choice = |name: &str, worn: bool, by: &str| (name.to_string(), worn, by.to_string());
+        assert_eq!(offered("both"), [choice("Atlas", false, "l-3"), choice("bug", true, "l-1"), choice("Ready", true, "l-2"), choice("Équipe", true, "l-5"), choice("équipe", false, "l-6")]);
+        assert_eq!(offered("none"), [choice("Atlas", false, "l-3"), choice("bug", false, "l-1"), choice("Ready", false, "l-2"), choice("Équipe", false, "l-5"), choice("équipe", false, "l-6")]);
+        // A label without an id goes by its name.
+        let unnamed = Session { key: "k".into(), labels: vec![label("", "Later", "red")], ..Session::new(Harness::Claude, "claude", "k") };
+        assert_eq!(label_choices(&[&unnamed], "k").into_iter().map(|c| (c.label.name, c.worn, c.by)).collect::<Vec<_>>(), [choice("Later", true, "Later")]);
     }
 
     #[test]

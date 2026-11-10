@@ -160,7 +160,9 @@ struct TitleBlock: View {
                     }
                     Text(row.title).font(.headline).lineLimit(1)
                 }
-                withLabels(Text("\(Names.short(row.deviceName)) · \(row.project)\(row.archived ? " · Archived" : "")"), row.labels).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                let place = "\(Names.short(row.deviceName)) · \(row.project)\(row.archived ? " · Archived" : "")"
+                withLabels(Text(place), row.labels).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    .accessibilityLabel(row.labels.isEmpty ? place : "\(place), \(labelsSaid(row.labels))")
             }
         case nil where key == EndView.key:
             EmptyView()
