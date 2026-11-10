@@ -616,6 +616,11 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
     // The PRs, by their place in `out`, that a Mac of your account has said whose move they are,
     // or that it's no one's: a Mac after it, which can be behind, has no say.
     let mut told = std::collections::HashSet::new();
+    // The PRs, by their place in `out`, that a Mac of your account has sent Codealong's review of:
+    // of your Macs, only the one that reviews a PR sends its round, the others leaving it to that
+    // one (the main repo's peerfeed.rs), so the first that has one says where the agent stands,
+    // wherever it sorts.
+    let mut reviewed = std::collections::HashSet::new();
     for (d, replica) in macs {
         // Whose move a PR is, as this Mac works it out for the account it's signed in as (a Mac
         // signed in as another, a bot your agents open PRs as, has no say): none while Codealong's
@@ -648,7 +653,15 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                     let open = !matches!(out[i].state.as_str(), "draft" | "merged" | "closed");
                     if ours && open && told.insert(i) {
                         out[i].turn = turn(p);
+                    }
+                    // A draft asked of you is reviewed too; the line over the review box goes with
+                    // the pill, where the Mac it's asked of sent none.
+                    let done = matches!(out[i].state.as_str(), "merged" | "closed");
+                    if ours && !done && p.auto_review.is_some() && reviewed.insert(i) {
                         out[i].agent = agent_pill(p);
+                        if out[i].agent_review.is_none() {
+                            out[i].agent_review = p.auto_review.as_ref().map(agent_review_line);
+                        }
                     }
                 }
                 continue;
@@ -656,6 +669,9 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
             place(&mut at, &key, &p.key, Some(out.len()));
             if ours {
                 told.insert(out.len());
+                if p.auto_review.is_some() {
+                    reviewed.insert(out.len());
+                }
             }
             out.push(PrRow {
                 key,
@@ -1301,28 +1317,49 @@ pub(crate) mod tests {
     fn where_the_agent_stands_is_your_accounts_and_goes_with_the_pr() {
         use codealong_peer::client::Device;
         use codealong_peer::feed::Replica;
-        let mac = |key: &str| Device { key: key.into(), short: key.into(), name: key.into(), online: true, since: None, last_seen: None, remote_control: true, app: String::new(), loading: false, linked_back: true };
-        let approving = |number: u64| {
-            card_with(serde_json::json!({
+        let mac = |key: &str, remote_control: bool| Device { key: key.into(), short: key.into(), name: key.into(), online: true, since: None, last_seen: None, remote_control, app: String::new(), loading: false, linked_back: true };
+        let listed = |number: u64, extra: serde_json::Value| {
+            let mut v = serde_json::json!({
                 "key": format!("o/app#{number}"), "number": number, "url": format!("https://github.com/o/app/pull/{number}"),
                 "reviewRequested": true, "waits": true,
                 "turn": {"kind": "authorReplied", "who": "ken", "since": 9},
-                "autoReview": {"stage": "posted", "head": "309811a5e0c4", "at": 5, "submitted": "request-changes", "approves": "309811a5e0c4"},
                 "sharedReview": {"would": true, "round": {"head": "309811a5e0c4", "state": "done", "at": 5}},
-            }))
+            });
+            v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            card_with(v)
         };
-        // The mini is signed in as the bot its agents open PRs as; the laptop as you.
-        let mini = Replica { prs: vec![approving(3)], ..Replica::default() };
-        let laptop = Replica { prs: vec![approving(7)], ..Replica::default() };
-        let feeds = vec![(mac("mini"), &mini), (mac("laptop"), &laptop)];
-        let signed_in: HashMap<String, String> = [("mini".to_string(), "ann-bot".to_string()), ("laptop".into(), "ann".into())].into();
+        // The Mac that reviewed it, whose first round asked for changes in your name.
+        let approving = |number: u64, extra: serde_json::Value| {
+            let mut v = serde_json::json!({"autoReview": {"stage": "posted", "head": "309811a5e0c4", "at": 5, "submitted": "request-changes", "approves": "309811a5e0c4"}});
+            v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            listed(number, v)
+        };
+        // The studio, asked first, is signed in as you but leaves each review to the laptop, which
+        // sends it; the mini is signed in as the bot its agents open PRs as.
+        let studio = Replica { prs: vec![listed(7, serde_json::json!({})), listed(8, serde_json::json!({"state": "draft"})), listed(9, serde_json::json!({"state": "merged"}))], ..Replica::default() };
+        let mini = Replica { prs: vec![approving(3, serde_json::json!({})), approving(10, serde_json::json!({"autoReview": {"stage": "posted", "head": "309811a5e0c4", "at": 5}}))], ..Replica::default() };
+        let laptop = Replica {
+            prs: vec![approving(5, serde_json::json!({})), approving(7, serde_json::json!({})), approving(8, serde_json::json!({"state": "draft"})), approving(9, serde_json::json!({})), approving(10, serde_json::json!({}))],
+            ..Replica::default()
+        };
+        let feeds = vec![(mac("studio", true), &studio), (mac("mini", true), &mini), (mac("laptop", false), &laptop)];
+        let signed_in: HashMap<String, String> = [("studio".to_string(), "ann".to_string()), ("mini".into(), "ann-bot".into()), ("laptop".into(), "ann".into())].into();
         let you = crate::github::You::of(&feeds, &signed_in, &["ann".to_string()]);
         let prs = all_prs(&feeds, &you);
         let pr = |n: u64| prs.iter().find(|p| p.number == n).unwrap();
+        let agent = |n: u64| pr(n).agent.as_ref().map(|a| a.words.clone());
         // Whose move it is stays for what it says, and the pill goes ahead of it.
-        assert_eq!(pr(7).agent.as_ref().map(|a| a.words.as_str()), Some("Agent approves"));
-        assert_eq!(pr(7).turn.as_ref().map(|t| t.words.as_str()), Some("Author replied"));
-        assert_eq!(pr(3).agent, None);
+        assert_eq!(agent(5).as_deref(), Some("Agent approves"));
+        assert_eq!(pr(5).turn.as_ref().map(|t| t.words.as_str()), Some("Author replied"));
+        // Asked of the studio, which sent no review: the laptop's says where the agent stands, a
+        // draft's too, with the line over the review box.
+        assert_eq!((pr(7).device.as_str(), agent(7).as_deref()), ("studio", Some("Agent approves")));
+        assert_eq!(pr(7).agent_review.as_ref().map(|r| r.says.as_str()), Some("Agent requested changes on 309811a for you"));
+        assert_eq!(agent(8).as_deref(), Some("Agent approves"));
+        // Merged as the studio has it: a Mac behind it doesn't bring the pill back.
+        assert_eq!(agent(9), None);
+        // The bot's Mac has no say, ahead or alone.
+        assert_eq!((agent(10).as_deref(), agent(3)), (Some("Agent approves"), None));
     }
 
     #[test]
