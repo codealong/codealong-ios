@@ -655,9 +655,13 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                         out[i].turn = turn(p);
                     }
                     // A draft asked of you is reviewed too; the line over the review box goes with
-                    // the pill, where the Mac it's asked of sent none.
+                    // the pill, where the Mac it's asked of sent none. Macs read GitHub each on
+                    // their own, so one that hasn't seen the PR change as the Mac it's asked of has
+                    // can have an approval of a commit pushed over since, or ask a sign-off of a
+                    // review you've given: only one as up to date says.
                     let done = matches!(out[i].state.as_str(), "merged" | "closed");
-                    if ours && !done && p.auto_review.is_some() && reviewed.insert(i) {
+                    let current = p.updated_at >= out[i].updated_at && out[i].review_requested;
+                    if ours && !done && current && p.auto_review.is_some() && reviewed.insert(i) {
                         out[i].agent = agent_pill(p);
                         if out[i].agent_review.is_none() {
                             out[i].agent_review = p.auto_review.as_ref().map(agent_review_line);
@@ -1336,10 +1340,28 @@ pub(crate) mod tests {
         };
         // The studio, asked first, is signed in as you but leaves each review to the laptop, which
         // sends it; the mini is signed in as the bot its agents open PRs as.
-        let studio = Replica { prs: vec![listed(7, serde_json::json!({})), listed(8, serde_json::json!({"state": "draft"})), listed(9, serde_json::json!({"state": "merged"}))], ..Replica::default() };
+        let studio = Replica {
+            prs: vec![
+                listed(7, serde_json::json!({})),
+                listed(8, serde_json::json!({"state": "draft"})),
+                listed(9, serde_json::json!({"state": "merged"})),
+                // Seen pushed to since, or reviewed by you, where the laptop hasn't caught up.
+                listed(11, serde_json::json!({"updatedAt": 20})),
+                listed(12, serde_json::json!({"reviewRequested": false, "waits": false})),
+            ],
+            ..Replica::default()
+        };
         let mini = Replica { prs: vec![approving(3, serde_json::json!({})), approving(10, serde_json::json!({"autoReview": {"stage": "posted", "head": "309811a5e0c4", "at": 5}}))], ..Replica::default() };
         let laptop = Replica {
-            prs: vec![approving(5, serde_json::json!({})), approving(7, serde_json::json!({})), approving(8, serde_json::json!({"state": "draft"})), approving(9, serde_json::json!({})), approving(10, serde_json::json!({}))],
+            prs: vec![
+                approving(5, serde_json::json!({})),
+                approving(7, serde_json::json!({"updatedAt": 10})),
+                approving(8, serde_json::json!({"state": "draft"})),
+                approving(9, serde_json::json!({})),
+                approving(10, serde_json::json!({})),
+                approving(11, serde_json::json!({"updatedAt": 10})),
+                approving(12, serde_json::json!({})),
+            ],
             ..Replica::default()
         };
         let feeds = vec![(mac("studio", true), &studio), (mac("mini", true), &mini), (mac("laptop", false), &laptop)];
@@ -1356,8 +1378,9 @@ pub(crate) mod tests {
         assert_eq!((pr(7).device.as_str(), agent(7).as_deref()), ("studio", Some("Agent approves")));
         assert_eq!(pr(7).agent_review.as_ref().map(|r| r.says.as_str()), Some("Agent requested changes on 309811a for you"));
         assert_eq!(agent(8).as_deref(), Some("Agent approves"));
-        // Merged as the studio has it: a Mac behind it doesn't bring the pill back.
-        assert_eq!(agent(9), None);
+        // Merged, pushed to or reviewed as the studio has it: a Mac behind it doesn't bring the
+        // pill back.
+        assert_eq!((agent(9), agent(11), agent(12)), (None, None, None));
         // The bot's Mac has no say, ahead or alone.
         assert_eq!((agent(10).as_deref(), agent(3)), (Some("Agent approves"), None));
     }
