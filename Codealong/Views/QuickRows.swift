@@ -207,6 +207,8 @@ struct QuickPrRow: View {
         default: break
         }
         if pr.failing > 0 { return ("xmark", pr.failing == 1 ? "1 check failing" : "\(pr.failing) checks failing", .red) }
+        // Where the agent stands says more still, a draft's too, as the Mac's pill leads with it.
+        if let agent = pr.agent { return (AgentLabel.symbol(agent), agent.words, agent.kind == "approves" ? Self.passed : .secondary) }
         if pr.state == "draft" { return (nil, "Draft", .secondary) }
         // Whose move it is says more than GitHub's state, as the Mac's pill has it in its place.
         if let turn = pr.turn { return (TurnLabel.symbol(turn), turn.words, turn.yours ? .orange : .secondary) }

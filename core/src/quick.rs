@@ -128,6 +128,9 @@ pub struct PrRow {
     pub agent_review: Option<AgentReviewLine>,
     /// Whose move it is, where its review state doesn't say; none from Macs before 2026-10-23.
     pub turn: Option<PrTurn>,
+    /// Where Codealong's agent stands on it, which says more than whose move it is and goes in its
+    /// place; none from Macs before 2026-11-09.
+    pub agent: Option<PrAgent>,
 }
 
 /// A label on a PR, as its repo on GitHub defines it.
@@ -266,6 +269,46 @@ fn turn_line(t: &codealong_peer::pr::Turn) -> Option<PrTurn> {
         TurnKind::Other => return None,
     };
     Some(PrTurn { kind: kind.into(), words: words.into(), yours, says })
+}
+
+/// Where Codealong's agent stands on a PR that waits on your review, as the Mac's pill says it ahead
+/// of whose move it is (prStatus.ts `agentPill`): approving the commit it's at, so it's yours to
+/// sign off; re-reviewing the commits pushed after one it approved; or reviewing it. It says more
+/// than GitHub's state, which keeps a request for changes the agent submitted for you before until
+/// you approve.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct PrAgent {
+    /// `approves`, `re-reviewing` or `reviewing`, for its icon and color: the Mac draws the first
+    /// green, as an approval, and the others grey.
+    pub kind: String,
+    /// The pill's words: "Agent approves".
+    pub words: String,
+    /// What it means, in a sentence: what the Mac's pill says when you hover it.
+    pub says: String,
+    /// The commit it approved, short: the PR's, or the earlier one it re-reviews from.
+    pub approves: Option<String>,
+}
+
+/// Where Codealong's agent stands on a PR, from the card its Mac sends (prStatus.ts `agentApproves`,
+/// `approvedBefore`, `heldForAgent`): none while it holds nothing and approves nothing that's asked
+/// of you, and from Macs before 2026-11-09, which send neither.
+fn agent_pill(p: &codealong_peer::pr::PrCard) -> Option<PrAgent> {
+    let a = p.auto_review.as_ref()?;
+    if matches!(p.state, PrState::Merged | PrState::Closed) {
+        return None;
+    }
+    // The card names no commit for the PR, but its round of the commit the PR is at does, from the
+    // same rounds the agent's approval is read from: when the agent approves the PR's commit,
+    // that's the round that approved it.
+    let of_the_pr = |commit: &str| p.shared_review.as_ref().and_then(|s| s.round.as_ref()).is_some_and(|r| r.head == commit);
+    let short = |commit: &str| commit.get(..7).unwrap_or(commit).to_string();
+    let pill = |kind: &str, words: &str, says: String, approves: Option<String>| Some(PrAgent { kind: kind.into(), words: words.into(), says, approves });
+    match a.approves.as_deref() {
+        Some(c) if !a.holds && p.review_requested && of_the_pr(c) => pill("approves", "Agent approves", format!("Codealong\u{2019}s agent approves {}: it waits on your sign-off", short(c)), Some(short(c))),
+        Some(c) if a.holds && p.review_requested && !of_the_pr(c) => pill("re-reviewing", "Agent re-reviewing", format!("Codealong\u{2019}s agent approved {} and reviews the commits since: it waits on your sign-off once the agent approves them", short(c)), Some(short(c))),
+        _ if a.holds => pill("reviewing", "Agent reviewing", "Codealong\u{2019}s agent is reviewing it: it waits on your review once that\u{2019}s done".into(), None),
+        _ => None,
+    }
 }
 
 /// Names as a sentence lists them: `ana`, `ana and ken`, `ana, ken and sam`.
@@ -605,6 +648,7 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                     let open = !matches!(out[i].state.as_str(), "draft" | "merged" | "closed");
                     if ours && open && told.insert(i) {
                         out[i].turn = turn(p);
+                        out[i].agent = agent_pill(p);
                     }
                 }
                 continue;
@@ -651,6 +695,8 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                 stale: stale_words(p.state, replica.lanes.iter().filter_map(|l| l.pr.as_ref()).find(|w| !w.url.is_empty() && w.url == p.url).and_then(|w| w.stale_approval.as_ref())),
                 agent_review: p.auto_review.as_ref().map(agent_review_line),
                 turn: if ours { turn(p) } else { None },
+                // Your sign-off, as whose move it is, is asked of the account a Mac is signed in as.
+                agent: if ours { agent_pill(p) } else { None },
             });
         }
     }
@@ -710,6 +756,7 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                 stale: stale_words(pr.state, pr.stale_approval.as_ref()),
                 agent_review: None,
                 turn: None,
+                agent: None,
             });
         }
     }
@@ -1133,6 +1180,7 @@ pub(crate) mod tests {
             stale: None,
             agent_review: None,
             turn: None,
+            agent: None,
         }
     }
 
@@ -1181,7 +1229,7 @@ pub(crate) mod tests {
     #[test]
     fn an_agent_review_says_where_its_round_stands_and_what_went_as_yours() {
         use codealong_peer::pr::{AutoReview, ReviewStage, Verdict};
-        let round = |stage: ReviewStage| AutoReview { stage, head: "9f8e7d6c5b".into(), suggests: Some(Verdict::Approve), submitted: None, at: 0 };
+        let round = |stage: ReviewStage| AutoReview { stage, head: "9f8e7d6c5b".into(), suggests: Some(Verdict::Approve), submitted: None, at: 0, approves: None, holds: false };
         let posted = agent_review_line(&round(ReviewStage::Posted));
         assert_eq!((posted.stage.as_str(), posted.says.as_str(), posted.suggests.as_deref()), ("posted", "Agent reviewed 9f8e7d6 and commented", Some("Suggests approving")));
         // Under way, it suggests nothing yet.
@@ -1189,6 +1237,92 @@ pub(crate) mod tests {
         // One submitted as yours says so, and suggests nothing more.
         let submitted = agent_review_line(&AutoReview { submitted: Some(Verdict::RequestChanges), ..round(ReviewStage::Posted) });
         assert_eq!((submitted.stage.as_str(), submitted.says.as_str(), submitted.suggests), ("submitted", "Agent requested changes on 9f8e7d6 for you", None));
+    }
+
+    /// A card as a Mac sends it, with `extra` over its fields.
+    fn card_with(extra: serde_json::Value) -> codealong_peer::pr::PrCard {
+        let mut v = serde_json::json!({"key": "o/app#7", "repo": "o/app", "project": "App", "number": 7, "title": "T", "url": "https://github.com/o/app/pull/7", "state": "changes", "author": "ken", "head": "b"});
+        v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn where_the_agent_stands_says_what_its_macs_pill_does() {
+        const HEAD: &str = "309811a5e0c4";
+        const EARLIER: &str = "1a2b3c4d5e6f";
+        // Its round of the commit the PR is at, as the Mac shares it, names that commit.
+        let card = |approves: Option<&str>, holds: bool, round_of: Option<&str>, extra: serde_json::Value| {
+            let mut v = serde_json::json!({
+                "reviewRequested": true,
+                "autoReview": {"stage": "posted", "head": round_of.unwrap_or(EARLIER), "at": 5, "approves": approves, "holds": holds},
+                "sharedReview": {"would": true, "round": round_of.map(|h| serde_json::json!({"head": h, "state": if holds { "under-way" } else { "done" }, "at": 5}))},
+            });
+            v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            card_with(v)
+        };
+        let words = |p: Option<PrAgent>| p.map(|a| (a.kind, a.words, a.says, a.approves));
+        // It approves the commit the PR's at: yours to sign off, though GitHub still has the
+        // changes it asked for in your name before.
+        assert_eq!(
+            words(agent_pill(&card(Some(HEAD), false, Some(HEAD), serde_json::json!({})))),
+            Some(("approves".into(), "Agent approves".into(), "Codealong\u{2019}s agent approves 309811a: it waits on your sign-off".into(), Some("309811a".into())))
+        );
+        // Its author pushed since: it reviews the new commits, under way or not begun.
+        for round_of in [Some(HEAD), None] {
+            assert_eq!(
+                words(agent_pill(&card(Some(EARLIER), true, round_of, serde_json::json!({})))),
+                Some(("re-reviewing".into(), "Agent re-reviewing".into(), "Codealong\u{2019}s agent approved 1a2b3c4 and reviews the commits since: it waits on your sign-off once the agent approves them".into(), Some("1a2b3c4".into()))),
+                "{round_of:?}"
+            );
+        }
+        // Reviewing it, with nothing approved, or with the approval of its commit still to go as
+        // yours.
+        let reviewing = Some(("reviewing".into(), "Agent reviewing".into(), "Codealong\u{2019}s agent is reviewing it: it waits on your review once that\u{2019}s done".into(), None));
+        assert_eq!(words(agent_pill(&card(None, true, Some(HEAD), serde_json::json!({})))), reviewing);
+        assert_eq!(words(agent_pill(&card(Some(HEAD), true, Some(HEAD), serde_json::json!({})))), reviewing);
+        // An approval of an earlier commit whose hold ran out says nothing: it's yours to review.
+        assert_eq!(agent_pill(&card(Some(EARLIER), false, None, serde_json::json!({}))), None);
+        assert_eq!(agent_pill(&card(Some(EARLIER), false, Some(HEAD), serde_json::json!({}))), None);
+        // Nor does one no longer asked of you, or a PR that's done.
+        assert_eq!(agent_pill(&card(Some(HEAD), false, Some(HEAD), serde_json::json!({"reviewRequested": false}))), None);
+        for state in ["merged", "closed"] {
+            assert_eq!(agent_pill(&card(Some(HEAD), false, Some(HEAD), serde_json::json!({"state": state}))), None, "{state}");
+            assert_eq!(agent_pill(&card(None, true, Some(HEAD), serde_json::json!({"state": state}))), None, "{state}");
+        }
+        // A draft asked of you is reviewed too, as the Mac's pill has it ahead of Draft.
+        assert_eq!(agent_pill(&card(Some(HEAD), false, Some(HEAD), serde_json::json!({"state": "draft"}))).map(|a| a.words), Some("Agent approves".into()));
+        // A Mac from before sends neither, and its card reads as it did.
+        let before = card_with(serde_json::json!({"reviewRequested": true, "autoReview": {"stage": "posted", "head": HEAD, "at": 5, "suggests": "approve"}, "sharedReview": {"would": true, "round": {"head": HEAD, "state": "done", "at": 5}}}));
+        assert_eq!(agent_pill(&before), None);
+        assert_eq!(agent_pill(&card_with(serde_json::json!({"reviewRequested": true}))), None);
+    }
+
+    #[test]
+    fn where_the_agent_stands_is_your_accounts_and_goes_with_the_pr() {
+        use codealong_peer::client::Device;
+        use codealong_peer::feed::Replica;
+        let mac = |key: &str| Device { key: key.into(), short: key.into(), name: key.into(), online: true, since: None, last_seen: None, remote_control: true, app: String::new(), loading: false, linked_back: true };
+        let approving = |number: u64| {
+            card_with(serde_json::json!({
+                "key": format!("o/app#{number}"), "number": number, "url": format!("https://github.com/o/app/pull/{number}"),
+                "reviewRequested": true, "waits": true,
+                "turn": {"kind": "authorReplied", "who": "ken", "since": 9},
+                "autoReview": {"stage": "posted", "head": "309811a5e0c4", "at": 5, "submitted": "request-changes", "approves": "309811a5e0c4"},
+                "sharedReview": {"would": true, "round": {"head": "309811a5e0c4", "state": "done", "at": 5}},
+            }))
+        };
+        // The mini is signed in as the bot its agents open PRs as; the laptop as you.
+        let mini = Replica { prs: vec![approving(3)], ..Replica::default() };
+        let laptop = Replica { prs: vec![approving(7)], ..Replica::default() };
+        let feeds = vec![(mac("mini"), &mini), (mac("laptop"), &laptop)];
+        let signed_in: HashMap<String, String> = [("mini".to_string(), "ann-bot".to_string()), ("laptop".into(), "ann".into())].into();
+        let you = crate::github::You::of(&feeds, &signed_in, &["ann".to_string()]);
+        let prs = all_prs(&feeds, &you);
+        let pr = |n: u64| prs.iter().find(|p| p.number == n).unwrap();
+        // Whose move it is stays for what it says, and the pill goes ahead of it.
+        assert_eq!(pr(7).agent.as_ref().map(|a| a.words.as_str()), Some("Agent approves"));
+        assert_eq!(pr(7).turn.as_ref().map(|t| t.words.as_str()), Some("Author replied"));
+        assert_eq!(pr(3).agent, None);
     }
 
     #[test]

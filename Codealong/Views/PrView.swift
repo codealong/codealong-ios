@@ -420,7 +420,7 @@ private struct PrHeader: View {
                     .lineLimit(1)
             }
             HStack(spacing: 8) {
-                StateChip(state: pr.state, turn: pr.turn)
+                StateChip(state: pr.state, turn: pr.turn, agent: pr.agent)
                 ChecksLine(passed: pr.passed, failed: pr.failing, pending: pr.pending)
                 if pr.additions + pr.deletions > 0 {
                     // The first to give way, short of room.
@@ -445,7 +445,10 @@ private struct PrHeader: View {
                 }
                 .font(.footnote)
             }
-            if let turn = pr.turn {
+            // Where the agent stands goes in place of whose move it is, as on the Mac's pill.
+            if let agent = pr.agent {
+                AgentLabel(agent: agent)
+            } else if let turn = pr.turn {
                 TurnLabel(turn: turn)
             }
             if let review = pr.agentReview {
@@ -709,11 +712,32 @@ struct TurnLabel: View {
     }
 }
 
-/// A PR's state, as a chip, or whose move it is in its place where the Mac says, as its pill has
-/// it: GitHub keeps Changes requested after the fixes are in or the author has answered.
+/// Where Codealong's agent stands on a PR, in a sentence: what the Mac's pill says when you hover
+/// it.
+struct AgentLabel: View {
+    let agent: PrAgent
+
+    var body: some View {
+        Label {
+            Text(agent.says)
+        } icon: {
+            Image(systemName: Self.symbol(agent)).foregroundStyle(agent.kind == "approves" ? Color.green : Color.secondary)
+        }
+        .font(.footnote)
+    }
+
+    static func symbol(_ agent: PrAgent) -> String {
+        agent.kind == "approves" ? "checkmark.seal" : "hourglass"
+    }
+}
+
+/// A PR's state, as a chip, or in its place where the Mac says, as its pill has it, where its agent
+/// stands, else whose move it is: GitHub keeps Changes requested after the fixes are in, the author
+/// has answered, or the agent that asked for them in your name approves the fixed commit.
 struct StateChip: View {
     let state: String
     var turn: PrTurn? = nil
+    var agent: PrAgent? = nil
 
     var body: some View {
         let (word, color) = said
@@ -726,6 +750,7 @@ struct StateChip: View {
     }
 
     private var said: (String, Color) {
+        if let agent { return (agent.words, agent.kind == "approves" ? .green : .gray) }
         if let turn { return (turn.words, turn.yours ? .orange : .gray) }
         return switch state {
         case "draft": ("Draft", .gray)
@@ -1097,7 +1122,7 @@ private struct ReviewBoxView: View {
     /// The PR's state and checks, as the top of the page has them.
     private var standing: some View {
         HStack(spacing: 8) {
-            StateChip(state: pr.state, turn: pr.turn)
+            StateChip(state: pr.state, turn: pr.turn, agent: pr.agent)
             ChecksLine(passed: pr.passed, failed: pr.failing, pending: pr.pending)
         }
         .fixedSize()

@@ -21,8 +21,9 @@ pub struct ReviewBox {
     /// What sending does that the buttons don't say: only a comment goes, or your draft review
     /// goes with it.
     pub note: Option<String>,
-    /// Your standing review of it, and when: "You approved it {ago:<ms>}". None when you haven't
-    /// reviewed it, or its Mac doesn't say which review is yours.
+    /// Your standing review of it, and when: "You approved it {ago:<ms>}", after your sign-off,
+    /// asked for where Codealong's agent approves it. None when you haven't reviewed it and no
+    /// sign-off is asked, or its Mac doesn't say which review is yours.
     pub yours: Option<String>,
 }
 
@@ -39,23 +40,40 @@ fn comments(n: u64) -> String {
 /// comment), in words. Where `pr` asks for your review again, that comes first, as the Mac's
 /// Re-review says (prStatus.ts `reReviewPill`): it's why a PR you reviewed waits on you. GitHub
 /// takes a review as the one asked of you, so one asked for while yours stands came after it.
+/// Where Codealong's agent approves the commit it's at, what's asked is your sign-off, as the Mac's
+/// mark says it (prStatus.ts `reviewMark`), whether or not you reviewed it before.
 fn yours(pr: &PrRow, reviews: &[PrReview]) -> Option<String> {
-    let r = reviews.iter().find(|r| r.mine)?;
+    // What your review did ("approved it {ago:<ms>}"): none without one, and no words for one
+    // that was dismissed.
+    let did = reviews.iter().find(|r| r.mine).and_then(|r| {
+        let did = match r.state.as_str() {
+            "APPROVED" => "approved it",
+            "CHANGES_REQUESTED" => "asked for changes",
+            "COMMENTED" => "commented",
+            // When it was dismissed isn't known, only when it was given.
+            "DISMISSED" => return Some(None),
+            _ => return None,
+        };
+        Some(Some(match r.at {
+            Some(at) => format!("{did} {{ago:{at}}}"),
+            None => did.to_string(),
+        }))
+    });
+    if let Some(approves) = pr.agent.as_ref().filter(|a| a.kind == "approves").and_then(|a| a.approves.as_deref()) {
+        let asked = format!("Your sign-off is asked for{}: Codealong\u{2019}s agent approves {approves}", if did.is_some() { " again" } else { "" });
+        return Some(match did {
+            Some(Some(did)) => format!("{asked}. You {did}"),
+            Some(None) => format!("{asked}. Your last review was dismissed"),
+            None => asked,
+        });
+    }
     let again = pr.review_requested && is_open(&pr.state) && pr.state != "draft";
-    let did = match r.state.as_str() {
-        "APPROVED" => "approved it",
-        "CHANGES_REQUESTED" => "asked for changes",
-        "COMMENTED" => "commented",
-        // When it was dismissed isn't known, only when it was given.
-        "DISMISSED" if again => return Some("Your review is asked for again: the last was dismissed".to_string()),
-        "DISMISSED" => return Some("Your review was dismissed".to_string()),
-        _ => return None,
-    };
-    let did = match r.at {
-        Some(at) => format!("{did} {{ago:{at}}}"),
-        None => did.to_string(),
-    };
-    Some(if again { format!("Your review is asked for again: you {did}") } else { format!("You {did}") })
+    Some(match (did?, again) {
+        (Some(did), true) => format!("Your review is asked for again: you {did}"),
+        (Some(did), false) => format!("You {did}"),
+        (None, true) => "Your review is asked for again: the last was dismissed".to_string(),
+        (None, false) => "Your review was dismissed".to_string(),
+    })
 }
 
 /// The box for `pr`, with your draft review of it and its reviews as its page read them.
@@ -215,6 +233,26 @@ mod tests {
         assert_eq!(yours("open", true, vec![]), None);
         assert_eq!(yours("merged", true, approved()).as_deref(), Some("You approved it {ago:9}"));
         assert_eq!(yours("draft", true, approved()).as_deref(), Some("You approved it {ago:9}"));
+    }
+
+    #[test]
+    fn a_pr_the_agent_approves_asks_for_your_sign_off() {
+        use crate::quick::PrAgent;
+        let agent = |kind: &str, approves: Option<&str>| PrAgent { kind: kind.into(), words: String::new(), says: String::new(), approves: approves.map(str::to_string) };
+        let yours = |agent: PrAgent, reviews: Vec<PrReview>| {
+            let mut p = pr("changes", false);
+            p.review_requested = true;
+            p.agent = Some(agent);
+            review_box(p, None, reviews).yours
+        };
+        // Its first round asked for changes as your review; its second approves the fixed commit.
+        let changes = || vec![review("me", "CHANGES_REQUESTED", Some(9), true)];
+        assert_eq!(yours(agent("approves", Some("309811a")), changes()).as_deref(), Some("Your sign-off is asked for again: Codealong’s agent approves 309811a. You asked for changes {ago:9}"));
+        assert_eq!(yours(agent("approves", Some("309811a")), vec![]).as_deref(), Some("Your sign-off is asked for: Codealong’s agent approves 309811a"));
+        assert_eq!(yours(agent("approves", Some("309811a")), vec![review("me", "DISMISSED", Some(9), true)]).as_deref(), Some("Your sign-off is asked for again: Codealong’s agent approves 309811a. Your last review was dismissed"));
+        // While it re-reviews or reviews, it's your review that's asked, as before.
+        assert_eq!(yours(agent("re-reviewing", Some("1a2b3c4")), changes()).as_deref(), Some("Your review is asked for again: you asked for changes {ago:9}"));
+        assert_eq!(yours(agent("reviewing", None), vec![]), None);
     }
 
     #[test]
