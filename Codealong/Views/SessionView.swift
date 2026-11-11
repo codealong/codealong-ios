@@ -865,6 +865,8 @@ struct SessionView: View {
             if !watching, let conv = conversation, row?.hosted == true {
                 watching = await Task.detached { conv.watch() }.value
                 live = conv.live()
+                // What it wrote while it wasn't followed, its turn's end among it.
+                await refresh()
             }
             return
         }

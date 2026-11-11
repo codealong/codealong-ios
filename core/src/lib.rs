@@ -682,7 +682,14 @@ pub struct Core {
     chimer: Mutex<sounds::Chimer>,
     /// The Macs' GitHub accounts and the ones you picked as yours (`github`).
     github: Mutex<github::Github>,
+    watched: Watched,
 }
+
+/// The sessions each Mac is asked to send the replies of as they're written, by the Mac as a
+/// conversation names it: the pages that follow them, each its own. A Mac takes the whole list
+/// each time, so a page going away asks for the rest rather than none, and the lock is held while
+/// it's asked, so the last list asked for is the one it has, whichever page came or went first.
+type Watched = Arc<Mutex<std::collections::HashMap<String, Vec<String>>>>;
 
 #[uniffi::export]
 impl Core {
@@ -723,7 +730,7 @@ impl Core {
                 std::thread::sleep(COALESCE);
             })
             .map_err(|e| CoreError::Failed(e.to_string()))?;
-        Ok(Arc::new(Core { client, conversations, kept: kept::Kept::default(), chimer: Mutex::default(), github }))
+        Ok(Arc::new(Core { client, conversations, kept: kept::Kept::default(), chimer: Mutex::default(), github, watched: Watched::default() }))
     }
 
     /// This phone's device key, as hex.
@@ -766,7 +773,7 @@ impl Core {
             if let Some(s) = kept::load(&saved, &key, continues.as_deref()) {
                 thread = Thread { loaded: true, items: s.items, before: s.before, after: s.after, ..Thread::default() };
             }
-            Arc::new(Conversation { client: self.client.clone(), device: device.to_string(), key: own.to_string(), st: Mutex::new(thread), saved, remote: key.clone(), continues: continues.clone() })
+            Arc::new(Conversation { client: self.client.clone(), device: device.to_string(), key: own.to_string(), st: Mutex::new(thread), saved, remote: key.clone(), continues: continues.clone(), watched: self.watched.clone() })
         }))
     }
 
@@ -1622,6 +1629,7 @@ pub struct Conversation {
     saved: PathBuf,
     remote: String,
     continues: Option<String>,
+    watched: Watched,
 }
 
 #[derive(Default)]
@@ -1923,17 +1931,38 @@ impl Conversation {
     /// when the Mac doesn't know how (an older build), and the conversation then only moves as
     /// the feed says.
     pub fn watch(&self) -> bool {
-        self.client.watch(&self.device, std::slice::from_ref(&self.key))
+        let mut watched = self.watched.lock().unwrap_or_else(|e| e.into_inner());
+        let keys = watched.entry(self.device.clone()).or_default();
+        if !keys.contains(&self.key) {
+            keys.push(self.key.clone());
+        }
+        let keys = keys.clone();
+        self.client.watch(&self.device, &keys)
     }
 
-    /// No more of its reply as it's written: it's not shown any more.
+    /// No more of its reply as it's written: it's not shown any more. The Mac goes on sending
+    /// those of another page that follows one of its sessions, one shown in this one's place.
     pub fn unwatch(&self) {
-        self.client.watch(&self.device, &[]);
+        let mut watched = self.watched.lock().unwrap_or_else(|e| e.into_inner());
+        let keys = watched.entry(self.device.clone()).or_default();
+        keys.retain(|k| k != &self.key);
+        let keys = keys.clone();
+        self.client.watch(&self.device, &keys);
     }
 
-    /// The reply it's writing now, if it's taking a turn and the Mac sends it.
+    /// The reply it's writing now, if it's taking a turn and the Mac sends it. None once its turn
+    /// is over, as its Mac's feed says: a reply kept from while this page followed it ends with
+    /// its turn only on the devices following it then, so one followed again after its turn
+    /// ended would show it still being written.
     pub fn live(&self) -> Option<Live> {
-        self.client.stream(&self.device, &self.key).map(|s| Live { text: s.text, tool: s.tool })
+        let s = self.client.stream(&self.device, &self.key)?;
+        let busy = self.client.with_feeds(|feeds| {
+            feeds.iter().filter(|(d, _)| d.key == self.device || d.short == self.device).flat_map(|(_, r)| r.lanes.iter().flat_map(|l| l.sessions.iter())).find(|x| x.key == self.key).map(|x| matches!(x.status, PeerStatus::Working | PeerStatus::Needs))
+        });
+        if busy == Some(false) {
+            return None;
+        }
+        Some(Live { text: s.text, tool: s.tool })
     }
 
     /// Stops the turn it's taking (one whose row says `stoppable`; needs remote control there).
