@@ -108,8 +108,10 @@ struct SessionView: View {
     /// It's on screen, not covered by another session's page: a watch that comes back after it
     /// went lets go again (`follow`).
     @State private var here = false
-    /// This page's own number for what it follows of its session (the core's `Conversation::watch`),
-    /// so letting go here leaves another page's, of the same session too.
+    /// This page's own number for what it follows of its session while it's shown (the core's
+    /// `Conversation::watch`), so letting go here leaves another page's, of the same session too.
+    /// A new one each time it goes: a letting go of the last time that's late can't take the
+    /// next time's with it.
     @State private var lease = UInt64.random(in: 1...UInt64.max)
     @State private var stopping = false
     /// Scrolled to the newest: new items keep it there. Scrolled up to read, it stays put.
@@ -316,9 +318,10 @@ struct SessionView: View {
         .onDisappear {
             here = false
             if store.showing == key { store.showing = nil }
+            let gone = lease
+            lease = UInt64.random(in: 1...UInt64.max)
             if watching, let conv = conversation {
-                let lease = lease
-                Task.detached { conv.unwatch(lease: lease) }
+                Task.detached { conv.unwatch(lease: gone) }
                 watching = false
             }
         }
@@ -1256,15 +1259,16 @@ struct SessionView: View {
     }
 
     /// Has its Mac send its reply as it's written. The page can go while it's asked (another
-    /// session's page over it, or back to the list), after its own letting go: then this lets go
-    /// again, so its Mac doesn't go on sending a session nothing shows.
+    /// session's page over it, or back to the list), after its own letting go, and come back:
+    /// what was asked under a lease it no longer holds lets go again, so its Mac doesn't go on
+    /// sending a session nothing shows, and the page as it is now asks under its own.
     private func follow(_ conv: Conversation) async {
-        let lease = lease
-        let on = await Task.detached { conv.watch(lease: lease) }.value
-        if here {
+        let asked = lease
+        let on = await Task.detached { conv.watch(lease: asked) }.value
+        if here && lease == asked {
             watching = on
         } else if on {
-            Task.detached { conv.unwatch(lease: lease) }
+            Task.detached { conv.unwatch(lease: asked) }
         }
     }
 
