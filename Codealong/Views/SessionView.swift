@@ -181,12 +181,20 @@ struct SessionView: View {
     /// Where going on goes: the next, or on the last, the end of what waits.
     private var onward: Onward? { Onward.of(after, goingThrough: goingThrough) }
 
-    /// A link tapped in the conversation: one to a session an agent named (`codealong://session/…`)
-    /// opens it, named as this session's Mac names its sessions (the core's `sessionNamed`, the
-    /// Mac's codealongLinks.ts); the web's open as they would anywhere.
-    private func openLink(_ url: URL) -> OpenURLAction.Result {
+    /// Its side conversations, whose links are named on this session's Mac too.
+    private func sideSheet(_ ask: SideAsk) -> some View {
+        SideSheet(key: key, question: ask.question, reading: ask.reading)
+            .environment(\.openURL, OpenURLAction { openLink($0, fromSide: true) })
+    }
+
+    /// A link tapped in the conversation, or in a side conversation's answer (`fromSide`), whose
+    /// sheet goes away for it: one to a session an agent named (`codealong://session/…`) opens it,
+    /// named as this session's Mac names its sessions (the core's `sessionNamed`, the Mac's
+    /// codealongLinks.ts); the web's open as they would anywhere.
+    private func openLink(_ url: URL, fromSide: Bool = false) -> OpenURLAction.Result {
         guard url.scheme?.lowercased() == "codealong", url.host()?.lowercased() == "session" else { return .systemAction }
         if let named = store.sessionNamed(url, on: row?.device) {
+            if fromSide { aside = nil }
             if named != key { follow(named) }
         } else {
             store.notice = "That link names no session \(row.map { "on \(Names.short($0.deviceName))" } ?? "here")."
@@ -198,7 +206,7 @@ struct SessionView: View {
         // The screen follows a swipe, and what it goes to comes in beside it.
         Paged(swipe: swipe, key: key, next: onward, back: before, leaves: [.done, .archive].contains(going(doing)), ready: opened) {
             page.environment(\.imageMac, row?.device)
-                .environment(\.openURL, OpenURLAction(handler: openLink))
+                .environment(\.openURL, OpenURLAction { openLink($0) })
         }
         // What's next is in the menu and a swipe away; on a keyboard, ⌘] as on the Mac.
         .background {
@@ -240,7 +248,7 @@ struct SessionView: View {
             }
         }
         .sheet(item: $snoozing) { SnoozePicker(pick: $0) }
-        .sheet(item: $aside) { SideSheet(key: key, question: $0.question, reading: $0.reading) }
+        .sheet(item: $aside) { sideSheet($0) }
         .alert("Rename", isPresented: $renaming) {
             TextField("Name", text: $newName)
             Button("Rename") { Task { await rename() } }
@@ -303,6 +311,7 @@ struct SessionView: View {
             if store.showing == key { store.showing = nil }
             if watching, let conv = conversation {
                 Task.detached { conv.unwatch() }
+                watching = false
             }
         }
         // A message that didn't go is back in the box: say why.
@@ -849,8 +858,14 @@ struct SessionView: View {
         if store.slidIn?.key == key { store.slidIn = nil }
         sayProblem()
         guard conversation == nil, let conv = store.conversation(key) else {
-            // Back on it from what covered it: an answer that came meanwhile comes up now.
+            // Back on it from what covered it: an answer that came meanwhile comes up now, and a
+            // session Codealong runs is followed again, since leaving it (for a session a link in
+            // it opened) stopped that.
             bringUpAnswer()
+            if !watching, let conv = conversation, row?.hosted == true {
+                watching = await Task.detached { conv.watch() }.value
+                live = conv.live()
+            }
             return
         }
         conversation = conv

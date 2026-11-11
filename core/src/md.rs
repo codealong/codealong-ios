@@ -752,6 +752,12 @@ fn emphasis_at(rest: &str, before: Option<char>) -> Option<(&'static str, &str, 
 /// isn't sent, reads as its words in italics. Bold and italics are kept where the Mac draws them
 /// (`emphasis_at`), and any other `*` or `_` is escaped, so Swift's reading draws it as written.
 pub(crate) fn inline(text: &str) -> String {
+    inline_as(text, true)
+}
+
+/// `inline`, with `links` false for a link's own words, where nothing more is a link: Markdown
+/// draws a link inside another as written.
+fn inline_as(text: &str, links: bool) -> String {
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
     let b = text.as_bytes();
@@ -772,7 +778,7 @@ pub(crate) fn inline(text: &str) -> String {
             // links to that session (the Mac's codealongLinks.ts `codealongNameOf`).
             if let Some(end) = rest[1..].find('`') {
                 let code = &rest[1..end + 1];
-                if is_session_key(code) {
+                if links && is_session_key(code) {
                     out.push_str(&format!("[{}]({SESSION_LINK}{code})", &rest[..end + 2]));
                 } else {
                     out.push_str(&rest[..end + 2]);
@@ -792,17 +798,17 @@ pub(crate) fn inline(text: &str) -> String {
             if let Some((words, target, len)) = link_at(rest, false) {
                 if is_web(target) {
                     out.push_str(&rest[..len]);
-                } else if session_link_len(target).is_some_and(|l| l == target.len()) {
+                } else if links && session_link_len(target).is_some_and(|l| l == target.len()) {
                     // A session an agent names, as the codealong skill has it written:
                     // `[its title](codealong://session/<key>)`.
-                    out.push_str(&format!("[{}]({target})", inline(words)));
+                    out.push_str(&format!("[{}]({target})", inline_as(words, false)));
                 } else {
-                    out.push_str(&inline(words));
+                    out.push_str(&inline_as(words, links));
                 }
                 i += len;
                 continue;
             }
-        } else if c == '<' && is_web(&rest[1..]) {
+        } else if links && c == '<' && is_web(&rest[1..]) {
             if let Some(end) = rest.find('>') {
                 let url = &rest[1..end];
                 if !url.contains(char::is_whitespace) {
@@ -811,13 +817,13 @@ pub(crate) fn inline(text: &str) -> String {
                     continue;
                 }
             }
-        } else if (c == 'c' || c == 'C') && (i == 0 || !(b[i - 1] as char).is_alphanumeric()) && session_link_len(rest).is_some() {
+        } else if links && (c == 'c' || c == 'C') && (i == 0 || !(b[i - 1] as char).is_alphanumeric()) && session_link_len(rest).is_some() {
             // A session's link written bare: its words are the link.
             let len = session_link_len(rest).expect("checked");
             out.push_str(&format!("[{}]({})", escaped(&rest[..len]), &rest[..len]));
             i += len;
             continue;
-        } else if (c == 'h' || c == 'H') && is_web(rest) && (i == 0 || !(b[i - 1] as char).is_alphanumeric()) {
+        } else if links && (c == 'h' || c == 'H') && is_web(rest) && (i == 0 || !(b[i - 1] as char).is_alphanumeric()) {
             if let Some(len) = web_len(rest, false) {
                 out.push_str(&bare_link(&rest[..len]));
                 i += len;
@@ -826,7 +832,7 @@ pub(crate) fn inline(text: &str) -> String {
         } else if c == '*' || c == '_' {
             if let Some((mark, inner, len)) = emphasis_at(rest, text[..i].chars().next_back()) {
                 out.push_str(mark);
-                out.push_str(&inline(inner));
+                out.push_str(&inline_as(inner, links));
                 out.push_str(mark);
                 i += len;
                 continue;
@@ -986,6 +992,10 @@ mod tests {
         assert_eq!(inline("`run claude:claude:abc` and `a:b`"), "`run claude:claude:abc` and `a:b`");
         assert_eq!(inline("[Ship it](codealong://todo/t-abcdefgh1) `t-abcdefgh1`"), "Ship it `t-abcdefgh1`");
         assert_eq!(inline("codealong://session/ and codealong://session/."), "codealong://session/ and codealong://session/.");
+        // What a link's words hold is no link of its own, or Markdown would draw the outer one
+        // as written.
+        assert_eq!(inline("[`claude:work:abc`](codealong://session/claude:work:abc)"), "[`claude:work:abc`](codealong://session/claude:work:abc)");
+        assert_eq!(inline("[see codealong://session/codex:work:9 or https://example.com](codealong://session/claude:work:abc)"), "[see codealong://session/codex:work:9 or https://example.com](codealong://session/claude:work:abc)");
         assert_eq!(session_link_name("codealong://session/claude:claude:abc/"), Some("claude:claude:abc".into()));
         assert_eq!(session_link_name("codealong://todo/t-1"), None);
         assert_eq!(session_link_name("codealong://link/cal1abc"), None);

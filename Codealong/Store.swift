@@ -170,9 +170,19 @@ final class Store {
     /// sessions that worked on it too, which the list leaves out. The Macs are asked only for
     /// the ones it doesn't have.
     func rows(_ keys: [String]) -> [SessionRow] {
+        // Read again with every change the core reports, as the list's are: nothing else here
+        // keeps the ones it leaves out.
+        _ = tick
         let missing = keys.filter { row($0) == nil }
         let read = missing.isEmpty ? [] : core?.sessions(keys: missing) ?? []
         return keys.compactMap { key in row(key) ?? read.first { $0.key == key } }
+    }
+
+    /// What `openWhenListed` opens, once it's listed: a page's key as it is, or the session a link
+    /// to one names (`sessionNamed`), when one does.
+    func listedKey(_ wanted: String) -> String? {
+        guard wanted.hasPrefix("codealong://") else { return wanted }
+        return URL(string: wanted).flatMap { sessionNamed($0, on: nil) }
     }
 
     /// The session a link to one names (`codealong://session/<name>`), by its key here, on `mac`
@@ -342,8 +352,9 @@ final class Store {
         switch url.host() {
         case "link": offeredLink = url.absoluteString
         // A link to a session, from elsewhere: by its key here, or as a Mac writes one, which any
-        // Mac's session it alone names answers to.
-        case "session": openWhenListed = sessionNamed(url, on: nil) ?? String(url.path(percentEncoded: false).dropFirst())
+        // Mac's session it alone names answers to. Kept as the link, and named once the session
+        // it names is listed (`listedKey`), which can be after the Macs answer.
+        case "session": openWhenListed = url.absoluteString
         default: break
         }
     }

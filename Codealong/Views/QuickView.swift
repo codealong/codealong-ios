@@ -1225,13 +1225,14 @@ struct QuickView: View {
     }
 
     private func openListed() {
-        guard let key = store.openWhenListed else { return }
+        guard let wanted = store.openWhenListed else { return }
         // The Macs sheet, for a check of it (`OPEN=macs scripts/run.sh`).
-        if key == "macs" {
+        if wanted == "macs" {
             store.openWhenListed = nil
             showingMacs = true
             return
         }
+        guard let key = store.listedKey(wanted) else { return }
         let listed = key.hasPrefix(PrView.prefix) ? store.pr(String(key.dropFirst(PrView.prefix.count))) != nil : store.has(key)
         if listed {
             store.openWhenListed = nil
