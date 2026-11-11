@@ -385,7 +385,9 @@ pub struct WaitsOn {
 /// kept as it was written goes with the turn (`Conversation::live`).
 fn turn_running(s: &Session) -> bool {
     match s.status {
-        _ if s.stalled_since.is_some() => true,
+        // What an ended turn left running can sit still too: that's no turn (harness.rs
+        // `turn_running`, lanes.ts `stuckMidTurn`).
+        _ if s.stalled_since.is_some() => !s.left_running(),
         PeerStatus::Working => !s.left_running(),
         PeerStatus::Needs => s.waits_at_a_prompt(),
         _ => false,
@@ -699,10 +701,30 @@ pub struct Core {
 }
 
 /// The sessions each Mac is asked to send the replies of as they're written, by the Mac as a
-/// conversation names it: the pages that follow them, each its own. A Mac takes the whole list
-/// each time, so a page going away asks for the rest rather than none, and the lock is held while
-/// it's asked, so the last list asked for is the one it has, whichever page came or went first.
-type Watched = Arc<Mutex<std::collections::HashMap<String, Vec<String>>>>;
+/// conversation names it: each page that follows one holds a lease on it (its session's key and
+/// the page's own number), so one page letting go, late or not, leaves another's, of the same
+/// session too. A Mac takes the whole list each time, so a page going away asks for the rest
+/// rather than none, and the lock is held while it's asked, so the last list asked for is the one
+/// it has, whichever page came or went first.
+type Watched = Arc<Mutex<std::collections::HashMap<String, Vec<(String, u64)>>>>;
+
+/// Takes (`on`) or lets go of a page's lease on `key`, and says what its Mac is to send now: the
+/// sessions some page still follows, each once, in the order of the leases held.
+fn leased(leases: &mut Vec<(String, u64)>, key: &str, lease: u64, on: bool) -> Vec<String> {
+    let held = leases.iter().any(|(k, l)| k == key && *l == lease);
+    if on && !held {
+        leases.push((key.to_string(), lease));
+    } else if !on {
+        leases.retain(|(k, l)| !(k == key && *l == lease));
+    }
+    let mut keys: Vec<String> = Vec::new();
+    for (k, _) in leases.iter() {
+        if !keys.contains(k) {
+            keys.push(k.clone());
+        }
+    }
+    keys
+}
 
 #[uniffi::export]
 impl Core {
@@ -1943,29 +1965,25 @@ impl Conversation {
     /// Asks the Mac to send this session's reply as it's written, while it's shown. Says false
     /// when the Mac doesn't know how (an older build), and the conversation then only moves as
     /// the feed says.
-    pub fn watch(&self) -> bool {
+    /// `lease` is the page's own number: asked again (its Mac connected again), it's the same
+    /// lease.
+    pub fn watch(&self, lease: u64) -> bool {
         let mut watched = self.watched.lock().unwrap_or_else(|e| e.into_inner());
-        let keys = watched.entry(self.device.clone()).or_default();
-        if !keys.contains(&self.key) {
-            keys.push(self.key.clone());
-        }
-        let asked = keys.clone();
-        let on = self.client.watch(&self.device, &asked);
+        let keys = leased(watched.entry(self.device.clone()).or_default(), &self.key, lease, true);
+        let on = self.client.watch(&self.device, &keys);
         // Not followed after all (its Mac is away, or doesn't know how): it's asked for again as
         // its Mac connects, and isn't in what's asked for meanwhile.
         if !on {
-            watched.entry(self.device.clone()).or_default().retain(|k| k != &self.key);
+            leased(watched.entry(self.device.clone()).or_default(), &self.key, lease, false);
         }
         on
     }
 
-    /// No more of its reply as it's written: it's not shown any more. The Mac goes on sending
-    /// those of another page that follows one of its sessions, one shown in this one's place.
-    pub fn unwatch(&self) {
+    /// No more of its reply as it's written for the page with `lease`: it's not shown there any
+    /// more. The Mac goes on sending those other pages follow, of this session too.
+    pub fn unwatch(&self, lease: u64) {
         let mut watched = self.watched.lock().unwrap_or_else(|e| e.into_inner());
-        let keys = watched.entry(self.device.clone()).or_default();
-        keys.retain(|k| k != &self.key);
-        let keys = keys.clone();
+        let keys = leased(watched.entry(self.device.clone()).or_default(), &self.key, lease, false);
         self.client.watch(&self.device, &keys);
     }
 
@@ -3406,6 +3424,22 @@ mod order_tests {
     }
 
     #[test]
+    fn a_mac_sends_what_some_page_follows_and_a_page_lets_go_of_its_own_alone() {
+        let mut leases = Vec::new();
+        assert_eq!(leased(&mut leases, "a", 1, true), ["a"]);
+        assert_eq!(leased(&mut leases, "b", 2, true), ["a", "b"]);
+        // The same session's page again, over the other: and asked again, the same lease.
+        assert_eq!(leased(&mut leases, "a", 3, true), ["a", "b"]);
+        assert_eq!(leased(&mut leases, "a", 3, true), ["a", "b"]);
+        // The first page's late letting go leaves the newer one's.
+        assert_eq!(leased(&mut leases, "a", 1, false), ["b", "a"]);
+        assert_eq!(leased(&mut leases, "a", 3, false), ["b"]);
+        assert_eq!(leased(&mut leases, "b", 2, false), Vec::<String>::new());
+        // Letting go of what was never held changes nothing.
+        assert_eq!(leased(&mut leases, "c", 9, false), Vec::<String>::new());
+    }
+
+    #[test]
     fn a_turn_runs_while_it_works_is_stuck_or_holds_for_your_answer_at_a_prompt() {
         let s = |status| Session { status, ..Session::new(Harness::Claude, "claude", "a") };
         assert!(turn_running(&s(PeerStatus::Working)));
@@ -3415,6 +3449,8 @@ mod order_tests {
         assert!(!turn_running(&Session { asks: true, excerpt: Some("Asks you · Want the PR?".into()), ..s(PeerStatus::Needs) }));
         assert!(!turn_running(&Session { background: Some("make watch".into()), ..s(PeerStatus::Working) }));
         assert!(!turn_running(&Session { agents: vec!["Review".into()], ..s(PeerStatus::Working) }));
+        // A command left in the background that sits still is stuck, its turn still over.
+        assert!(!turn_running(&Session { stalled_since: Some(1), background: Some("acme login".into()), ..s(PeerStatus::Needs) }));
         for over in [PeerStatus::Unread, PeerStatus::Idle, PeerStatus::Stopped, PeerStatus::Error] {
             assert!(!turn_running(&s(over)));
         }

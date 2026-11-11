@@ -108,6 +108,9 @@ struct SessionView: View {
     /// It's on screen, not covered by another session's page: a watch that comes back after it
     /// went lets go again (`follow`).
     @State private var here = false
+    /// This page's own number for what it follows of its session (the core's `Conversation::watch`),
+    /// so letting go here leaves another page's, of the same session too.
+    @State private var lease = UInt64.random(in: 1...UInt64.max)
     @State private var stopping = false
     /// Scrolled to the newest: new items keep it there. Scrolled up to read, it stays put.
     @State private var atBottom = true
@@ -314,7 +317,8 @@ struct SessionView: View {
             here = false
             if store.showing == key { store.showing = nil }
             if watching, let conv = conversation {
-                Task.detached { conv.unwatch() }
+                let lease = lease
+                Task.detached { conv.unwatch(lease: lease) }
                 watching = false
             }
         }
@@ -1255,11 +1259,12 @@ struct SessionView: View {
     /// session's page over it, or back to the list), after its own letting go: then this lets go
     /// again, so its Mac doesn't go on sending a session nothing shows.
     private func follow(_ conv: Conversation) async {
-        let on = await Task.detached { conv.watch() }.value
+        let lease = lease
+        let on = await Task.detached { conv.watch(lease: lease) }.value
         if here {
             watching = on
         } else if on {
-            Task.detached { conv.unwatch() }
+            Task.detached { conv.unwatch(lease: lease) }
         }
     }
 
