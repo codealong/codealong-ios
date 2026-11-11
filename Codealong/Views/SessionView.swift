@@ -105,6 +105,9 @@ struct SessionView: View {
     /// The reply it's writing, while it takes a turn Codealong runs on its Mac.
     @State private var live: Live?
     @State private var watching = false
+    /// It's on screen, not covered by another session's page: a watch that comes back after it
+    /// went lets go again (`follow`).
+    @State private var here = false
     @State private var stopping = false
     /// Scrolled to the newest: new items keep it there. Scrolled up to read, it stays put.
     @State private var atBottom = true
@@ -308,6 +311,7 @@ struct SessionView: View {
             }
         }
         .onDisappear {
+            here = false
             if store.showing == key { store.showing = nil }
             if watching, let conv = conversation {
                 Task.detached { conv.unwatch() }
@@ -853,6 +857,7 @@ struct SessionView: View {
     }
 
     private func open() async {
+        here = true
         store.showing = key
         came = Int64(Date.now.timeIntervalSince1970 * 1000)
         if store.slidIn?.key == key { store.slidIn = nil }
@@ -863,7 +868,7 @@ struct SessionView: View {
             // it opened) stopped that.
             bringUpAnswer()
             if !watching, let conv = conversation, row?.hosted == true {
-                watching = await Task.detached { conv.watch() }.value
+                await follow(conv)
                 live = conv.live()
                 // What it wrote while it wasn't followed, its turn's end among it.
                 await refresh()
@@ -915,7 +920,7 @@ struct SessionView: View {
         }
         // A session Codealong runs sends its reply as it's written, while it's shown here.
         if row?.hosted == true {
-            watching = await Task.detached { conv.watch() }.value
+            await follow(conv)
             live = conv.live()
         }
     }
@@ -1241,8 +1246,20 @@ struct SessionView: View {
         await refresh()
         if empty { await lookBack() }
         if row?.hosted == true {
-            watching = await Task.detached { conv.watch() }.value
+            await follow(conv)
             live = conv.live()
+        }
+    }
+
+    /// Has its Mac send its reply as it's written. The page can go while it's asked (another
+    /// session's page over it, or back to the list), after its own letting go: then this lets go
+    /// again, so its Mac doesn't go on sending a session nothing shows.
+    private func follow(_ conv: Conversation) async {
+        let on = await Task.detached { conv.watch() }.value
+        if here {
+            watching = on
+        } else if on {
+            Task.detached { conv.unwatch() }
         }
     }
 

@@ -379,6 +379,19 @@ pub struct WaitsOn {
     pub agents: Vec<String>,
 }
 
+/// Whether a session is taking a turn, as its Mac's feed says: working on it, not only waiting on
+/// what an ended turn left running (`left_running`); stuck in one; or holding one for your answer
+/// at a prompt (`waits_at_a_prompt`), not one whose ended turn's reply asks you something. A reply
+/// kept as it was written goes with the turn (`Conversation::live`).
+fn turn_running(s: &Session) -> bool {
+    match s.status {
+        _ if s.stalled_since.is_some() => true,
+        PeerStatus::Working => !s.left_running(),
+        PeerStatus::Needs => s.waits_at_a_prompt(),
+        _ => false,
+    }
+}
+
 /// What a working session waits on (`WaitsOn`), as the Mac's SessionThread.tsx shows its
 /// `Waiting` line: working and not stalled, waiting on a run in your terminal before a command in
 /// the background: the agents it left running there, which the Mac's excerpt counts ("Waiting on
@@ -1936,8 +1949,14 @@ impl Conversation {
         if !keys.contains(&self.key) {
             keys.push(self.key.clone());
         }
-        let keys = keys.clone();
-        self.client.watch(&self.device, &keys)
+        let asked = keys.clone();
+        let on = self.client.watch(&self.device, &asked);
+        // Not followed after all (its Mac is away, or doesn't know how): it's asked for again as
+        // its Mac connects, and isn't in what's asked for meanwhile.
+        if !on {
+            watched.entry(self.device.clone()).or_default().retain(|k| k != &self.key);
+        }
+        on
     }
 
     /// No more of its reply as it's written: it's not shown any more. The Mac goes on sending
@@ -1957,7 +1976,7 @@ impl Conversation {
     pub fn live(&self) -> Option<Live> {
         let s = self.client.stream(&self.device, &self.key)?;
         let busy = self.client.with_feeds(|feeds| {
-            feeds.iter().filter(|(d, _)| d.key == self.device || d.short == self.device).flat_map(|(_, r)| r.lanes.iter().flat_map(|l| l.sessions.iter())).find(|x| x.key == self.key).map(|x| matches!(x.status, PeerStatus::Working | PeerStatus::Needs))
+            feeds.iter().filter(|(d, _)| d.key == self.device || d.short == self.device).flat_map(|(_, r)| r.lanes.iter().flat_map(|l| l.sessions.iter())).find(|x| x.key == self.key).map(turn_running)
         });
         if busy == Some(false) {
             return None;
@@ -3384,6 +3403,21 @@ mod order_tests {
         assert_eq!(by("asks").mark, Mark::Needs);
         assert_eq!(by("archived").mark, Mark::Archived);
         assert_eq!(by("archived-working").mark, Mark::Working, "archiving ends nothing: one at work shows that");
+    }
+
+    #[test]
+    fn a_turn_runs_while_it_works_is_stuck_or_holds_for_your_answer_at_a_prompt() {
+        let s = |status| Session { status, ..Session::new(Harness::Claude, "claude", "a") };
+        assert!(turn_running(&s(PeerStatus::Working)));
+        assert!(turn_running(&Session { excerpt: Some("Bash · `make`".into()), ..s(PeerStatus::Needs) }));
+        assert!(turn_running(&Session { stalled_since: Some(1), ..s(PeerStatus::Working) }));
+        // Its turn ended: on a reply that asks you, or leaving work in the background.
+        assert!(!turn_running(&Session { asks: true, excerpt: Some("Asks you · Want the PR?".into()), ..s(PeerStatus::Needs) }));
+        assert!(!turn_running(&Session { background: Some("make watch".into()), ..s(PeerStatus::Working) }));
+        assert!(!turn_running(&Session { agents: vec!["Review".into()], ..s(PeerStatus::Working) }));
+        for over in [PeerStatus::Unread, PeerStatus::Idle, PeerStatus::Stopped, PeerStatus::Error] {
+            assert!(!turn_running(&s(over)));
+        }
     }
 
     #[test]
