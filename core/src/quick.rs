@@ -1036,7 +1036,7 @@ pub(crate) mod tests {
             last_activity: at,
             status_since: Some(at),
             hosted: false,
-            section: crate::section(status, None),
+            section: crate::section(status, None, false),
             snoozed_until: None,
             started_at: Some(at),
             live: true,
@@ -1077,6 +1077,12 @@ pub(crate) mod tests {
             agent_seen: None,
             side_answer: None,
             waits_on: None,
+            aside: false,
+            finished: None,
+            waits_finished: false,
+            listening: false,
+            at_a_prompt: false,
+            mark: crate::Mark::Quiet,
         }
     }
 

@@ -267,6 +267,94 @@ pub struct SessionRow {
     /// What it waits on while it works only in that it waits on a command, said at the end of its
     /// conversation where a turn's progress would be (`waits_on`).
     pub waits_on: Option<WaitsOn>,
+    /// Set aside until its side conversation answers (`Session::aside`, lanes.ts `setAside`): it
+    /// still needs you, but is listed with what's working, out of what waits on you, until the
+    /// side conversation is done. False from Macs before 2026-11-10, which show it as needing you.
+    pub aside: bool,
+    /// That its work is done with nothing left for you, and why, while its turn is over
+    /// (`Session::finished`, insights.ts `finishedLabel`). None from Macs before 2026-11-10.
+    pub finished: Option<FinishedWords>,
+    /// Your turn only to be read: a finished turn you haven't seen (`Session::waits_finished`).
+    /// It comes after the turns that want something of you, in Your turn and in the queue.
+    pub waits_finished: bool,
+    /// Hearing a meeting now, on its Mac (`Session::listening`). False from Macs before 2026-11-10.
+    pub listening: bool,
+    /// It waits on you at a prompt, where what's typed would answer it: a call to allow, a
+    /// question through its harness, a held message (`Session::waits_at_a_prompt`). Not one whose
+    /// reply only asks you something, nor a stuck one.
+    pub at_a_prompt: bool,
+    /// What its status mark draws (`mark_of`), as the Mac's SessionGlyph does.
+    pub mark: Mark,
+}
+
+/// What a session's status mark draws, as the Mac's SessionGlyph (ui/primitives.tsx) does,
+/// wherever the session shows: its status, a clock while it waits on what its turn left running
+/// or on its side conversation, a recording light while it hears a meeting, and a box once it's
+/// archived.
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mark {
+    Needs,
+    Error,
+    Working,
+    /// Working only in that it waits: on a command or agents its turn left running, or, set
+    /// aside, on its side conversation.
+    Waiting,
+    Unread,
+    /// It says it's busy, but nothing has happened for a long while.
+    Stuck,
+    /// Hearing a meeting (listening.ts `hearingShows`): not while it needs you or failed.
+    Hearing,
+    /// Archived, and not at work, waiting on you or failing (lanes.ts `archivedShows`).
+    Archived,
+    /// Idle, stopped, or snoozed apart: no mark.
+    Quiet,
+}
+
+/// What a session's status mark draws (`Mark`). A snoozed one waits apart, unmarked, as on the
+/// Mac's list, and one set aside is drawn as it's listed: waiting, with what's working.
+fn mark_of(s: &Session, status: Status, snoozed: bool, aside: bool) -> Mark {
+    let hears = s.listening && !matches!(status, Status::Needs | Status::Error);
+    let archived = s.archived && matches!(status, Status::Idle | Status::Stopped | Status::Unread);
+    match status {
+        _ if hears => Mark::Hearing,
+        _ if archived => Mark::Archived,
+        _ if snoozed => Mark::Quiet,
+        _ if s.stalled_since.is_some() => Mark::Stuck,
+        _ if aside || s.waits_in_background() => Mark::Waiting,
+        Status::Needs => Mark::Needs,
+        Status::Error => Mark::Error,
+        Status::Working => Mark::Working,
+        Status::Unread => Mark::Unread,
+        Status::Idle | Status::Stopped => Mark::Quiet,
+    }
+}
+
+/// That a session's work is done and nothing is left for you, as the Mac's chip says it
+/// (insights.ts `finishedLabel`): Finished when something besides its last reply says so (a PR
+/// of its merged, a todo of its done, its own status line), Looks finished when only the read of
+/// that reply does.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct FinishedWords {
+    pub sure: bool,
+    /// "Finished" or "Looks finished".
+    pub label: String,
+    /// Why, and what to do, in a sentence or two, as the Mac's chip's tooltip says it.
+    pub says: String,
+}
+
+/// That a session is finished, while its turn is over (insights.ts `finishedLabel`): one sent a
+/// prompt is working, and no longer finished.
+fn finished_words(s: &Session, status: Status) -> Option<FinishedWords> {
+    let f = s.finished.as_ref()?;
+    if !matches!(status, Status::Unread | Status::Idle | Status::Stopped) {
+        return None;
+    }
+    let why = f.why.join(", ");
+    Some(if f.sure {
+        FinishedWords { sure: true, label: "Finished".into(), says: format!("Its work is done and nothing is left for you: {why}. Mark it as done once you\u{2019}ve read it.") }
+    } else {
+        FinishedWords { sure: false, label: "Looks finished".into(), says: format!("Nothing seems left for you: {why}. Nothing else says so, so read its reply before you mark it as done.") }
+    })
 }
 
 /// A command a working session waits on, as the Mac says it at the end of its conversation in the
@@ -285,11 +373,16 @@ pub struct WaitsOn {
     pub written: Option<String>,
     /// It runs in a terminal of yours, not in the background of the session's turn.
     pub in_terminal: bool,
+    /// What each of the agents its turn left running in the background is for, oldest first,
+    /// where it waits on several (`Session::agents`), which the Mac's line counts and its hover
+    /// names; "" left out. None for one, which its Mac's line names itself.
+    pub agents: Vec<String>,
 }
 
 /// What a working session waits on (`WaitsOn`), as the Mac's SessionThread.tsx shows its
 /// `Waiting` line: working and not stalled, waiting on a run in your terminal before a command in
-/// the background. None while its turn runs.
+/// the background: the agents it left running there, which the Mac's excerpt counts ("Waiting on
+/// 3 background agents"), then a command. None while its turn runs.
 fn waits_on(s: &Session) -> Option<WaitsOn> {
     if s.status != PeerStatus::Working || s.stalled_since.is_some() {
         return None;
@@ -297,12 +390,17 @@ fn waits_on(s: &Session) -> Option<WaitsOn> {
     let one_line = |c: &str| Some(c.split_whitespace().collect::<Vec<_>>().join(" ")).filter(|c| !c.is_empty());
     let written = |c: &str| Some(c.trim().to_string()).filter(|c| !c.is_empty());
     if let Some(run) = &s.running {
-        return Some(WaitsOn { lead: format!("Running in {}", run.terminal), command: one_line(&run.command), written: written(&run.command), in_terminal: true });
+        return Some(WaitsOn { lead: format!("Running in {}", run.terminal), command: one_line(&run.command), written: written(&run.command), in_terminal: true, agents: Vec::new() });
+    }
+    if !s.agents.is_empty() {
+        let lead = s.excerpt.clone().filter(|e| !e.trim().is_empty()).unwrap_or_else(|| "Waiting on its background agents".into());
+        let agents = if s.agents.len() < 2 { Vec::new() } else { s.agents.iter().map(|a| a.trim().to_string()).filter(|a| !a.is_empty()).collect() };
+        return Some(WaitsOn { lead, command: None, written: None, in_terminal: false, agents });
     }
     let background = s.background.as_deref()?;
     let command = one_line(background);
     let lead = if command.is_some() { "Waiting on" } else { "Waiting on a command in the background" };
-    Some(WaitsOn { lead: lead.into(), command, written: written(background), in_terminal: false })
+    Some(WaitsOn { lead: lead.into(), command, written: written(background), in_terminal: false, agents: Vec::new() })
 }
 
 /// A session moved to the top of what waits on you (`Session::raised`).
@@ -829,6 +927,19 @@ impl Core {
         self.client.with_feeds(|feeds| session_rows(feeds, true).into_iter().filter(|r| keys.contains(&r.key)).collect())
     }
 
+    /// The session a link to one names (`codealong://session/<name>`, as an agent writes one), by
+    /// its key here; None for any other link, and when it names none or more than one. `on` is
+    /// the Mac (`DeviceRow::key`) whose conversation has the link: a key there is that Mac's own,
+    /// written without the `@<short>:` it has here, so only its sessions are named, unless it's
+    /// written with one. Without `on` (a link opened from elsewhere), any Mac's.
+    pub fn session_named(&self, url: String, on: Option<String>) -> Option<String> {
+        let name = md::session_link_name(&url)?;
+        self.client.with_feeds(|feeds| {
+            let short = on.and_then(|key| feeds.iter().find(|(d, _)| d.key == key).map(|(d, _)| d.short.clone()));
+            session_named_in(&session_rows(feeds, true), &name, short.as_deref())
+        })
+    }
+
     /// The sound due for what came to wait on you since the last time this was asked, if any,
     /// of the kinds `on` (`sounds`): asked each time `Listener::changed` says something's new,
     /// sounds on or not, so what came while they were off isn't news later. With none on, as
@@ -879,6 +990,34 @@ pub(crate) fn now_ms() -> i64 {
 
 type Feeds<'a> = [(codealong_peer::client::Device, &'a codealong_peer::feed::Replica)];
 
+/// The session `name` names among `rows`, as the Mac's command names one (codealongLinks.ts
+/// `sessionNamed`, cli.rs `named`): the one whose key or id it is, else the only one whose key or
+/// id starts with it. One written with its Mac (`@<short>:…`) is named among every Mac's; else,
+/// with `on` (a Mac's short id), among that Mac's alone, and without it among every Mac's, each
+/// key as its own Mac writes it.
+pub(crate) fn session_named_in(rows: &[SessionRow], name: &str, on: Option<&str>) -> Option<String> {
+    if name.is_empty() {
+        return None;
+    }
+    // A key as its own Mac writes it: without the `@<short>:` it has here.
+    let own = |key: &str| -> String {
+        match key.strip_prefix('@').and_then(|k| k.split_once(':')) {
+            Some((_, rest)) if !name.starts_with('@') => rest.to_string(),
+            _ => key.to_string(),
+        }
+    };
+    let mine: Vec<&SessionRow> = match on {
+        Some(short) if !name.starts_with('@') => rows.iter().filter(|r| r.key.starts_with(&format!("@{short}:"))).collect(),
+        _ => rows.iter().collect(),
+    };
+    if let Some(r) = mine.iter().find(|r| own(&r.key) == name || r.id == name) {
+        return Some(r.key.clone());
+    }
+    let mut hits = mine.iter().filter(|r| r.id.starts_with(name) || own(&r.key).starts_with(name));
+    let hit = hits.next()?;
+    hits.next().is_none().then(|| hit.key.clone())
+}
+
 /// Whether the inbox lists a session: what wants you or is running, what's pinned on its Mac, and
 /// the rest for three days after you last prompted them. A pin keeps one however old, as the
 /// Mac's Sessions view does.
@@ -920,6 +1059,7 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
             }
             let status: Status = s.status.into();
             let snoozed_until = s.snoozed_until.filter(|&t| t > now && status != Status::Working);
+            let aside = s.aside.is_some() && status == Status::Needs;
             let row = SessionRow {
                 key: remote_key(&d.short, &s.key),
                 device: d.key.clone(),
@@ -943,7 +1083,7 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 last_activity: s.last_activity,
                 status_since: s.status_since,
                 hosted: s.hosted,
-                section: section(status, snoozed_until),
+                section: section(status, snoozed_until, aside),
                 snoozed_until,
                 started_at: s.started_at,
                 live: s.live,
@@ -986,6 +1126,12 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 agent_seen: s.agent_seen.as_ref().map(agent_seen_words),
                 side_answer: s.side_answer.as_ref().map(|a| SideAnswer { id: a.id.clone(), open: a.open, at: a.at }),
                 waits_on: waits_on(s),
+                aside,
+                finished: finished_words(s, status),
+                waits_finished: s.waits_finished(),
+                listening: s.listening,
+                at_a_prompt: s.waits_at_a_prompt(),
+                mark: mark_of(s, status, snoozed_until.is_some(), aside),
             };
             if listed { sessions.push(row) } else { unlisted.push(row) }
         }
@@ -1120,11 +1266,13 @@ fn slugs(lane: &Lane) -> Vec<String> {
 }
 
 /// The inbox section a session goes in: a snoozed one waits apart unless it's running, as on the
-/// Mac (SessionsView.tsx `snoozedApart`).
-fn section(status: Status, snoozed_until: Option<i64>) -> InboxSection {
+/// Mac (SessionsView.tsx `snoozedApart`), and one set aside for its side conversation is listed
+/// with what's working until that's done (lanes.ts `listedStatus`).
+fn section(status: Status, snoozed_until: Option<i64>, aside: bool) -> InboxSection {
     match (status, snoozed_until) {
         (Status::Working, _) => InboxSection::Working,
         (_, Some(_)) => InboxSection::Snoozed,
+        (Status::Needs, None) if aside => InboxSection::Working,
         (Status::Needs | Status::Error, None) => InboxSection::NeedsYou,
         (Status::Unread, None) => InboxSection::YourTurn,
         (Status::Idle | Status::Stopped, None) => InboxSection::Recent,
@@ -1132,10 +1280,11 @@ fn section(status: Status, snoozed_until: Option<i64>) -> InboxSection {
 }
 
 /// The inbox's order, the Mac's Sessions view's (SessionsView.tsx `timeSections`): section by
-/// section, the ones moved to the top first in theirs (`raised_order`), then Needs you the longest
-/// wait first, so a new one can't keep pushing an old one down; Your turn and Working, which read
-/// as a feed, the newest status first; snoozed ones the soonest back first; the rest by the one
-/// you last sent a prompt. A status's time doesn't move while it lasts, so rows hold their places,
+/// section, the ones moved to the top first in theirs (`raised_order`), then the finished turns
+/// that are only yours to read after the rest (lanes.ts `finishedLast`), then Needs you the
+/// longest wait first, so a new one can't keep pushing an old one down; Your turn and Working,
+/// which read as a feed, the newest status first; snoozed ones the soonest back first; the rest by
+/// the one you last sent a prompt. A status's time doesn't move while it lasts, so rows hold their places,
 /// and send and next goes down the list as it reads.
 fn inbox_order(a: &SessionRow, b: &SessionRow) -> std::cmp::Ordering {
     let since = |s: &SessionRow| s.status_since.unwrap_or(s.last_activity);
@@ -1143,6 +1292,7 @@ fn inbox_order(a: &SessionRow, b: &SessionRow) -> std::cmp::Ordering {
     rank(a)
         .cmp(&rank(b))
         .then_with(|| raised_order(a.raised.as_ref(), b.raised.as_ref()))
+        .then_with(|| a.waits_finished.cmp(&b.waits_finished))
         .then_with(|| match a.section {
             InboxSection::NeedsYou => since(a).cmp(&since(b)),
             InboxSection::YourTurn | InboxSection::Working => since(b).cmp(&since(a)),
@@ -1284,6 +1434,11 @@ pub struct Pending {
     /// What the session wrote with this isn't in its conversation yet, only where it runs: its
     /// harness writes it once it's answered.
     pub unwritten: bool,
+    /// It's its harness asking, as the session exits, whether to keep the worktree it made for it
+    /// (`Pending::exiting`): its choices are all it takes, words of your own are refused, and
+    /// declining calls the exit off, leaving it at its prompt. False from Macs before 2026-11-10,
+    /// which don't offer it.
+    pub exiting: bool,
 }
 
 /// A question as the session asks it, with what was answered (`answers`, from the call's result)
@@ -1736,6 +1891,7 @@ impl Conversation {
             no_once: p.no_once,
             plan: p.plan,
             unwritten: p.unwritten,
+            exiting: p.exiting,
         }))
     }
 
@@ -2124,6 +2280,7 @@ mod tests {
             plan: false,
             questions: qs.iter().map(|q| question_of(q, None)).collect(),
             unwritten: false,
+            exiting: false,
         };
         let line = |qs: &[api::Question], result: Option<api::Item>| {
             let mut call = item("tool", 20, Some("call-2"), None);
@@ -2361,6 +2518,9 @@ pub struct StartAccount {
     pub switches_model: bool,
     /// Its running sessions that its Mac types into can be switched to another of `efforts`.
     pub switches_effort: bool,
+    /// Its harness takes those switches while a turn runs, for the turn's next step (Claude
+    /// Code's), where others wait for the turn to end. False from Macs before 2026-11-10.
+    pub switches_mid_turn: bool,
     /// Its sessions that go on in its app (the Codex app) can be switched to another of `models`
     /// and `efforts` there, running or not, from their next turn.
     pub switches_in_app: bool,
@@ -2790,6 +2950,7 @@ fn start_choices(o: api::StartOptions) -> StartChoices {
                 resume: resume_place(a),
                 switches_model: a.switches_model,
                 switches_effort: a.switches_effort,
+                switches_mid_turn: a.switches_mid_turn,
                 switches_in_app: a.switches_in_app,
             }
         })
@@ -2835,7 +2996,8 @@ fn placeholder(s: &Session, way: Option<&Way>, resuming: Option<(api::Place, boo
     if s.hosted {
         return if busy { format!("{to}: it takes this after its current turn") } else { to };
     }
-    let working = if s.status == PeerStatus::Working { ": it takes this in as it works" } else { "" };
+    // One working only on what its turn left in the background sits at its prompt: this starts a turn.
+    let working = if s.status == PeerStatus::Working && !s.left_running() { ": it takes this in as it works" } else { "" };
     let off = "it isn\u{2019}t running, so";
     match way {
         Some(Way::Typed { app }) => format!("{to} via {app}{working}"),
@@ -2886,7 +3048,7 @@ mod order_tests {
             last_activity: since,
             status_since: Some(since),
             hosted: false,
-            section: section(status, snoozed_until),
+            section: section(status, snoozed_until, false),
             snoozed_until,
             started_at: None,
             live: true,
@@ -2927,6 +3089,12 @@ mod order_tests {
             agent_seen: None,
             side_answer: None,
             waits_on: None,
+            aside: false,
+            finished: None,
+            waits_finished: false,
+            listening: false,
+            at_a_prompt: false,
+            mark: Mark::Quiet,
         }
     }
 
@@ -3070,10 +3238,18 @@ mod order_tests {
         let both = Session { running: Some(run), background: Some("make watch".into()), ..working("both") };
         assert_eq!(
             waits_on(&both),
-            Some(WaitsOn { lead: "Running in Ghostty".into(), command: Some("echo first echo 'a b'".into()), written: Some("echo first\n  echo 'a  b'".into()), in_terminal: true })
+            Some(WaitsOn { lead: "Running in Ghostty".into(), command: Some("echo first echo 'a b'".into()), written: Some("echo first\n  echo 'a  b'".into()), in_terminal: true, agents: vec![] })
         );
         let background = Session { background: Some("make watch".into()), ..working("bg") };
-        assert_eq!(waits_on(&background), Some(WaitsOn { lead: "Waiting on".into(), command: Some("make watch".into()), written: Some("make watch".into()), in_terminal: false }));
+        assert_eq!(waits_on(&background), Some(WaitsOn { lead: "Waiting on".into(), command: Some("make watch".into()), written: Some("make watch".into()), in_terminal: false, agents: vec![] }));
+        // Agents it left running in the background, in its Mac's words for them, what each is
+        // for listed where there are several; ahead of a command, as the Mac's thread has them.
+        let agents = Session { agents: vec!["Review the diff".into(), " ".into(), "Run the tests".into()], excerpt: Some("Waiting on 3 background agents".into()), ..background.clone() };
+        assert_eq!(waits_on(&agents), Some(WaitsOn { lead: "Waiting on 3 background agents".into(), command: None, written: None, in_terminal: false, agents: vec!["Review the diff".into(), "Run the tests".into()] }));
+        assert_eq!(waits_on(&Session { excerpt: None, ..agents.clone() }).map(|w| w.lead), Some("Waiting on its background agents".into()));
+        // One, its Mac's line names.
+        let one = Session { agents: vec!["Review the diff".into()], excerpt: Some("Waiting on a background agent · Review the diff".into()), ..agents };
+        assert_eq!(waits_on(&one).map(|w| (w.lead, w.agents)), Some(("Waiting on a background agent · Review the diff".into(), vec![])));
         // Its Mac couldn't read the command.
         let unread = Session { background: Some("  ".into()), ..working("unread") };
         assert_eq!(waits_on(&unread).map(|w| (w.lead, w.command, w.written)), Some(("Waiting on a command in the background".into(), None, None)));
@@ -3107,6 +3283,106 @@ mod order_tests {
         ];
         rows.sort_by(inbox_order);
         assert_eq!(rows.iter().map(|r| r.key.as_str()).collect::<Vec<_>>(), ["yours", "agents", "older", "newer", "read", "ended"]);
+    }
+
+    #[test]
+    fn a_finished_turn_comes_after_the_rest_of_your_turn_but_not_ahead_of_one_moved_up() {
+        let finished = |row: SessionRow| SessionRow { waits_finished: true, ..row };
+        let mut rows = vec![
+            finished(row("done-new", Status::Unread, 90, None, 0)),
+            row("ended", Status::Unread, 50, None, 0),
+            finished(SessionRow { raised: Some(Raised { at: 1, agent: false, says: String::new() }), ..row("done-up", Status::Unread, 10, None, 0) }),
+            row("older", Status::Unread, 20, None, 0),
+        ];
+        rows.sort_by(inbox_order);
+        assert_eq!(rows.iter().map(|r| r.key.as_str()).collect::<Vec<_>>(), ["done-up", "ended", "older", "done-new"]);
+    }
+
+    #[test]
+    fn a_session_says_what_the_mac_says_of_it_set_aside_finished_or_hearing() {
+        use codealong_peer::client::Device;
+        use codealong_peer::feed::Replica;
+        use codealong_peer::model::Finished;
+        let mac = Device { key: "m".into(), short: "m".into(), name: "Mac".into(), online: true, since: None, last_seen: None, remote_control: true, app: String::new(), loading: false, linked_back: true };
+        let s = |id: &str, status: PeerStatus| Session { status, last_prompt_at: now_ms(), ..Session::new(Harness::Claude, "claude", id) };
+        let mut lane = codealong_peer::model::Lane::new("/src/app", "App", "app");
+        lane.sessions = vec![
+            // Set aside while it needs you: listed with what's working, drawn waiting.
+            Session { aside: Some(5), excerpt: Some("Bash · `make`".into()), ..s("aside", PeerStatus::Needs) },
+            // Set aside once, but its side conversation's done and it's Your turn: as it is.
+            Session { aside: Some(5), ..s("over", PeerStatus::Unread) },
+            Session { finished: Some(Finished { sure: true, why: vec!["#12 merged".into(), "todo done".into()] }), ..s("done", PeerStatus::Unread) },
+            Session { finished: Some(Finished { sure: false, why: vec!["its reply reads as done".into()] }), ..s("looks", PeerStatus::Idle) },
+            // Sent a prompt since: working, and no longer finished.
+            Session { finished: Some(Finished { sure: true, why: vec!["#12 merged".into()] }), ..s("again", PeerStatus::Working) },
+            Session { listening: true, ..s("hears", PeerStatus::Working) },
+            // Hearing, but it needs you: that shows.
+            Session { listening: true, excerpt: Some("Bash · `make`".into()), ..s("hears-needs", PeerStatus::Needs) },
+            Session { agents: vec!["Review".into()], ..s("agents", PeerStatus::Working) },
+            Session { stalled_since: Some(1), ..s("stuck", PeerStatus::Working) },
+            Session { asks: true, excerpt: Some("Asks you · Want the PR?".into()), ..s("asks", PeerStatus::Needs) },
+        ];
+        let mut put_away = codealong_peer::model::Lane::new("/src/old", "App", "old");
+        put_away.sessions = vec![Session { archived: true, ..s("archived", PeerStatus::Idle) }, Session { archived: true, ..s("archived-working", PeerStatus::Working) }];
+        let replica = Replica { lanes: vec![lane, put_away], ..Replica::default() };
+        let rows = session_rows(&[(mac, &replica)], true);
+        let by = |id: &str| rows.iter().find(|r| r.key == format!("@m:claude:claude:{id}")).unwrap().clone();
+
+        let aside = by("aside");
+        assert!(aside.aside);
+        assert_eq!((aside.section, aside.mark), (InboxSection::Working, Mark::Waiting));
+        assert!(aside.at_a_prompt, "it still waits at its prompt, for when it's back");
+        let over = by("over");
+        assert!(!over.aside);
+        assert_eq!((over.section, over.mark), (InboxSection::YourTurn, Mark::Unread));
+
+        let done = by("done");
+        assert!(done.waits_finished);
+        assert_eq!(done.finished.as_ref().map(|f| (f.sure, f.label.as_str())), Some((true, "Finished")));
+        assert!(done.finished.unwrap().says.contains("#12 merged, todo done"));
+        let looks = by("looks");
+        assert!(!looks.waits_finished, "seen already, it's not yours to read");
+        assert_eq!(looks.finished.map(|f| (f.sure, f.label)), Some((false, "Looks finished".to_string())));
+        assert_eq!(by("again").finished, None);
+
+        assert_eq!(by("hears").mark, Mark::Hearing);
+        assert!(by("hears").listening);
+        assert_eq!(by("hears-needs").mark, Mark::Needs);
+        assert_eq!(by("agents").mark, Mark::Waiting);
+        assert!(by("agents").waits_in_background);
+        assert_eq!(by("stuck").mark, Mark::Stuck);
+        assert!(!by("asks").at_a_prompt, "a reply that asks you something sits at no prompt");
+        assert_eq!(by("asks").mark, Mark::Needs);
+        assert_eq!(by("archived").mark, Mark::Archived);
+        assert_eq!(by("archived-working").mark, Mark::Working, "archiving ends nothing: one at work shows that");
+    }
+
+    #[test]
+    fn a_box_says_a_session_that_waits_on_its_background_takes_a_prompt_as_a_new_turn() {
+        let s = Session { status: PeerStatus::Working, live: true, agents: vec!["Review".into()], ..Session::new(Harness::Claude, "claude", "a") };
+        assert_eq!(placeholder(&s, Some(&Way::Background), None), "Send to claude via its background job");
+        let turn = Session { agents: vec![], ..s };
+        assert_eq!(placeholder(&turn, Some(&Way::Background), None), "Send to claude via its background job: it takes this in as it works");
+    }
+
+    #[test]
+    fn a_link_names_a_session_on_the_mac_it_was_written_on() {
+        let on = |key: &str, id: &str| SessionRow { id: id.into(), ..row(key, Status::Idle, 0, None, 0) };
+        let rows = vec![on("@aaa:claude:claude:abc-1", "abc-1"), on("@aaa:codex:work:7f3a", "7f3a"), on("@bbb:claude:claude:abc-2", "abc-2"), on("@bbb:claude:claude:xyz", "xyz")];
+        let named = |name: &str, mac: Option<&str>| session_named_in(&rows, name, mac);
+        // By its key on its Mac, by its id, or the start of only one's.
+        assert_eq!(named("claude:claude:abc-1", Some("aaa")).as_deref(), Some("@aaa:claude:claude:abc-1"));
+        assert_eq!(named("7f3a", Some("aaa")).as_deref(), Some("@aaa:codex:work:7f3a"));
+        assert_eq!(named("codex:work", Some("aaa")).as_deref(), Some("@aaa:codex:work:7f3a"));
+        // Only that Mac's: another's of the same start isn't, and one on another Mac is named
+        // with it.
+        assert_eq!(named("claude:claude:abc", Some("aaa")).as_deref(), Some("@aaa:claude:claude:abc-1"));
+        assert_eq!(named("xyz", Some("aaa")), None);
+        assert_eq!(named("@bbb:claude:claude:xyz", Some("aaa")).as_deref(), Some("@bbb:claude:claude:xyz"));
+        // From elsewhere, any Mac's, as long as only one's.
+        assert_eq!(named("xyz", None).as_deref(), Some("@bbb:claude:claude:xyz"));
+        assert_eq!(named("claude:claude:abc", None), None);
+        assert_eq!(named("", Some("aaa")), None);
     }
 
     #[test]
@@ -3216,6 +3492,7 @@ mod start_tests {
             resumes: vec![],
             switches_model: false,
             switches_effort: false,
+            switches_mid_turn: false,
             switches_in_app: false,
             usage_cap: None,
             buffer: None,

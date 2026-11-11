@@ -166,6 +166,22 @@ final class Store {
         row(key) != nil || core?.sessions(keys: [key]).isEmpty == false
     }
 
+    /// The rows of the sessions `keys`, in their order, listed or not: a PR lists the archived
+    /// sessions that worked on it too, which the list leaves out. The Macs are asked only for
+    /// the ones it doesn't have.
+    func rows(_ keys: [String]) -> [SessionRow] {
+        let missing = keys.filter { row($0) == nil }
+        let read = missing.isEmpty ? [] : core?.sessions(keys: missing) ?? []
+        return keys.compactMap { key in row(key) ?? read.first { $0.key == key } }
+    }
+
+    /// The session a link to one names (`codealong://session/<name>`), by its key here, on `mac`
+    /// (`DeviceRow.key`), whose conversation has the link; any Mac's without one. None for any
+    /// other link, and when it names none or more than one (the core's `sessionNamed`).
+    func sessionNamed(_ url: URL, on mac: String?) -> String? {
+        core?.sessionNamed(url: url.absoluteString, on: mac)
+    }
+
     /// The pages open now, by their keys in the list's path: the sessions among them that the list
     /// doesn't have (older ones, archived ones, opened from a search) are read from the core as
     /// their Macs change them, so their pages have their rows.
@@ -325,7 +341,9 @@ final class Store {
         guard url.scheme == "codealong" else { return }
         switch url.host() {
         case "link": offeredLink = url.absoluteString
-        case "session": openWhenListed = String(url.path(percentEncoded: false).dropFirst())
+        // A link to a session, from elsewhere: by its key here, or as a Mac writes one, which any
+        // Mac's session it alone names answers to.
+        case "session": openWhenListed = sessionNamed(url, on: nil) ?? String(url.path(percentEncoded: false).dropFirst())
         default: break
         }
     }
@@ -1168,8 +1186,8 @@ enum Waiting: Equatable {
     /// Where it stands in what waits on you, while it waits.
     var place: QueuePlace {
         switch self {
-        case .session(let row): QueuePlace(key: key, waits: row.section == .needsYou ? .needs : .unread, since: since, raised: row.raised)
-        case .pr: QueuePlace(key: key, waits: .reviews, since: since, raised: nil)
+        case .session(let row): QueuePlace(key: key, waits: row.section == .needsYou ? .needs : .unread, since: since, raised: row.raised, finished: row.waitsFinished)
+        case .pr: QueuePlace(key: key, waits: .reviews, since: since, raised: nil, finished: false)
         }
     }
 }

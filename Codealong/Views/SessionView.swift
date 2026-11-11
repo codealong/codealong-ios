@@ -48,6 +48,8 @@ struct SessionView: View {
     let key: String
     /// Shows another session in this one's place.
     var go: (String) -> Void = { _ in }
+    /// Opens another session over this one, to come back from: one a link in it names.
+    var follow: (String) -> Void = { _ in }
     @Environment(Store.self) private var store
     /// The inbox's project: what's next stays in it.
     @AppStorage("project") private var project = ""
@@ -151,9 +153,10 @@ struct SessionView: View {
     private let nearTop: CGFloat = 900
 
     /// Opened by a swipe, it starts as the swipe drew it.
-    init(key: String, opening: Opening? = nil, go: @escaping (String) -> Void = { _ in }) {
+    init(key: String, opening: Opening? = nil, go: @escaping (String) -> Void = { _ in }, follow: @escaping (String) -> Void = { _ in }) {
         self.key = key
         self.go = go
+        self.follow = follow
         if let opening {
             _items = State(initialValue: opening.kept.items)
             _hasOlder = State(initialValue: opening.kept.hasOlder)
@@ -178,10 +181,24 @@ struct SessionView: View {
     /// Where going on goes: the next, or on the last, the end of what waits.
     private var onward: Onward? { Onward.of(after, goingThrough: goingThrough) }
 
+    /// A link tapped in the conversation: one to a session an agent named (`codealong://session/…`)
+    /// opens it, named as this session's Mac names its sessions (the core's `sessionNamed`, the
+    /// Mac's codealongLinks.ts); the web's open as they would anywhere.
+    private func openLink(_ url: URL) -> OpenURLAction.Result {
+        guard url.scheme?.lowercased() == "codealong", url.host()?.lowercased() == "session" else { return .systemAction }
+        if let named = store.sessionNamed(url, on: row?.device) {
+            if named != key { follow(named) }
+        } else {
+            store.notice = "That link names no session \(row.map { "on \(Names.short($0.deviceName))" } ?? "here")."
+        }
+        return .handled
+    }
+
     var body: some View {
         // The screen follows a swipe, and what it goes to comes in beside it.
         Paged(swipe: swipe, key: key, next: onward, back: before, leaves: [.done, .archive].contains(going(doing)), ready: opened) {
             page.environment(\.imageMac, row?.device)
+                .environment(\.openURL, OpenURLAction(handler: openLink))
         }
         // What's next is in the menu and a swipe away; on a keyboard, ⌘] as on the Mac.
         .background {
@@ -597,6 +614,12 @@ struct SessionView: View {
             }
             if let raised = row?.raised {
                 SessionNote(words: raised.says, symbol: "arrow.up.to.line", tint: .orange)
+            }
+            if row?.aside == true {
+                SessionNote(words: SessionNote.aside, symbol: "bubble.left.and.bubble.right", tint: .blue)
+            }
+            if let finished = row?.finished {
+                SessionNote(words: finished.says, symbol: finished.sure ? "checkmark.seal.fill" : "checkmark.seal", tint: finished.sure ? .green : .secondary)
             }
             if let seen = row?.agentSeen {
                 SessionNote(words: seen, symbol: "eye", tint: .secondary)
@@ -1431,6 +1454,11 @@ struct SessionView: View {
             store.post(key, title: title, text: String(what.dropFirst("send:".count)), how: .send(now: false))
             return
         }
+        // A link opened as a tap on it in the conversation opens it.
+        if what.hasPrefix("link:") {
+            if let url = URL(string: String(what.dropFirst("link:".count))) { _ = openLink(url) }
+            return
+        }
         if what.hasPrefix("label:") {
             let name = String(what.dropFirst("label:".count))
             if let worn = store.labelChoices(key).first(where: { $0.worn && $0.label.name == name }) {
@@ -1903,8 +1931,14 @@ private struct QuestionsCard: View {
         }
         if canAct {
             HStack {
-                Button(answering == .deny ? "Declining…" : "Decline", role: .destructive, action: decline)
-                    .buttonStyle(.bordered)
+                if pending.exiting {
+                    // Calls the exit off, as Escape in its terminal does.
+                    Button(answering == .deny ? "Cancelling…" : "Cancel", action: decline)
+                        .buttonStyle(.bordered)
+                } else {
+                    Button(answering == .deny ? "Declining…" : "Decline", role: .destructive, action: decline)
+                        .buttonStyle(.bordered)
+                }
                 Spacer()
                 if let next {
                     Button("Next") { go(next) }
@@ -1916,7 +1950,7 @@ private struct QuestionsCard: View {
                 }
             }
             .disabled(answering != nil)
-            Text("\(q.multiSelect ? "Pick one or more." : "Pick one, or write your own.") Decline stops the turn, or write below to say something else.")
+            Text(pending.exiting ? "It’s exiting. Cancel keeps it open, at its prompt." : "\(q.multiSelect ? "Pick one or more." : "Pick one, or write your own.") Decline stops the turn, or write below to say something else.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         } else if let why {
@@ -1988,10 +2022,13 @@ private struct QuestionsCard: View {
                 .disabled(!canAct || answering != nil)
                 .accessibilityAddTraits(on ? .isSelected : [])
             }
-            TextField(q.options.isEmpty ? "Your answer" : "Or write your own answer", text: Binding(get: { own[q.question] ?? "" }, set: { type(q, $0) }), axis: .vertical)
-                .lineLimit(1...4)
-                .textFieldStyle(.roundedBorder)
-                .disabled(!canAct || answering != nil)
+            // What an exit asks takes nothing but its choices.
+            if !pending.exiting {
+                TextField(q.options.isEmpty ? "Your answer" : "Or write your own answer", text: Binding(get: { own[q.question] ?? "" }, set: { type(q, $0) }), axis: .vertical)
+                    .lineLimit(1...4)
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(!canAct || answering != nil)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -2080,6 +2117,9 @@ private struct SessionNote: View {
 
     /// A session its provider flagged, as the Mac's Flagged chip says it.
     static let flagged = "Its provider flagged a message in this conversation, so by default its Mac sends it nothing by itself (Settings › Automation there). You can still reply yourself."
+
+    /// A session set aside for its side conversation, as the Mac's On the side chip says it.
+    static let aside = "You set it aside until its side conversation answers. It needs you again then."
 
     var body: some View {
         Label {
@@ -2900,28 +2940,38 @@ private struct LiveReply: View {
     }
 }
 
-/// At the end of the conversation of a session that works only in that it waits on a command, as
-/// the Mac's thread says it in its working line's place (Working.tsx `Waiting`): "Running in
-/// Ghostty" and the command you allowed there, which its agent waits on, or "Waiting on" one its
-/// turn left running in the background. The command on a line; held, it can be copied whole.
+/// At the end of the conversation of a session that works only in that it waits, as the Mac's
+/// thread says it in its working line's place (Working.tsx `Waiting`): "Running in Ghostty" and
+/// the command you allowed there, which its agent waits on, "Waiting on 3 background agents" with
+/// what each is for under it (the Mac's hover), or "Waiting on" a command its turn left running in
+/// the background. The command on a line; held, it can be copied whole.
 private struct WaitsOnLine: View {
     let waits: WaitsOn
     let waitsInBackground: Bool
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            StatusMark(status: .working, stalled: false, waiting: waitsInBackground)
-            Text(waits.lead)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
-                .layoutPriority(1)
-            if let command = waits.command {
-                Text(verbatim: command)
-                    .font(.caption.monospaced())
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                StatusMark(status: .working, stalled: false, waiting: waitsInBackground)
+                Text(waits.lead)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .layoutPriority(1)
+                if let command = waits.command {
+                    Text(verbatim: command)
+                        .font(.caption.monospaced())
+                        .lineLimit(1)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(.background.secondary, in: .rect(cornerRadius: 4))
+                }
+            }
+            ForEach(Array(waits.agents.enumerated()), id: \.offset) { _, errand in
+                Text(verbatim: errand)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
                     .lineLimit(1)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(.background.secondary, in: .rect(cornerRadius: 4))
+                    .padding(.leading, 16)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -3142,6 +3192,12 @@ struct SessionGlance: View {
             }
             if let raised = row?.raised {
                 SessionNote(words: raised.says, symbol: "arrow.up.to.line", tint: .orange)
+            }
+            if row?.aside == true {
+                SessionNote(words: SessionNote.aside, symbol: "bubble.left.and.bubble.right", tint: .blue)
+            }
+            if let finished = row?.finished {
+                SessionNote(words: finished.says, symbol: finished.sure ? "checkmark.seal.fill" : "checkmark.seal", tint: finished.sure ? .green : .secondary)
             }
             if let seen = row?.agentSeen {
                 SessionNote(words: seen, symbol: "eye", tint: .secondary)
@@ -3410,11 +3466,18 @@ private struct ReplyRules {
         return row.modes.filter { !$0.id.isEmpty }.count > 1
     }
 
-    /// A switch of model or effort waits while its turn runs or it waits on you, where the command
-    /// would go in as a prompt or answer it; an app takes one whenever, for the next turn.
-    var switchWaits: Bool {
-        guard !inApp, let row else { return false }
-        return row.status == .working || row.status == .needs || row.stalled
+    /// Why a switch of model or effort waits, as a phrase a sentence ends with, or nil when it
+    /// can go now (the Mac's SessionReply.tsx `busy`): while it waits on you at a prompt, where
+    /// the command would answer it, and while its turn runs where its harness would hold the
+    /// command as a prompt. One whose harness runs it at once (Claude Code's,
+    /// `switchesMidTurn`) goes on with the turn's next step on the new model; Codealong's own
+    /// agents take one only between turns. An app takes one whenever, for the next turn.
+    var switchWaits: String? {
+        guard !inApp, let row else { return nil }
+        if row.atAPrompt { return "once you’ve answered it" }
+        let midTurn = !row.hosted && account?.switchesMidTurn == true
+        if !midTurn && (row.status == .working || row.stalled) { return "once its turn ends" }
+        return nil
     }
 
     /// It says what it's on beside the box: a running one, or one an app goes on with.
@@ -3495,12 +3558,14 @@ private struct ModelMenu: View {
             let under = shown.isEmpty ? nil : mode?.label
             let spoken = "\(model.map { "Model: \($0)" } ?? "Model")\(effort.map { ", \($0) effort" } ?? "")\(mode.map { ", \($0.label) mode" } ?? "")"
             if let account = rules.account, rules.switchesModel || rules.switchesEffort || rules.switchesMode {
-                // A switch of model or effort waits for the turn, where the command would go in as
-                // a prompt or answer it; an app takes one for its next turn, and a mode any time.
-                let waits = switching || rules.switchWaits
+                // A switch of model or effort waits while the command would go in as a prompt or
+                // answer what it asks (`switchWaits`); an app takes one for its next turn, and a
+                // mode any time.
+                let why = rules.switchWaits
+                let waits = switching || why != nil
                 Menu {
                     if rules.switchesModel {
-                        Section(waits && !switching ? "Model, once its turn ends" : "Model") {
+                        Section(!switching ? why.map { "Model, \($0)" } ?? "Model" : "Model") {
                             // Which of the names it's on isn't known for sure (a reply names the
                             // model without its context size), so none is checked; the label says it.
                             ForEach(account.models, id: \.id) { m in
@@ -3511,7 +3576,7 @@ private struct ModelMenu: View {
                     }
                     if rules.switchesEffort {
                         // The levels as the Mac's chip says them (`xhigh`), the one it's on checked.
-                        Section(waits && !switching ? "Effort, once its turn ends" : "Effort") {
+                        Section(!switching ? why.map { "Effort, \($0)" } ?? "Effort" : "Effort") {
                             ForEach(account.efforts, id: \.id) { e in
                                 Button {
                                     if e.id != effort { switchEffort(e.id) }

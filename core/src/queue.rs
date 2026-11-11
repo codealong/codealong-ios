@@ -27,16 +27,20 @@ pub struct QueuePlace {
     pub since: i64,
     /// A session moved to the top of what waits on you, as its row says.
     pub raised: Option<Raised>,
+    /// A finished turn that's only yours to read (`SessionRow::waits_finished`): after the rest of
+    /// its kind.
+    pub finished: bool,
 }
 
 /// The order what waits on you is gone through in (queue.ts `byPlace`): the ones moved to the top
-/// first, whatever they wait as; then the most urgent kind first, each the longest wait first, so
+/// first, whatever they wait as; then the most urgent kind first, each the longest wait first,
+/// with the finished turns that are only yours to read after the ones that want something, so
 /// one that comes to wait, or comes back after you answered it, joins the end of its kind and
 /// never goes ahead of the ones that have waited longer, unless it's moved to the top. Its wait
 /// isn't moved for that: what's been dealt with goes by it. The lists show it in their own orders
 /// (Your turn, the newest first), which this doesn't follow.
 fn by_place(a: &QueuePlace, b: &QueuePlace) -> Ordering {
-    raised_order(a.raised.as_ref(), b.raised.as_ref()).then_with(|| (a.waits, a.since, &a.key).cmp(&(b.waits, b.since, &b.key)))
+    raised_order(a.raised.as_ref(), b.raised.as_ref()).then_with(|| (a.waits, a.finished, a.since, &a.key).cmp(&(b.waits, b.finished, b.since, &b.key)))
 }
 
 /// The keys of what's left after `key`, the next first (queue.ts `leftAfter`): those after it in
@@ -68,7 +72,7 @@ mod tests {
     use super::*;
 
     fn place(key: &str, waits: Waits, since: i64) -> QueuePlace {
-        QueuePlace { key: key.into(), waits, since, raised: None }
+        QueuePlace { key: key.into(), waits, since, raised: None, finished: false }
     }
 
     // As the Mac's tests have them: A and B need you, C and D are finished turns.
@@ -97,6 +101,17 @@ mod tests {
         assert_eq!(after(shuffled, ""), ["A", "B", "R", "C", "D"]);
         // A key settles a tie.
         assert_eq!(after(vec![place("C2", Waits::Unread, 30), place("C", Waits::Unread, 30)], ""), ["C", "C2"]);
+    }
+
+    #[test]
+    fn takes_the_finished_turns_after_the_rest_of_your_turn_unless_moved_up() {
+        let finished = |p: QueuePlace| QueuePlace { finished: true, ..p };
+        // F ended first, but it's only yours to read: after C and D; not after what needs you.
+        let mut places = waiting();
+        places.push(finished(place("F", Waits::Unread, 5)));
+        assert_eq!(after(places.clone(), ""), ["A", "B", "C", "D", "F"]);
+        places.push(QueuePlace { raised: Some(Raised { at: 1, agent: false, says: String::new() }), ..finished(place("G", Waits::Unread, 6)) });
+        assert_eq!(after(places, ""), ["G", "A", "B", "C", "D", "F"]);
     }
 
     #[test]

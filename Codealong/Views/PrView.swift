@@ -505,16 +505,17 @@ private struct PrHeader: View {
 }
 
 /// The sessions that worked on it, under where it stands, as the Mac's panel has them under its
-/// header (`PanelPlaces`): each opens its session, so the one that made it is a tap away. Only
-/// the ones the list has: an archived session has no row here to open. Its primary session leads
-/// them, tagged, as the Mac's panel tags it.
+/// header (`PanelPlaces`): each opens its session, so the one that made it is a tap away. Archived
+/// ones too, which a Mac lists on the PRs they worked on, with an archive box for a mark and
+/// dimmed, as a visitor's is there. Its primary session leads them, tagged, as the Mac's panel
+/// tags it.
 private struct SessionsSection: View {
     let keys: [String]
     let primary: PrPrimary?
     @Environment(Store.self) private var store
 
     var body: some View {
-        let rows = keys.compactMap { key in store.sessions.first { $0.key == key } }
+        let rows = store.rows(keys)
         if !rows.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 Heading(text: rows.count == 1 ? "Session" : "Sessions")
@@ -527,6 +528,7 @@ private struct SessionsSection: View {
                             HStack(spacing: 8) {
                                 VStack(alignment: .leading, spacing: 2) {
                                     QuickSessionRow(row: r, showDevice: store.devices.count > 1, showProject: false)
+                                        .opacity(r.archived ? 0.6 : 1)
                                     if r.key == primary?.key {
                                         // Under its title, past its state's mark.
                                         HStack(spacing: 3) {

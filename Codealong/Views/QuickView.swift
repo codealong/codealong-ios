@@ -200,7 +200,7 @@ struct QuickView: View {
             let pr = String(key.dropFirst(PrView.prefix.count))
             PrView(key: pr, kept: store.prDetails[pr], go: { next in path = [next] }).id(key)
         } else {
-            SessionView(key: key, opening: store.slidIn.flatMap { $0.key == key ? $0.opening : nil }, go: { next in path = [next] }).id(key)
+            SessionView(key: key, opening: store.slidIn.flatMap { $0.key == key ? $0.opening : nil }, go: { next in path = [next] }, follow: { path.append($0) }).id(key)
         }
     }
 

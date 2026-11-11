@@ -14,8 +14,7 @@ struct QuickSessionRow: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
-            // A snoozed one waits apart, unmarked, as on the Mac.
-            StatusMark(status: row.snoozedUntil == nil ? row.status : .idle, stalled: row.stalled, waiting: row.waitsInBackground)
+            StatusMark(mark: row.mark)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     if let emblem = row.emblem {
@@ -27,7 +26,7 @@ struct QuickSessionRow: View {
                         .font(.body.weight(wantsYou ? .semibold : .regular))
                         .lineLimit(1)
                     Spacer(minLength: 0)
-                    // A compact row has no line for its chip.
+                    // A compact row has no line for its chips.
                     if compact && row.raised != nil {
                         Image(systemName: "arrow.up")
                             .font(.caption.weight(.bold))
@@ -38,8 +37,13 @@ struct QuickSessionRow: View {
                         if let until = row.snoozedUntil {
                             Label(Clock.until(until, now: context.date), systemImage: "moon.zzz")
                                 .accessibilityLabel("Snoozed, back in \(Clock.until(until, now: context.date))")
+                        } else if row.archived && row.mark == .archived {
+                            // Its mark is the box already.
+                            Text(Clock.ago(row.statusSince ?? row.lastActivity, now: context.date))
+                                .accessibilityLabel("Archived, \(Clock.ago(row.statusSince ?? row.lastActivity, now: context.date))")
                         } else if row.archived {
-                            // Listed only because searches list archived sessions too.
+                            // Listed only because searches and PRs list archived sessions too; one
+                            // at work or waiting on you has that for its mark.
                             Label(Clock.ago(row.statusSince ?? row.lastActivity, now: context.date), systemImage: "archivebox")
                                 .accessibilityLabel("Archived, \(Clock.ago(row.statusSince ?? row.lastActivity, now: context.date))")
                         } else {
@@ -89,11 +93,18 @@ struct QuickSessionRow: View {
         .accessibilityElement(children: .combine)
     }
 
-    /// Its marks (Top, Seen by agent), its labels with `labels`, and where it is.
+    /// Its marks (Top, On the side, Finished, Seen by agent), its labels with `labels`, and where
+    /// it is.
     private func whereLine(labels: Bool) -> some View {
         HStack(spacing: 6) {
             if row.raised != nil {
                 Chip(words: "Top", symbol: "arrow.up", tint: .orange)
+            }
+            if row.aside {
+                Chip(words: "On the side", symbol: "bubble.left.and.bubble.right", tint: .blue)
+            }
+            if let finished = row.finished {
+                Chip(words: finished.label, symbol: finished.sure ? "checkmark.seal.fill" : "checkmark.seal", tint: finished.sure ? .green : .secondary)
             }
             if row.agentSeen != nil {
                 Chip(words: "Seen by agent", symbol: "eye", tint: .secondary)
@@ -131,9 +142,9 @@ struct QuickSessionRow: View {
     }
 }
 
-/// A word on a row that says something of it, as the Mac's chips do: Top, Seen by agent (and the
-/// labels you put on it, `SessionLabelChip`). Its page
-/// says who and why, which a Mac's tooltip does there.
+/// A word on a row that says something of it, as the Mac's chips do: Top, On the side, Finished,
+/// Seen by agent (and the labels you put on it, `SessionLabelChip`). Its page says who and why,
+/// which a Mac's tooltip does there.
 private struct Chip: View {
     let words: String
     let symbol: String
@@ -348,52 +359,87 @@ struct SuggestionRow: View {
     }
 }
 
-/// A session's state as a small dot: orange when it needs you, red on an error, blue (breathing)
-/// while it works, the accent color when it's your turn, and nothing when it's idle. One working
-/// only in that it waits on a command it left running (a CI watch, a build) is a still clock, as
-/// on the Mac.
+/// A session's state as a small mark, as the core reads it (`Mark`, the Mac's SessionGlyph): an
+/// orange dot when it needs you or is stuck, red on an error, blue (breathing) while it works, the
+/// accent color when it's your turn, and nothing when it's idle. One working only in that it
+/// waits, on what its turn left running (a CI watch, a build, its agents) or, set aside, on its
+/// side conversation, is a still clock; one hearing a meeting is a recording light; an archived
+/// one is a box.
 struct StatusMark: View {
-    let status: Status
-    let stalled: Bool
-    var waiting = false
+    let mark: Mark
+
+    /// A turn's own state where there's no session's row to read it from (a side conversation's
+    /// turn, what a session waits on).
+    init(status: Status, stalled: Bool, waiting: Bool = false) {
+        mark = switch status {
+        case _ where stalled: .stuck
+        case .working where waiting: .waiting
+        case .needs: .needs
+        case .error: .error
+        case .working: .working
+        case .unread: .unread
+        case .idle, .stopped: .quiet
+        }
+    }
+
+    init(mark: Mark) {
+        self.mark = mark
+    }
 
     var body: some View {
-        if waiting && status == .working && !stalled {
+        switch mark {
+        case .waiting:
             Image(systemName: "clock")
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.blue)
                 .frame(width: 10)
-                .accessibilityLabel("Waiting on a command it left running")
-        } else {
+                .accessibilityLabel("Waiting")
+        case .hearing:
+            // A recording light in a ring, beating as the Mac's does.
+            Image(systemName: "record.circle")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.red)
+                .symbolEffect(.pulse, options: .repeating)
+                .frame(width: 10)
+                .accessibilityLabel("Listening")
+        case .archived:
+            Image(systemName: "archivebox")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 10)
+                .accessibilityLabel("Archived")
+        default:
             Image(systemName: "circle.fill")
                 .font(.system(size: 9))
                 .foregroundStyle(color)
-                .symbolEffect(.pulse, options: .repeating, isActive: status == .working && !stalled)
+                .symbolEffect(.pulse, options: .repeating, isActive: mark == .working)
                 .frame(width: 10)
                 .accessibilityLabel(label)
         }
     }
 
     private var color: Color {
-        if stalled { return .orange }
-        switch status {
-        case .needs: return .orange
-        case .error: return .red
-        case .working: return .blue
-        case .unread: return .accentColor
-        case .idle, .stopped: return .clear
+        switch mark {
+        case .needs, .stuck: .orange
+        case .error: .red
+        case .working, .waiting: .blue
+        case .unread: .accentColor
+        case .hearing: .red
+        case .archived, .quiet: .clear
         }
     }
 
     private var label: String {
-        if stalled { return "Stuck" }
-        switch status {
-        case .needs: return "Needs you"
-        case .error: return "Error"
-        case .working: return "Working"
-        case .unread: return "Your turn"
-        case .idle: return "Idle"
-        case .stopped: return "Stopped"
+        switch mark {
+        case .needs: "Needs you"
+        case .stuck: "Stuck"
+        case .error: "Error"
+        case .working: "Working"
+        case .waiting: "Waiting"
+        case .unread: "Your turn"
+        case .hearing: "Listening"
+        case .archived: "Archived"
+        case .quiet: "Idle"
         }
     }
 }

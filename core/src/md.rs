@@ -641,6 +641,46 @@ fn escaped(s: &str) -> String {
     out
 }
 
+/// How a link to a session starts (the Mac's codealongLinks.ts `sessionLink`).
+pub(crate) const SESSION_LINK: &str = "codealong://session/";
+
+/// How long the link to a session at the start of `s` is, as the Mac's `BARE_SOURCE` takes one:
+/// up to a space, angle bracket, parenthesis or backtick, less the punctuation that ends a
+/// sentence around it. None when it names nothing. A todo's link isn't one: the phone shows no
+/// todos, so it stays words.
+pub(crate) fn session_link_len(s: &str) -> Option<usize> {
+    let head = s.get(..SESSION_LINK.len()).filter(|h| h.eq_ignore_ascii_case(SESSION_LINK))?;
+    let rest = &s[head.len()..];
+    let end = rest.find(|c: char| c.is_whitespace() || "<>()`".contains(c)).unwrap_or(rest.len());
+    let named = rest[..end].trim_end_matches(|c: char| ".,;:!?'\"*_".contains(c));
+    (!named.trim_end_matches('/').is_empty()).then_some(head.len() + named.len())
+}
+
+/// What a link to a session names, after its scheme, without a slash it ends on; None for any
+/// other link.
+pub(crate) fn session_link_name(url: &str) -> Option<String> {
+    let head = url.trim().get(..SESSION_LINK.len()).filter(|h| h.eq_ignore_ascii_case(SESSION_LINK))?;
+    let named = url.trim()[head.len()..].split(['?', '#']).next()?.trim_end_matches('/');
+    (!named.is_empty()).then(|| named.to_string())
+}
+
+/// Whether code is a session's key as Codealong writes one, alone (the Mac's codealongLinks.ts
+/// `KEY_SHAPE`): its harness, account and id, after its Mac's short id (`@<short>:`) for one on
+/// another of your Macs.
+pub(crate) fn is_session_key(code: &str) -> bool {
+    let word = |s: &str, more: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || more.contains(c));
+    let key = match code.strip_prefix('@') {
+        Some(rest) => match rest.split_once(':') {
+            Some((device, key)) if word(device, "-") => key,
+            _ => return false,
+        },
+        None => code,
+    };
+    let parts: Vec<&str> = key.split(':').collect();
+    let [harness, account, id] = parts.as_slice() else { return false };
+    harness.starts_with(|c: char| c.is_ascii_lowercase()) && word(harness, "-") && word(account, ".-") && word(id, ".-")
+}
+
 /// A bare web link as a Markdown link: its words are the URL, or a PR's as GitHub shortens it.
 fn bare_link(url: &str) -> String {
     format!("[{}]({url})", escaped(&pr_label(url).unwrap_or_else(|| url.to_string())))
@@ -727,9 +767,16 @@ pub(crate) fn inline(text: &str) -> String {
             continue;
         }
         if c == '`' {
-            // A code span, left as it is: nothing in it is a mark or a link.
+            // A code span, left as it is: nothing in it is a mark or a link. One that's a
+            // session's key and nothing else, as an agent writes one it got from the command,
+            // links to that session (the Mac's codealongLinks.ts `codealongNameOf`).
             if let Some(end) = rest[1..].find('`') {
-                out.push_str(&rest[..end + 2]);
+                let code = &rest[1..end + 1];
+                if is_session_key(code) {
+                    out.push_str(&format!("[{}]({SESSION_LINK}{code})", &rest[..end + 2]));
+                } else {
+                    out.push_str(&rest[..end + 2]);
+                }
                 i += end + 2;
                 continue;
             }
@@ -745,6 +792,10 @@ pub(crate) fn inline(text: &str) -> String {
             if let Some((words, target, len)) = link_at(rest, false) {
                 if is_web(target) {
                     out.push_str(&rest[..len]);
+                } else if session_link_len(target).is_some_and(|l| l == target.len()) {
+                    // A session an agent names, as the codealong skill has it written:
+                    // `[its title](codealong://session/<key>)`.
+                    out.push_str(&format!("[{}]({target})", inline(words)));
                 } else {
                     out.push_str(&inline(words));
                 }
@@ -760,6 +811,12 @@ pub(crate) fn inline(text: &str) -> String {
                     continue;
                 }
             }
+        } else if (c == 'c' || c == 'C') && (i == 0 || !(b[i - 1] as char).is_alphanumeric()) && session_link_len(rest).is_some() {
+            // A session's link written bare: its words are the link.
+            let len = session_link_len(rest).expect("checked");
+            out.push_str(&format!("[{}]({})", escaped(&rest[..len]), &rest[..len]));
+            i += len;
+            continue;
         } else if (c == 'h' || c == 'H') && is_web(rest) && (i == 0 || !(b[i - 1] as char).is_alphanumeric()) {
             if let Some(len) = web_len(rest, false) {
                 out.push_str(&bare_link(&rest[..len]));
@@ -914,6 +971,24 @@ mod tests {
         assert_eq!(inline("**bold** and *it*"), "**bold** and *it*");
         // A word that runs into the scheme isn't a link.
         assert_eq!(inline("xhttps://a.b"), "xhttps://a.b");
+    }
+
+    #[test]
+    fn a_session_an_agent_names_is_a_link_to_it() {
+        // Written as the skill has it, with its title for words.
+        assert_eq!(inline("See [Fix the *login*](codealong://session/claude:claude:abc-1)."), "See [Fix the *login*](codealong://session/claude:claude:abc-1).");
+        // Bare, without the punctuation that ends a sentence around it.
+        assert_eq!(inline("Open codealong://session/codex:work:7f3a."), "Open [codealong://session/codex:work:7f3a](codealong://session/codex:work:7f3a).");
+        // A key alone in code, on this Mac or another of yours.
+        assert_eq!(inline("`claude:claude:abc-1` and `@4f2a9c0e1b:codex:work:7f.3`"), "[`claude:claude:abc-1`](codealong://session/claude:claude:abc-1) and [`@4f2a9c0e1b:codex:work:7f.3`](codealong://session/@4f2a9c0e1b:codex:work:7f.3)");
+        // Code that isn't only a key, a todo's link and its id, and a link that names nothing stay
+        // as they were.
+        assert_eq!(inline("`run claude:claude:abc` and `a:b`"), "`run claude:claude:abc` and `a:b`");
+        assert_eq!(inline("[Ship it](codealong://todo/t-abcdefgh1) `t-abcdefgh1`"), "Ship it `t-abcdefgh1`");
+        assert_eq!(inline("codealong://session/ and codealong://session/."), "codealong://session/ and codealong://session/.");
+        assert_eq!(session_link_name("codealong://session/claude:claude:abc/"), Some("claude:claude:abc".into()));
+        assert_eq!(session_link_name("codealong://todo/t-1"), None);
+        assert_eq!(session_link_name("codealong://link/cal1abc"), None);
     }
 
     #[test]
