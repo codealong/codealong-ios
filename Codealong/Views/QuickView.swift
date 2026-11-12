@@ -412,10 +412,12 @@ struct QuickView: View {
             switch content {
             case let .quick(quick):
                 quickSections(quick)
-            case let .projects(pinned, groups):
+            case let .projects(listening, pinned, groups):
+                listeningSection(listening)
                 pinnedSection(pinned)
                 projectSections(groups)
-            case let .recent(pinned, rows):
+            case let .recent(listening, pinned, rows):
+                listeningSection(listening)
                 pinnedSection(pinned)
                 if !rows.isEmpty {
                     Section {
@@ -442,16 +444,17 @@ struct QuickView: View {
     /// What the list shows now: the core's lists for the page, the order and what's typed.
     private enum Listed {
         case quick(QuickList)
-        /// The pinned sessions, which lead apart, and the rest by project.
-        case projects([SessionRow], [ProjectGroup])
-        case recent([SessionRow], [SessionRow])
+        /// The sessions hearing a meeting and the pinned ones, which lead apart, and the rest by
+        /// project.
+        case projects([SessionRow], [SessionRow], [ProjectGroup])
+        case recent([SessionRow], [SessionRow], [SessionRow])
         case prs([PrSection])
 
         var ids: [String] {
             switch self {
             case let .quick(q): q.sections.flatMap { $0.rows.map(\.id) }
-            case let .projects(pinned, p): pinned.map(\.key) + p.flatMap { $0.worktrees.flatMap { [$0.id] + $0.sessions.map(\.key) } }
-            case let .recent(pinned, r): pinned.map(\.key) + r.map(\.key)
+            case let .projects(listening, pinned, p): listening.map(\.key) + pinned.map(\.key) + p.flatMap { $0.worktrees.flatMap { [$0.id] + $0.sessions.map(\.key) } }
+            case let .recent(listening, pinned, r): listening.map(\.key) + pinned.map(\.key) + r.map(\.key)
             case let .prs(s): s.flatMap { $0.rows.map(\.key) }
             }
         }
@@ -467,8 +470,8 @@ struct QuickView: View {
         if page == .prs { return .prs(store.prList(project: project)) }
         switch order {
         case .needs: return .quick(store.quick(project: project, query: "", said: [], ranked: []))
-        case .project: return .projects(store.pinned(project: project), store.byProject(project: project))
-        case .recent: return .recent(store.pinned(project: project), store.recent(project: project))
+        case .project: return .projects(store.listening(project: project), store.pinned(project: project), store.byProject(project: project))
+        case .recent: return .recent(store.listening(project: project), store.pinned(project: project), store.recent(project: project))
         }
     }
 
@@ -559,7 +562,7 @@ struct QuickView: View {
                 }
             } header: {
                 HStack {
-                    GroupHeading(title: section.group.title, count: Int(section.count), symbol: section.group == .pinned ? "pin.fill" : section.group == .top ? "arrow.up" : nil)
+                    GroupHeading(title: section.group.title, count: Int(section.count), symbol: section.group.symbol)
                     if section.group == .sessions && (withArchived || quick.archivedFound > 0) {
                         Spacer()
                         archivedToggle(found: Int(quick.archivedFound))
@@ -597,6 +600,19 @@ struct QuickView: View {
 
     private func listArchived(_ on: Bool) {
         withAnimation(.snappy) { withArchived = on }
+    }
+
+    /// The sessions hearing a meeting now, leading By project and Recent above the pinned ones as
+    /// they lead the rest.
+    @ViewBuilder
+    private func listeningSection(_ rows: [SessionRow]) -> some View {
+        if !rows.isEmpty {
+            Section {
+                ForEach(rows, id: \.key) { sessionRow($0) }
+            } header: {
+                GroupHeading(title: QuickGroup.listening.title, count: rows.count, symbol: QuickGroup.listening.symbol)
+            }
+        }
     }
 
     /// The sessions pinned on their Macs, leading By project and Recent as they lead the rest.
@@ -820,6 +836,13 @@ struct QuickView: View {
                 }
                 .disabled(!online)
                 Menu("Snooze", systemImage: "moon.zzz") {
+                    // The time its last reply says the work goes on, first and apart, as on the Mac.
+                    if let suggested = r.suggestedSnooze, Date.now.ms < suggested.offeredTill {
+                        let until = Date(ms: suggested.until)
+                        Section {
+                            Button(Snooze.suggested(until)) { act { try await store.snooze(r.key, until: until) } }
+                        }
+                    }
                     ForEach(Snooze.choices()) { c in
                         Button(c.label) { act { try await store.snooze(r.key, until: c.until) } }
                     }
@@ -1266,6 +1289,7 @@ struct QuickView: View {
 extension QuickGroup {
     var title: String {
         switch self {
+        case .listening: "Listening"
         case .pinned: "Pinned"
         case .top: "Moved to top"
         case .needsYou: "Needs you"
@@ -1275,6 +1299,16 @@ extension QuickGroup {
         case .sessions: "Sessions"
         case .prs: "PRs"
         case .recent: "Last 24 hours"
+        }
+    }
+
+    /// The heading's symbol, for the groups that lead apart.
+    var symbol: String? {
+        switch self {
+        case .listening: "mic.fill"
+        case .pinned: "pin.fill"
+        case .top: "arrow.up"
+        default: nil
         }
     }
 }

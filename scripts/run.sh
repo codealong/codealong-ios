@@ -9,7 +9,8 @@
 # seconds in, once the Macs have answered, SIDE='/side [question]' types that into the box of
 # the session OPEN opens and sends it, opening its side conversations, and PRESS=raise|remove|edit
 # presses Move to top (or Back in line) there, or Remove or Edit beside the first message it holds;
-# PRESS=send:<words> sends those to it, as the box does, PRESS=questions presses the
+# PRESS=send:<words> sends those to it, as the box does, PRESS=tryagain presses Try again beside an
+# API error that ended its last turn, PRESS=questions presses the
 # conversation's line for the questions the card below shows, PRESS=label:<name> puts that
 # label on it, or takes it off where it wears it, and PRESS=link:<url> opens that link as a tap on
 # it in the conversation does (a `codealong://session/…` one, named as that session's Mac names

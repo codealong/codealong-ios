@@ -550,6 +550,12 @@ struct SessionView: View {
             Button(row?.raised == nil ? "Move to top" : "Back in line", systemImage: row?.raised == nil ? "arrow.up.to.line" : "arrow.uturn.down") { Task { await raise() } }
                 .disabled(!online)
             Menu("Snooze", systemImage: "moon.zzz") {
+                if let suggested = row?.suggestedSnooze, Date.now.ms < suggested.offeredTill {
+                    let until = Date(ms: suggested.until)
+                    Section {
+                        Button(Snooze.suggested(until)) { Task { await snooze(until: until) } }
+                    }
+                }
                 ForEach(Snooze.choices()) { c in
                     Button(c.label) { Task { await snooze(until: c.until) } }
                 }
@@ -623,8 +629,10 @@ struct SessionView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            if let lost = row?.connectionLost {
-                LostConnection(words: lost)
+            if let error = row?.apiError {
+                // Sent as the box sends a message, so one that isn't running goes on where the box
+                // would take it, as the Mac's goes on where Carry on would.
+                ApiErrorLine(note: error, tryAgain: canAct && pending == nil ? { Task { await send(text: error.message) } } : nil)
             }
             if let cut = row?.cutOff {
                 SessionNote(words: cut, symbol: "scissors", tint: .orange)
@@ -651,6 +659,10 @@ struct SessionView: View {
             if let onward, draft.isEmpty && attached.isEmpty {
                 GoOnBar(next: onward, left: after.count, going: going(.seen), offers: SwipeOn.offers(row: row, pending: pending, acted: replied), pickTime: pickSnooze) { goOn(to: onward, doing: $0 ?? .seen) }
                     .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+            // Snoozed from here as from its Snooze menu: it goes on to what's next, if anything.
+            if let suggested = row?.suggestedSnooze, Date.now.ms < suggested.offeredTill {
+                SnoozeSuggestionLine(suggested: suggested) { Task { await snooze(until: Date(ms: suggested.until)) } }
             }
             if let suggestions = row?.suggestions {
                 SuggestedRepliesView(suggestions: suggestions, blocked: canAct && !waitsElsewhere ? nil : whyNot ?? "It waits on you where it runs: answer that there first") { reply in
@@ -1489,7 +1501,8 @@ struct SessionView: View {
 
     /// Quiets it, or makes it heard again, as the Mac's Quiet does.
     /// What a test asked to press: `raise` is Move to top or Back in line, `remove` and `edit` press
-    /// those beside the first message it holds, `send:<words>` sends those, and `label:<name>` puts
+    /// those beside the first message it holds, `tryagain` is Try again beside an API error that
+    /// ended its last turn, `send:<words>` sends those, and `label:<name>` puts
     /// that label on, or takes it off where it wears it, as Labels › and New label… do.
     private func pressed(_ what: String) async {
         let held = heldShown.first
@@ -1513,6 +1526,9 @@ struct SessionView: View {
         }
         switch what {
         case "raise": await raise()
+        // Try again beside the note of an API error that ended its last turn.
+        case "tryagain":
+            if let error = row?.apiError, error.button != nil, canAct, pending == nil { await send(text: error.message) }
         case "remove":
             if let held { await removeHeld(held) }
         case "edit":
@@ -2175,17 +2191,65 @@ private struct SessionNote: View {
     }
 }
 
-private struct LostConnection: View {
-    let words: String
+/// That an API error ended its last turn and nothing has gone on since, as the Mac's session
+/// header says it, in its harness's words (the core's `ApiErrorNote`), with Try again beside it
+/// where this phone can act on it there: it's sent a message of yours saying so, to carry on where
+/// it left off. Try now where its Mac carries it on by itself once the API can be reached.
+private struct ApiErrorLine: View {
+    let note: ApiErrorNote
+    /// Sends the message; none where it can't be sent from here, when the words say to send it
+    /// something instead.
+    let tryAgain: (() -> Void)?
 
     var body: some View {
-        Label {
-            Text(words)
-        } icon: {
-            Image(systemName: "wifi.exclamationmark").foregroundStyle(.orange)
+        let button = tryAgain.flatMap { run in note.button.map { (label: $0, run: run) } }
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Label {
+                Text(button == nil ? note.saysAlone : note.says)
+            } icon: {
+                Image(systemName: note.lost ? "wifi.exclamationmark" : "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            }
+            .font(.footnote)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if let button {
+                Button(button.label, action: button.run)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .accessibilityHint("Sends it a message saying its last turn ended on an API error, to try again where it left off")
+            }
         }
-        .font(.footnote)
-        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// A snooze offered for a session whose last reply says its work goes on at a later time, with
+/// nothing for you or it to do before then, on a line above its box as the Mac offers it
+/// (SnoozeSuggestion.tsx; the core's `SuggestedSnooze`): a tap snoozes it until then, as the first
+/// time in its Snooze menu does. Who read the reply that way is in its hint. Nothing snoozes by
+/// itself.
+private struct SnoozeSuggestionLine: View {
+    let suggested: SuggestedSnooze
+    let snooze: () -> Void
+
+    var body: some View {
+        let when = Snooze.words(Date(ms: suggested.until))
+        Button(action: snooze) {
+            HStack(spacing: 6) {
+                Image(systemName: "moon.zzz").font(.caption).foregroundStyle(.secondary)
+                Text("Snooze until \(when)")
+                    .font(.footnote.weight(.medium))
+                    .layoutPriority(1)
+                Text("as its reply says").font(.footnote).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+            .lineLimit(1)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .modifier(WaitingCard(tint: nil, padding: 0))
+        .accessibilityLabel("Snooze until \(when), as its reply says")
+        .accessibilityHint("It leaves what waits on you until then. \(suggested.by)")
     }
 }
 
@@ -2985,9 +3049,10 @@ private struct LiveReply: View {
 
 /// At the end of the conversation of a session that works only in that it waits, as the Mac's
 /// thread says it in its working line's place (Working.tsx `Waiting`): "Running in Ghostty" and
-/// the command you allowed there, which its agent waits on, "Waiting on 3 background agents" with
-/// what each is for under it (the Mac's hover), or "Waiting on" a command its turn left running in
-/// the background. The command on a line; held, it can be copied whole.
+/// the command you allowed there, which its agent waits on, "Your command in Ghostty" and one you
+/// ran for it, with where what it prints goes under it, "Waiting on 3 background agents" with what
+/// each is for under it (the Mac's hover), or "Waiting on" a command its turn left running in the
+/// background. The command on a line; held, it can be copied whole.
 private struct WaitsOnLine: View {
     let waits: WaitsOn
     let waitsInBackground: Bool
@@ -3014,6 +3079,12 @@ private struct WaitsOnLine: View {
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
+                    .padding(.leading, 16)
+            }
+            if let then = waits.then {
+                Text(then)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
                     .padding(.leading, 16)
             }
         }
@@ -3224,8 +3295,8 @@ struct SessionGlance: View {
                 .font(.footnote)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            if let lost = row?.connectionLost {
-                LostConnection(words: lost)
+            if let error = row?.apiError {
+                ApiErrorLine(note: error, tryAgain: canAct && pending == nil ? {} : nil)
             }
             if let cut = row?.cutOff {
                 SessionNote(words: cut, symbol: "scissors", tint: .orange)
@@ -3251,6 +3322,9 @@ struct SessionGlance: View {
             if let next = onward, !open {
                 let replied = !(store.outgoing[key] ?? []).isEmpty
                 GoOnBar(next: next, left: after.count, going: Going.of(.seen, row: row, pending: pending, acted: replied), offers: SwipeOn.offers(row: row, pending: pending, acted: replied)) { _ in }
+            }
+            if let suggested = row?.suggestedSnooze, Date.now.ms < suggested.offeredTill {
+                SnoozeSuggestionLine(suggested: suggested) {}
             }
             if let suggestions = row?.suggestions {
                 SuggestedRepliesView(suggestions: suggestions, blocked: canAct && pending?.cannot == nil ? nil : why ?? "It waits on you where it runs: answer that there first") { _ in } edit: { _ in } dismiss: {}

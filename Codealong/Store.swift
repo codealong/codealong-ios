@@ -887,6 +887,13 @@ final class Store {
         return core?.pinned(project: project) ?? []
     }
 
+    /// The sessions hearing a meeting now in `project`, which lead By project and Recent above the
+    /// pinned ones.
+    func listening(project: String) -> [SessionRow] {
+        _ = tick
+        return core?.listening(project: project) ?? []
+    }
+
     /// The list's sessions, the last active first. Reads `tick`.
     func recent(project: String) -> [SessionRow] {
         _ = tick

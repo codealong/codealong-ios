@@ -32,6 +32,9 @@ const TEXT_SEARCH_MIN: usize = 3;
 
 #[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QuickGroup {
+    /// Hearing a meeting now, above the pinned ones, as the Mac's Sessions view leads with them
+    /// while they hear (lists.rs `listening_of`).
+    Listening,
     /// Pinned on their Macs, in each Mac's order, as the Mac's Sessions view leads with them.
     Pinned,
     /// Moved to the top of what waits on you, here or from a Mac: every queue goes to them first,
@@ -474,7 +477,9 @@ pub(crate) fn quick_list(rows: &[SessionRow], prs: &[PrRow], project: &str, quer
     let mut sections = Vec::new();
 
     if words.is_empty() {
-        // What's pinned leads, whatever its state, helpers too: a pin is yours to make.
+        // What's hearing a meeting leads, then what's pinned, whatever its state, helpers too: a
+        // pin is yours to make.
+        let listening = crate::lists::listening_of(&rows);
         let pinned = crate::lists::pinned_of(&rows);
         // A helper or a headless run that doesn't need you is out of the rest, as it's off the
         // Mac's bar: its agent or script reads what it writes. Searching finds it.
@@ -488,7 +493,11 @@ pub(crate) fn quick_list(rows: &[SessionRow], prs: &[PrRow], project: &str, quer
         reviews.sort_by(|a, b| crate::lists::by_wait(a, b));
         let waiting = waiting || !reviews.is_empty();
         let mut shown = std::collections::HashSet::new();
-        // The pinned ones aren't listed again below.
+        // The ones hearing and the pinned ones aren't listed again below.
+        if !listening.is_empty() {
+            shown.extend(listening.iter().map(|r| r.key.clone()));
+            sections.push(QuickSection { group: QuickGroup::Listening, count: listening.len() as u32, rows: listening.into_iter().map(session).collect() });
+        }
         if !pinned.is_empty() {
             shown.extend(pinned.iter().map(|r| r.key.clone()));
             sections.push(QuickSection { group: QuickGroup::Pinned, count: pinned.len() as u32, rows: pinned.into_iter().map(session).collect() });
@@ -1062,7 +1071,7 @@ pub(crate) mod tests {
             name: None,
             origin: None,
             limit: None,
-            connection_lost: None,
+            api_error: None,
             quiet: false,
             unattended: false,
             headless: false,
@@ -1083,6 +1092,7 @@ pub(crate) mod tests {
             listening: false,
             at_a_prompt: false,
             mark: crate::Mark::Quiet,
+            suggested_snooze: None,
         }
     }
 
@@ -1150,6 +1160,23 @@ pub(crate) mod tests {
         // With nothing else waiting, the one still running is under Working, not Moved to top.
         let l = quick_list(&rows[4..], &[], "", "", &[], &[], false, NOW);
         assert_eq!(keys(&l)[0], (QuickGroup::Working, vec!["running".to_string()]));
+    }
+
+    #[test]
+    fn sessions_hearing_a_meeting_lead_above_the_pinned_and_arent_listed_again() {
+        let mut hearing = row("hearing", "Standup", Status::Working, 50);
+        hearing.listening = true;
+        // A pinned one is listed with the ones hearing while it hears, not among the pinned.
+        let mut pinned_hearing = row("pinned-hearing", "Planning", Status::Needs, 60);
+        (pinned_hearing.listening, pinned_hearing.pinned) = (true, Some(0));
+        let mut pinned = row("pinned", "P", Status::Idle, 70);
+        pinned.pinned = Some(1);
+        let turn = row("turn", "T", Status::Unread, 80);
+        let l = quick_list(&[hearing, pinned_hearing, pinned, turn], &[], "", "", &[], &[], false, NOW);
+        assert_eq!(
+            keys(&l),
+            [(QuickGroup::Listening, vec!["pinned-hearing".to_string(), "hearing".into()]), (QuickGroup::Pinned, vec!["pinned".into()]), (QuickGroup::YourTurn, vec!["turn".into()])]
+        );
     }
 
     #[test]

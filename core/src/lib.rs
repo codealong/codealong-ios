@@ -217,9 +217,9 @@ pub struct SessionRow {
     /// Its last turn ended on its account's usage limit and nothing has been said since: what that
     /// comes to, in a sentence or two, with `{in:<ms>}` for when it lifts.
     pub limit: Option<String>,
-    /// Its last turn ended because its harness couldn't reach its API (the Mac slept, the network
-    /// dropped), and nothing has been said since: what that comes to, as the Mac says it.
-    pub connection_lost: Option<String>,
+    /// Its last turn ended on an error from its API, a lost connection included, and nothing has
+    /// gone on since: what that comes to, and Try again (`api_error_note`).
+    pub api_error: Option<ApiErrorNote>,
     /// Quiet, from its Mac: a turn it ends doesn't wait on you, and it comes to you only when it
     /// needs you (its Mac has already left its turns out of Your turn).
     pub quiet: bool,
@@ -285,6 +285,45 @@ pub struct SessionRow {
     pub at_a_prompt: bool,
     /// What its status mark draws (`mark_of`), as the Mac's SessionGlyph does.
     pub mark: Mark,
+    /// A snooze to offer it, until the time its last reply says the work goes on (`suggested_snooze`).
+    /// None from Macs before 2026-11-11.
+    pub suggested_snooze: Option<SuggestedSnooze>,
+}
+
+/// A snooze offered for a session whose last reply says its work goes on at a later time, with
+/// nothing for you or it to do before then (snooze.ts `suggestedSnooze`): first in its Snooze menu
+/// and on a line above its box. Only offered: nothing snoozes by itself.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct SuggestedSnooze {
+    /// When the work goes on, which the snooze runs to: 9 that morning where Jev read a day, any
+    /// time an agent that tagged it said.
+    pub until: i64,
+    /// It's offered only before this, a little ahead of `until`: a snooze any shorter isn't worth
+    /// it.
+    pub offered_till: i64,
+    /// Who read the reply that way: "Jev’s read", or "Tagged by" the agent's session, with what it
+    /// noted (insights.ts `readBy`).
+    pub by: String,
+}
+
+/// A suggested snooze less than this far off isn't worth one (snooze.ts `WORTH`).
+const SNOOZE_WORTH_MS: i64 = 5 * 60 * 1000;
+
+/// The snooze to offer a session (`SuggestedSnooze`): until its read's `waits_until`, while that's
+/// worth a snooze, and for none that's snoozed already or archived (snooze.ts `suggestedSnooze`).
+fn suggested_snooze(s: &Session, snoozed: bool, now: i64) -> Option<SuggestedSnooze> {
+    let insight = s.insight.as_ref()?;
+    let until = insight.waits_until?;
+    let offered_till = until - SNOOZE_WORTH_MS;
+    if offered_till <= now || snoozed || s.archived {
+        return None;
+    }
+    let read = match &insight.by {
+        None => "Jev\u{2019}s read".to_string(),
+        Some(_) => format!("Tagged by {}", insight.by_title.as_deref().filter(|t| !t.is_empty()).unwrap_or("an agent")),
+    };
+    let note = insight.note.as_deref().filter(|n| insight.by.is_some() && !n.is_empty()).map(|n| format!(": {n}")).unwrap_or_default();
+    Some(SuggestedSnooze { until, offered_till, by: format!("{read}{note}") })
 }
 
 /// What a session's status mark draws, as the Mac's SessionGlyph (ui/primitives.tsx) does,
@@ -358,13 +397,14 @@ fn finished_words(s: &Session, status: Status) -> Option<FinishedWords> {
 }
 
 /// A command a working session waits on, as the Mac says it at the end of its conversation in the
-/// working line's place (Working.tsx `Waiting`): one you allowed in your terminal, which its agent
-/// waits on (`Session::running`, from Macs since 2026-11-04), or one its turn left running in the
-/// background (`Session::background`).
+/// working line's place (Working.tsx `Waiting`): one in a terminal (`Session::running`, from Macs
+/// since 2026-11-04), which you allowed and its agent waits on, or which you ran for it yourself
+/// and whose output goes to it when it ends (`RunningIn::yours`, from Macs since 2026-11-11); or one
+/// its turn left running in the background (`Session::background`).
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
 pub struct WaitsOn {
-    /// What it says first: "Running in Ghostty", "Waiting on", or "Waiting on a command in the
-    /// background" when its Mac couldn't read the command.
+    /// What it says first: "Running in Ghostty", "Your command in Ghostty", "Waiting on", or
+    /// "Waiting on a command in the background" when its Mac couldn't read the command.
     pub lead: String,
     /// The command, on one line, to show; none when its Mac couldn't read it.
     pub command: Option<String>,
@@ -377,6 +417,9 @@ pub struct WaitsOn {
     /// where it waits on several (`Session::agents`), which the Mac's line counts and its hover
     /// names; "" left out. None for one, which its Mac's line names itself.
     pub agents: Vec<String>,
+    /// Where a command you ran for it goes once it ends ("What it prints goes to claude when it
+    /// ends"), said after it; none for any other.
+    pub then: Option<String>,
 }
 
 /// Whether a session is taking a turn, as its Mac's feed says: working on it, not only waiting on
@@ -405,17 +448,18 @@ fn waits_on(s: &Session) -> Option<WaitsOn> {
     let one_line = |c: &str| Some(c.split_whitespace().collect::<Vec<_>>().join(" ")).filter(|c| !c.is_empty());
     let written = |c: &str| Some(c.trim().to_string()).filter(|c| !c.is_empty());
     if let Some(run) = &s.running {
-        return Some(WaitsOn { lead: format!("Running in {}", run.terminal), command: one_line(&run.command), written: written(&run.command), in_terminal: true, agents: Vec::new() });
+        let (lead, then) = if run.yours { (format!("Your command in {}", run.terminal), Some(format!("What it prints goes to {} when it ends", s.account))) } else { (format!("Running in {}", run.terminal), None) };
+        return Some(WaitsOn { lead, command: one_line(&run.command), written: written(&run.command), in_terminal: true, agents: Vec::new(), then });
     }
     if !s.agents.is_empty() {
         let lead = s.excerpt.clone().filter(|e| !e.trim().is_empty()).unwrap_or_else(|| "Waiting on its background agents".into());
         let agents = if s.agents.len() < 2 { Vec::new() } else { s.agents.iter().map(|a| a.trim().to_string()).filter(|a| !a.is_empty()).collect() };
-        return Some(WaitsOn { lead, command: None, written: None, in_terminal: false, agents });
+        return Some(WaitsOn { lead, command: None, written: None, in_terminal: false, agents, then: None });
     }
     let background = s.background.as_deref()?;
     let command = one_line(background);
     let lead = if command.is_some() { "Waiting on" } else { "Waiting on a command in the background" };
-    Some(WaitsOn { lead: lead.into(), command, written: written(background), in_terminal: false, agents: Vec::new() })
+    Some(WaitsOn { lead: lead.into(), command, written: written(background), in_terminal: false, agents: Vec::new(), then: None })
 }
 
 /// A session moved to the top of what waits on you (`Session::raised`).
@@ -1153,7 +1197,7 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 name: s.name.clone(),
                 origin: s.origin.as_ref().map(|o| SessionOrigin { key: remote_key(&d.short, &o.key), title: titles.get(o.key.as_str()).map(|t| t.to_string()), fork: o.how == OriginHow::Fork }),
                 limit: s.limit.as_ref().filter(|_| status != Status::Working).map(|l| limit_words(&s.account, l, now)),
-                connection_lost: s.connection_lost.as_ref().filter(|_| status != Status::Working).map(connection_lost_words),
+                api_error: api_error_note(s, status),
                 quiet: s.quiet,
                 unattended: s.unattended(),
                 headless: s.headless,
@@ -1174,6 +1218,8 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 listening: s.listening,
                 at_a_prompt: s.waits_at_a_prompt(),
                 mark: mark_of(s, status, snoozed_until.is_some(), aside),
+                // Snoozed, working or not, as its Mac has it.
+                suggested_snooze: suggested_snooze(s, s.snoozed_until.is_some_and(|t| t > now), now),
             };
             if listed { sessions.push(row) } else { unlisted.push(row) }
         }
@@ -1219,11 +1265,57 @@ fn remote_control_url(id: &str) -> String {
     format!("https://claude.ai/code/{safe}")
 }
 
-/// Why a session's last turn ended when its harness couldn't reach its API, and what happens next,
-/// as the Mac's session header says it (lanes.ts `connectionLostWords`).
-fn connection_lost_words(lost: &codealong_peer::model::ConnectionLost) -> String {
-    let then = if lost.continues { "Codealong tells it to carry on once the API can be reached again." } else { "Send it something to carry on." };
-    format!("Its last turn ended because it couldn\u{2019}t reach its API: the Mac slept, or the network dropped. {then}")
+/// That an API error ended a session's last turn and nothing has gone on since, as the Mac's
+/// session header says it, with Try again beside it (lanes.ts `apiErrorWords`, menus.ts
+/// `tryAgain`).
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct ApiErrorNote {
+    /// What ended it, in its harness's words where it said them, and that Codealong carries it on
+    /// where it does: for beside the button.
+    pub says: String,
+    /// The same where there's no button (this device can't act on it there), which ends telling
+    /// you to send it something.
+    pub says_alone: String,
+    /// It couldn't reach its API (the Mac slept, the network dropped, the connection was refused),
+    /// rather than the API answering with an error.
+    pub lost: bool,
+    /// The button: "Try again", or "Try now" where its Mac carries it on by itself once the API can
+    /// be reached. None for an archived one, which the Mac offers none for.
+    pub button: Option<String>,
+    /// What the button sends it, as yours, as the Mac's does (menus.ts `TRY_AGAIN`).
+    pub message: String,
+}
+
+/// What Try again sends a session whose turn an API error ended, as yours (menus.ts `TRY_AGAIN`):
+/// it says why, whether or not the harness hands its agent the error.
+const TRY_AGAIN: &str = "Your last turn ended on an API error. Try again, carrying on where you left off.";
+
+/// What an API error that ended a session's turn comes to (`ApiErrorNote`), while it isn't
+/// working (lanes.ts `endedOnApiError`): `Session::api_error` from Macs since 2026-11-11, which
+/// says what went wrong, else `connection_lost`, the only one older Macs send.
+fn api_error_note(s: &Session, status: Status) -> Option<ApiErrorNote> {
+    if status == Status::Working || (s.api_error.is_none() && s.connection_lost.is_none()) {
+        return None;
+    }
+    let said = s.api_error.as_ref().map(|e| e.said.trim().trim_end_matches(|c: char| c.is_whitespace() || c == '.')).filter(|w| !w.is_empty());
+    let what = match said {
+        Some(said) => format!("Its last turn ended on an API error: {said}."),
+        None => "Its last turn ended because it couldn\u{2019}t reach its API: the Mac slept, or the network dropped.".to_string(),
+    };
+    let continues = s.connection_lost.as_ref().is_some_and(|l| l.continues);
+    let (says, says_alone) = if continues {
+        let words = format!("{what} Codealong tells it to carry on once the API can be reached again.");
+        (words.clone(), words)
+    } else {
+        (what.clone(), format!("{what} Send it something to try again."))
+    };
+    Some(ApiErrorNote {
+        says,
+        says_alone,
+        lost: s.connection_lost.is_some(),
+        button: (!s.archived).then(|| if continues { "Try now" } else { "Try again" }.to_string()),
+        message: TRY_AGAIN.to_string(),
+    })
 }
 
 /// What a usage limit that stopped a session comes to, as the Mac's session header says it
@@ -3140,7 +3232,7 @@ mod order_tests {
             name: None,
             origin: None,
             limit: None,
-            connection_lost: None,
+            api_error: None,
             quiet: false,
             unattended: false,
             headless: false,
@@ -3161,6 +3253,7 @@ mod order_tests {
             listening: false,
             at_a_prompt: false,
             mark: Mark::Quiet,
+            suggested_snooze: None,
         }
     }
 
@@ -3300,18 +3393,24 @@ mod order_tests {
         use codealong_peer::model::RunningIn;
         let working = |id: &str| Session { status: PeerStatus::Working, ..Session::new(Harness::Claude, "claude", id) };
         // Shown on one line, and copied as it was written: its lines, and the spaces it quotes.
-        let run = RunningIn { terminal: "Ghostty".into(), command: "echo first\n  echo 'a  b'\n".into() };
+        let run = RunningIn { terminal: "Ghostty".into(), command: "echo first\n  echo 'a  b'\n".into(), yours: false };
         let both = Session { running: Some(run), background: Some("make watch".into()), ..working("both") };
         assert_eq!(
             waits_on(&both),
-            Some(WaitsOn { lead: "Running in Ghostty".into(), command: Some("echo first echo 'a b'".into()), written: Some("echo first\n  echo 'a  b'".into()), in_terminal: true, agents: vec![] })
+            Some(WaitsOn { lead: "Running in Ghostty".into(), command: Some("echo first echo 'a b'".into()), written: Some("echo first\n  echo 'a  b'".into()), in_terminal: true, agents: vec![], then: None })
+        );
+        // A command you ran for it says it's yours, and where what it prints goes.
+        let yours = Session { running: Some(RunningIn { terminal: "Codealong".into(), command: "npm test".into(), yours: true }), ..working("yours") };
+        assert_eq!(
+            waits_on(&yours),
+            Some(WaitsOn { lead: "Your command in Codealong".into(), command: Some("npm test".into()), written: Some("npm test".into()), in_terminal: true, agents: vec![], then: Some("What it prints goes to claude when it ends".into()) })
         );
         let background = Session { background: Some("make watch".into()), ..working("bg") };
-        assert_eq!(waits_on(&background), Some(WaitsOn { lead: "Waiting on".into(), command: Some("make watch".into()), written: Some("make watch".into()), in_terminal: false, agents: vec![] }));
+        assert_eq!(waits_on(&background), Some(WaitsOn { lead: "Waiting on".into(), command: Some("make watch".into()), written: Some("make watch".into()), in_terminal: false, agents: vec![], then: None }));
         // Agents it left running in the background, in its Mac's words for them, what each is
         // for listed where there are several; ahead of a command, as the Mac's thread has them.
         let agents = Session { agents: vec!["Review the diff".into(), " ".into(), "Run the tests".into()], excerpt: Some("Waiting on 3 background agents".into()), ..background.clone() };
-        assert_eq!(waits_on(&agents), Some(WaitsOn { lead: "Waiting on 3 background agents".into(), command: None, written: None, in_terminal: false, agents: vec!["Review the diff".into(), "Run the tests".into()] }));
+        assert_eq!(waits_on(&agents), Some(WaitsOn { lead: "Waiting on 3 background agents".into(), command: None, written: None, in_terminal: false, agents: vec!["Review the diff".into(), "Run the tests".into()], then: None }));
         assert_eq!(waits_on(&Session { excerpt: None, ..agents.clone() }).map(|w| w.lead), Some("Waiting on its background agents".into()));
         // One, its Mac's line names.
         let one = Session { agents: vec!["Review the diff".into()], excerpt: Some("Waiting on a background agent · Review the diff".into()), ..agents };
@@ -3323,6 +3422,82 @@ mod order_tests {
         assert_eq!(waits_on(&working("turn")), None);
         assert_eq!(waits_on(&Session { stalled_since: Some(5), ..both.clone() }), None);
         assert_eq!(waits_on(&Session { status: PeerStatus::Needs, ..both }), None);
+    }
+
+    #[test]
+    fn a_session_whose_command_of_yours_runs_waits_on_it_with_no_turn_to_stop() {
+        use codealong_peer::model::RunningIn;
+        let yours = Session {
+            status: PeerStatus::Working,
+            running: Some(RunningIn { terminal: "Ghostty".into(), command: "npm test".into(), yours: true }),
+            ..Session::new(Harness::Claude, "claude", "yours")
+        };
+        // Drawn waiting, as on what its turn left running: no turn runs, so nothing to stop, and a
+        // prompt starts one.
+        assert_eq!(mark_of(&yours, Status::Working, false, false), Mark::Waiting);
+        assert!(!turn_running(&yours));
+        // One you allowed for its agent is its turn's.
+        let allowed = Session { running: Some(RunningIn { yours: false, ..yours.running.clone().unwrap() }), ..yours.clone() };
+        assert_eq!(mark_of(&allowed, Status::Working, false, false), Mark::Working);
+        assert!(turn_running(&allowed));
+    }
+
+    #[test]
+    fn an_api_error_that_ended_a_turn_says_what_went_wrong_and_offers_try_again() {
+        use codealong_peer::model::{ApiError, ConnectionLost};
+        let base = Session::new(Harness::Claude, "claude", "err");
+        let error = Some(ApiError { at: 5, said: "529 Overloaded. This is a server-side issue, usually temporary. \n".into() });
+        let overloaded = Session { api_error: error.clone(), ..base.clone() };
+        assert_eq!(
+            api_error_note(&overloaded, Status::Unread),
+            Some(ApiErrorNote {
+                says: "Its last turn ended on an API error: 529 Overloaded. This is a server-side issue, usually temporary.".into(),
+                says_alone: "Its last turn ended on an API error: 529 Overloaded. This is a server-side issue, usually temporary. Send it something to try again.".into(),
+                lost: false,
+                button: Some("Try again".into()),
+                message: TRY_AGAIN.into(),
+            })
+        );
+        // A lost connection its Mac carries on by itself: Try now, and it says so either way.
+        let lost = Session { api_error: Some(ApiError { at: 5, said: "No response from API".into() }), connection_lost: Some(ConnectionLost { at: 5, continues: true }), ..base.clone() };
+        let note = api_error_note(&lost, Status::Unread).unwrap();
+        assert_eq!(note.says, "Its last turn ended on an API error: No response from API. Codealong tells it to carry on once the API can be reached again.");
+        assert_eq!(note.says_alone, note.says);
+        assert_eq!((note.lost, note.button.as_deref()), (true, Some("Try now")));
+        // A Mac from before 2026-11-11 sends only the lost connection, without its words.
+        let older = Session { connection_lost: Some(ConnectionLost { at: 5, continues: false }), ..base.clone() };
+        let note = api_error_note(&older, Status::Idle).unwrap();
+        assert_eq!(note.says, "Its last turn ended because it couldn\u{2019}t reach its API: the Mac slept, or the network dropped.");
+        assert_eq!(note.says_alone, "Its last turn ended because it couldn\u{2019}t reach its API: the Mac slept, or the network dropped. Send it something to try again.");
+        // Words that are only spaces are none.
+        let blank = Session { api_error: Some(ApiError { at: 5, said: " . ".into() }), ..older.clone() };
+        assert_eq!(api_error_note(&blank, Status::Idle).map(|n| n.says), api_error_note(&older, Status::Idle).map(|n| n.says));
+        // Archived, there's no button; working again, or with no error, there's no note.
+        assert_eq!(api_error_note(&Session { archived: true, ..overloaded.clone() }, Status::Unread).and_then(|n| n.button), None);
+        assert_eq!(api_error_note(&overloaded, Status::Working), None);
+        assert_eq!(api_error_note(&base, Status::Unread), None);
+    }
+
+    #[test]
+    fn a_reply_whose_work_goes_on_later_is_offered_a_snooze_until_then() {
+        use codealong_peer::model::SessionInsight;
+        const NOW: i64 = 1_000_000_000;
+        const DAY: i64 = 24 * 60 * 60 * 1000;
+        let read = |insight: SessionInsight| Session { insight: Some(insight), ..Session::new(Harness::Claude, "claude", "later") };
+        let jev = read(SessionInsight { waits_until: Some(NOW + DAY), ..Default::default() });
+        assert_eq!(suggested_snooze(&jev, false, NOW), Some(SuggestedSnooze { until: NOW + DAY, offered_till: NOW + DAY - SNOOZE_WORTH_MS, by: "Jev\u{2019}s read".into() }));
+        // An agent's tag says who, and what it noted.
+        let tagged = read(SessionInsight { waits_until: Some(NOW + DAY), by: Some("k".into()), by_title: Some("Orchestrator".into()), note: Some("The freeze lifts Monday.".into()), ..Default::default() });
+        assert_eq!(suggested_snooze(&tagged, false, NOW).map(|s| s.by), Some("Tagged by Orchestrator: The freeze lifts Monday.".into()));
+        let unnamed = read(SessionInsight { waits_until: Some(NOW + DAY), by: Some("k".into()), ..Default::default() });
+        assert_eq!(suggested_snooze(&unnamed, false, NOW).map(|s| s.by), Some("Tagged by an agent".into()));
+        // None once it's all but here or gone by, while it's snoozed or archived, and for a
+        // reply that names no time.
+        assert_eq!(suggested_snooze(&read(SessionInsight { waits_until: Some(NOW + SNOOZE_WORTH_MS), ..Default::default() }), false, NOW), None);
+        assert_eq!(suggested_snooze(&read(SessionInsight { waits_until: Some(NOW - DAY), ..Default::default() }), false, NOW), None);
+        assert_eq!(suggested_snooze(&jev, true, NOW), None);
+        assert_eq!(suggested_snooze(&Session { archived: true, ..jev.clone() }, false, NOW), None);
+        assert_eq!(suggested_snooze(&read(SessionInsight::default()), false, NOW), None);
     }
 
     #[test]

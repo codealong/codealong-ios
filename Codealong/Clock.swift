@@ -57,3 +57,13 @@ enum Clock {
         }
     }
 }
+
+extension Date {
+    /// A time the core gives, in milliseconds since the epoch.
+    init(ms: Int64) {
+        self.init(timeIntervalSince1970: Double(ms) / 1000)
+    }
+
+    /// This time as the core takes one, in milliseconds since the epoch.
+    var ms: Int64 { Int64(timeIntervalSince1970 * 1000) }
+}

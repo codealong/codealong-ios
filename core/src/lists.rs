@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use codealong_peer::feed::remote_key;
 
-use crate::{all_rows, all_worktrees, in_inbox, now_ms, project_list, Core, Feeds, PrRow, SessionRow, Status, Worktree};
+use crate::{all_rows, all_worktrees, in_inbox, inbox_order, now_ms, project_list, Core, Feeds, PrRow, SessionRow, Status, Worktree};
 
 /// Merged and closed PRs stay on the page this long after their last change.
 const DONE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
@@ -135,11 +135,34 @@ fn listed<'a>(rows: &'a [SessionRow], project: &'a str, now: i64) -> impl Iterat
     rows.iter().filter(move |r| in_inbox(r, now) && !r.unattended && (project.is_empty() || r.project == project))
 }
 
-/// The pinned ones among `rows`, in their Macs' order: by place, two Macs' firsts by Mac.
+/// The ones among `rows` hearing a meeting now, which lead every order, above the pinned ones,
+/// in the list's order, as the Mac's Sessions view leads with them under Listening while they hear
+/// (boardLists.ts `sessionTops`): a pinned one is there rather than among the pinned, and back in
+/// its place once it stops.
+pub(crate) fn listening_of<'a>(rows: &[&'a SessionRow]) -> Vec<&'a SessionRow> {
+    let mut out: Vec<&SessionRow> = rows.iter().copied().filter(|r| r.listening).collect();
+    out.sort_by(|a, b| inbox_order(a, b));
+    out
+}
+
+/// It leads the list apart from the rest: hearing a meeting (`listening_of`) or pinned (`pinned_of`).
+pub(crate) fn leads(r: &SessionRow) -> bool {
+    r.listening || r.pinned.is_some()
+}
+
+/// The pinned ones among `rows`, in their Macs' order: by place, two Macs' firsts by Mac. One
+/// hearing a meeting leads above them instead (`listening_of`).
 pub(crate) fn pinned_of<'a>(rows: &[&'a SessionRow]) -> Vec<&'a SessionRow> {
-    let mut out: Vec<&SessionRow> = rows.iter().copied().filter(|r| r.pinned.is_some()).collect();
+    let mut out: Vec<&SessionRow> = rows.iter().copied().filter(|r| r.pinned.is_some() && !r.listening).collect();
     out.sort_by(|a, b| a.pinned.cmp(&b.pinned).then_with(|| a.device_name.cmp(&b.device_name)).then_with(|| a.key.cmp(&b.key)));
     out
+}
+
+/// The list's sessions in `project` (empty for all) hearing a meeting now, which lead every order
+/// above the pinned ones (`listening_of`): helpers too, as the pinned ones.
+pub(crate) fn listening_sessions(rows: &[SessionRow], project: &str, now: i64) -> Vec<SessionRow> {
+    let these: Vec<&SessionRow> = rows.iter().filter(|r| in_inbox(r, now) && (project.is_empty() || r.project == project)).collect();
+    listening_of(&these).into_iter().cloned().collect()
 }
 
 /// The list's pinned sessions in `project` (empty for all), which lead every order: helpers too,
@@ -156,7 +179,7 @@ pub(crate) fn pinned_sessions(rows: &[SessionRow], project: &str, now: i64) -> V
 /// keyed by `@<device short id>:<id>`, and `shorts` each Mac's short id by its key.
 pub(crate) fn project_groups(rows: &[SessionRow], worktrees: &HashMap<String, Worktree>, shorts: &HashMap<&str, &str>, project: &str, now: i64) -> Vec<ProjectGroup> {
     let mut by_worktree: HashMap<String, (String, WorktreeGroup)> = HashMap::new();
-    for r in listed(rows, project, now).filter(|r| r.pinned.is_none()) {
+    for r in listed(rows, project, now).filter(|r| !leads(r)) {
         let id = remote_key(shorts.get(r.device.as_str()).copied().unwrap_or(&r.device), &r.worktree_id);
         let (_, group) = by_worktree.entry(id.clone()).or_insert_with(|| {
             let group = WorktreeGroup { id: id.clone(), name: r.worktree.clone(), branch: r.branch.clone(), device: r.device.clone(), device_name: r.device_name.clone(), worktree: worktrees.get(&id).cloned(), sessions: Vec::new() };
@@ -184,7 +207,7 @@ pub(crate) fn project_groups(rows: &[SessionRow], worktrees: &HashMap<String, Wo
 /// The list's sessions in `project` (empty for all), the last active first, the pinned ones left
 /// to lead apart.
 pub(crate) fn recent_sessions(rows: &[SessionRow], project: &str, now: i64) -> Vec<SessionRow> {
-    let mut out: Vec<SessionRow> = listed(rows, project, now).filter(|r| r.pinned.is_none()).cloned().collect();
+    let mut out: Vec<SessionRow> = listed(rows, project, now).filter(|r| !leads(r)).cloned().collect();
     out.sort_by(|a, b| b.last_activity.cmp(&a.last_activity).then_with(|| a.key.cmp(&b.key)));
     out
 }
@@ -224,6 +247,12 @@ impl Core {
     /// By project and Recent, as `quick` puts them first.
     pub fn pinned(&self, project: String) -> Vec<SessionRow> {
         self.client.with_feeds(|feeds| pinned_sessions(&all_rows(feeds), &project, now_ms()))
+    }
+
+    /// The list's sessions in `project` (empty for all) hearing a meeting now: they lead By project
+    /// and Recent above the pinned ones, as `quick` puts them first.
+    pub fn listening(&self, project: String) -> Vec<SessionRow> {
+        self.client.with_feeds(|feeds| listening_sessions(&all_rows(feeds), &project, now_ms()))
     }
 }
 
@@ -330,6 +359,25 @@ mod tests {
         assert_eq!(keys(pinned_sessions(&rows, "", NOW)), vec!["b", "a", "c", "h"]);
         assert_eq!(keys(pinned_sessions(&rows, "Other", NOW)), Vec::<String>::new());
         // By project and Recent leave them to lead apart.
+        assert_eq!(keys(recent_sessions(&rows, "", NOW)), vec!["d"]);
+        let by = project_groups(&rows, &HashMap::new(), &HashMap::new(), "", NOW);
+        assert_eq!(by.iter().flat_map(|p| p.worktrees.iter().flat_map(|w| w.sessions.iter().map(|s| s.key.clone()))).collect::<Vec<_>>(), vec!["d"]);
+    }
+
+    #[test]
+    fn sessions_hearing_a_meeting_lead_apart_above_the_pinned() {
+        let mut hearing = in_worktree("l", "App", "app-1", Status::Working, NOW - HOUR);
+        hearing.listening = true;
+        // Pinned, it leads with the ones hearing while it hears, not with the pinned.
+        let mut pinned_hearing = in_worktree("p", "App", "app-1", Status::Working, NOW - 2 * HOUR);
+        (pinned_hearing.listening, pinned_hearing.pinned) = (true, Some(0));
+        let mut pinned = in_worktree("q", "App", "app-1", Status::Idle, NOW - HOUR);
+        pinned.pinned = Some(1);
+        let plain = in_worktree("d", "App", "app-1", Status::Idle, NOW - 3 * HOUR);
+        let rows = [plain, pinned, pinned_hearing, hearing];
+        let keys = |rows: Vec<SessionRow>| rows.into_iter().map(|r| r.key).collect::<Vec<_>>();
+        assert_eq!(keys(listening_sessions(&rows, "", NOW)), vec!["l", "p"]);
+        assert_eq!(keys(pinned_sessions(&rows, "", NOW)), vec!["q"]);
         assert_eq!(keys(recent_sessions(&rows, "", NOW)), vec!["d"]);
         let by = project_groups(&rows, &HashMap::new(), &HashMap::new(), "", NOW);
         assert_eq!(by.iter().flat_map(|p| p.worktrees.iter().flat_map(|w| w.sessions.iter().map(|s| s.key.clone()))).collect::<Vec<_>>(), vec!["d"]);
