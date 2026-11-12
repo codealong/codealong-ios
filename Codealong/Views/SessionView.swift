@@ -632,7 +632,7 @@ struct SessionView: View {
             if let error = row?.apiError {
                 // Sent as the box sends a message, so one that isn't running goes on where the box
                 // would take it, as the Mac's goes on where Carry on would.
-                ApiErrorLine(note: error, tryAgain: canAct && pending == nil ? { Task { await send(text: error.message) } } : nil)
+                ApiErrorLine(note: error, tryAgain: canAct && pending == nil ? { Task { await send(text: error.message) } } : nil, sending: !(store.outgoing[key] ?? []).isEmpty)
             }
             if let cut = row?.cutOff {
                 SessionNote(words: cut, symbol: "scissors", tint: .orange)
@@ -1528,7 +1528,7 @@ struct SessionView: View {
         case "raise": await raise()
         // Try again beside the note of an API error that ended its last turn.
         case "tryagain":
-            if let error = row?.apiError, error.button != nil, canAct, pending == nil { await send(text: error.message) }
+            if let error = row?.apiError, error.button != nil, canAct, pending == nil, (store.outgoing[key] ?? []).isEmpty { await send(text: error.message) }
         case "remove":
             if let held { await removeHeld(held) }
         case "edit":
@@ -2200,6 +2200,9 @@ private struct ApiErrorLine: View {
     /// Sends the message; none where it can't be sent from here, when the words say to send it
     /// something instead.
     let tryAgain: (() -> Void)?
+    /// A message to it is on its way: the button waits, so a second tap doesn't send another
+    /// before its Mac says the turn is going.
+    var sending = false
 
     var body: some View {
         let button = tryAgain.flatMap { run in note.button.map { (label: $0, run: run) } }
@@ -2215,6 +2218,7 @@ private struct ApiErrorLine: View {
                 Button(button.label, action: button.run)
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+                    .disabled(sending)
                     .accessibilityHint("Sends it a message saying its last turn ended on an API error, to try again where it left off")
             }
         }
@@ -2224,15 +2228,25 @@ private struct ApiErrorLine: View {
 /// A snooze offered for a session whose last reply says its work goes on at a later time, with
 /// nothing for you or it to do before then, on a line above its box as the Mac offers it
 /// (SnoozeSuggestion.tsx; the core's `SuggestedSnooze`): a tap snoozes it until then, as the first
-/// time in its Snooze menu does. Who read the reply that way is in its hint. Nothing snoozes by
-/// itself.
+/// time in its Snooze menu does. Who read the reply that way is in its hint. It goes once the
+/// offer does (`offeredTill`), whether or not anything else changes. Nothing snoozes by itself.
 private struct SnoozeSuggestionLine: View {
     let suggested: SuggestedSnooze
     let snooze: () -> Void
 
     var body: some View {
+        TimelineView(.explicit([Date(ms: suggested.offeredTill)])) { _ in
+            if offered { line }
+        }
+    }
+
+    /// Still offered now: it's drawn again as the offer ends.
+    private var offered: Bool { Date.now.ms < suggested.offeredTill }
+
+    private var line: some View {
         let when = Snooze.words(Date(ms: suggested.until))
-        Button(action: snooze) {
+        // Checked again as it's tapped: a line drawn just before the offer ended is still there.
+        return Button { if offered { snooze() } } label: {
             HStack(spacing: 6) {
                 Image(systemName: "moon.zzz").font(.caption).foregroundStyle(.secondary)
                 Text("Snooze until \(when)")
