@@ -1112,7 +1112,7 @@ struct QuickView: View {
 
     /// Starts a session with what's typed: in the worktree chosen below, or where a suggestion says.
     private func start(in over: Worktree? = nil, newWorktree over2: Bool? = nil) async {
-        let worktree = over ?? composer.worktree(store: store, project: startProject)
+        let worktree = over ?? composer.startWorktree(store: store, project: startProject)
         guard !acting, let worktree, let account = composer.account, let place = composer.place else { return }
         let newTree = composer.takesNewWorktree && !worktree.chat && (over2 ?? composer.newWorktree)
         // What starts is what's written and chosen as it's tapped: the box and the menu stay open

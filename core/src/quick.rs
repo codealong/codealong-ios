@@ -1662,7 +1662,7 @@ pub(crate) mod tests {
         let mut waits = row(&remote_key(short, "s1"), "Waits", Status::Needs, NOW);
         waits.asks = false;
         let rows: HashMap<String, SessionRow> = [(waits.key.clone(), waits)].into_iter().collect();
-        let w = Worktree { id: "/r".into(), project: "App".into(), repo: "app".into(), name: "app".into(), branch: None, last_activity: NOW, device: "abcdef0123ffff".into(), main: true, chat: false, reuse: None, codealong: false, codealong_ios: false };
+        let w = Worktree { id: "/r".into(), project: "App".into(), repo: "app".into(), name: "app".into(), branch: None, last_activity: NOW, device: "abcdef0123ffff".into(), main: true, folder: false, chat: false, reuse: None, codealong: false, codealong_ios: false };
         let worktrees: HashMap<String, Worktree> = [(remote_key(short, "/r"), w)].into_iter().collect();
         let route = api::Route {
             action: api::Action::Send,
@@ -1735,7 +1735,7 @@ pub(crate) mod tests {
     }
 
     fn worktree(id: &str, main: bool, reuse: Option<crate::WorktreeReuse>, at: i64) -> Worktree {
-        Worktree { id: id.into(), project: "App".into(), repo: "app".into(), name: id.trim_start_matches('/').into(), branch: None, last_activity: at, device: "abcdef0123ffff".into(), main, chat: false, reuse, codealong: false, codealong_ios: false }
+        Worktree { id: id.into(), project: "App".into(), repo: "app".into(), name: id.trim_start_matches('/').into(), branch: None, last_activity: at, device: "abcdef0123ffff".into(), main, folder: false, chat: false, reuse, codealong: false, codealong_ios: false }
     }
 
     fn route(lanes: &[(&str, f64)], own_worktree: f64, no_repo: f64) -> api::Route {
@@ -1786,5 +1786,56 @@ pub(crate) mod tests {
         let plain = [worktree("/app-old", false, None, NOW), worktree("/app", true, None, NOW - 10)];
         assert_eq!(crate::start_worktree(&plain, "").unwrap().id, "/app");
         assert!(crate::start_worktree(&all[4..], "").is_none());
+    }
+
+    #[test]
+    fn a_start_picks_a_repo_then_a_worktree_in_it() {
+        use crate::WorktreeReuse::*;
+        let mut chats = worktree("/chats", false, None, NOW);
+        chats.chat = true;
+        chats.project = crate::ELSEWHERE.into();
+        let mut web = worktree("/web", true, None, NOW - 5);
+        web.repo = "web".into();
+        // Most recently active first, as a Mac's worktrees are.
+        let all = [
+            chats,
+            worktree("/task-new", false, None, NOW - 1),
+            worktree("/landed", false, Some(Landed), NOW - 2),
+            worktree("/busy", false, Some(Open), NOW - 3),
+            web,
+            worktree("/free", false, Some(Free), NOW - 6),
+            worktree("/review", false, Some(Review), NOW - 7),
+            worktree("/task-old", false, None, NOW - 8),
+            worktree("/app", true, Some(Open), NOW - 9),
+        ];
+        let ids = |ws: &[Worktree]| ws.iter().map(|w| w.id.clone()).collect::<Vec<_>>();
+
+        // Each repo once, the latest first, never the chats; each starts where new work goes.
+        let repos = crate::start_repos(&all, "");
+        assert_eq!(repos.iter().map(|r| (r.repo.as_str(), r.starts_in.id.as_str())).collect::<Vec<_>>(), [("app", "/free"), ("web", "/web")]);
+        assert_eq!(crate::start_worktree(&all, "").unwrap().id, "/free");
+
+        // The worktree menu: where new work starts first, the ones holding other work after.
+        let app = crate::repo_of(&all, "App", "app");
+        let menu = crate::repo_worktrees(&app);
+        assert_eq!(menu.from.map(|w| w.id), Some("/app".into()));
+        assert_eq!(ids(&menu.ready), ["/free", "/landed"]);
+        assert_eq!(menu.main.map(|w| w.id), Some("/app".into()));
+        assert_eq!(ids(&menu.under_way), ["/busy", "/review"]);
+        assert_eq!(ids(&menu.others), ["/task-new", "/task-old"]);
+
+        // A new worktree is made from the main checkout; without one ready, a start goes to the
+        // main checkout though it has work under way, never to a worktree that has.
+        assert_eq!(crate::start_worktree_in(&app, &all, true).unwrap().id, "/app");
+        let none_ready: Vec<Worktree> = all.iter().filter(|w| w.id != "/free" && w.id != "/landed").cloned().collect();
+        assert_eq!(crate::start_worktree_in(&crate::repo_of(&none_ready, "App", "app"), &none_ready, false).unwrap().id, "/app");
+        // Nor without a main checkout: the latest worktree then.
+        let no_main: Vec<Worktree> = none_ready.iter().filter(|w| !w.main).cloned().collect();
+        assert_eq!(crate::start_worktree_in(&crate::repo_of(&no_main, "App", "app"), &no_main, false).unwrap().id, "/task-new");
+        // A repo of plain folders makes no worktree.
+        let mut notes = worktree("/notes", false, None, NOW);
+        notes.folder = true;
+        assert!(crate::repo_worktrees(&[&notes]).from.is_none());
+        assert_eq!(crate::start_worktree_in(&[&notes], std::slice::from_ref(&notes), true).unwrap().id, "/notes");
     }
 }

@@ -756,6 +756,25 @@ final class Store {
         return core?.startWorktree(device: device, project: project)
     }
 
+    /// The repos a new session can start in on `device`, in `project` (empty for any), with where
+    /// it starts in each (the core's rule).
+    func startRepos(_ device: String, project: String) -> [StartRepo] {
+        _ = tick
+        return core?.startRepos(device: device, project: project) ?? []
+    }
+
+    /// A repo's worktrees on `device` as the worktree menu lists them (the core's rule).
+    func repoWorktrees(_ device: String, project: String, repo: String) -> RepoWorktrees? {
+        _ = tick
+        return core?.repoWorktrees(device: device, project: project, repo: repo)
+    }
+
+    /// Where a session starts in a repo on `device` unless you pick its worktree; with
+    /// `newWorktree`, the checkout a new one is made from (the core's rule).
+    func startWorktreeIn(_ device: String, project: String, repo: String, newWorktree: Bool) -> Worktree? {
+        core?.startWorktreeIn(device: device, project: project, repo: repo, newWorktree: newWorktree)
+    }
+
     func startSession(device: String, worktree: String, account: String, place: String, prompt: String, model: String?, effort: String?, newWorktree: Bool) async throws -> StartedSession {
         let core = try running()
         return try await Task.detached {

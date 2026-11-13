@@ -2606,6 +2606,8 @@ pub struct Worktree {
     pub device: String,
     /// It's its repo's main checkout.
     pub main: bool,
+    /// A plain folder, not a git checkout: no worktree can be made from it.
+    pub folder: bool,
     /// Codealong's own chats: a session started here gets a folder of its own, in no project.
     pub chat: bool,
     /// What it holds, for a worktree that takes one piece of work after another; none for one
@@ -2727,6 +2729,7 @@ pub(crate) fn all_worktrees(feeds: &Feeds) -> Vec<Worktree> {
                 last_activity: l.last_activity,
                 device: d.key.clone(),
                 main: l.origin == codealong_peer::model::Origin::Main,
+                folder: l.origin == codealong_peer::model::Origin::Folder,
                 chat: l.starts_chats,
                 reuse: l.reuse.map(|r| match r {
                     Reuse::Free => WorktreeReuse::Free,
@@ -2816,7 +2819,7 @@ mod improve_tests {
     use super::*;
 
     fn wt(id: &str, device: &str, main: bool, codealong: bool) -> Worktree {
-        Worktree { id: id.into(), project: "Codealong".into(), repo: "codealong".into(), name: id.into(), branch: None, last_activity: 0, device: device.into(), main, chat: false, reuse: None, codealong, codealong_ios: false }
+        Worktree { id: id.into(), project: "Codealong".into(), repo: "codealong".into(), name: id.into(), branch: None, last_activity: 0, device: device.into(), main, folder: false, chat: false, reuse: None, codealong, codealong_ios: false }
     }
 
     fn ios(id: &str, device: &str, main: bool) -> Worktree {
@@ -2920,15 +2923,85 @@ pub(crate) fn new_work_in<'a>(picked: &'a Worktree, p: f64, all: &'a [Worktree],
     free.or_else(|| repo.iter().find(|w| w.main)).or_else(|| repo.iter().min_by_key(|w| (rank(w), std::cmp::Reverse(w.last_activity)))).copied()
 }
 
+/// A repo a new session can start in on a Mac, for the start bar's repo list (the Mac's quick.ts
+/// `repoChoices`): a new session is new work in a repo far more often than it joins a worktree's,
+/// and most worktrees are kept for the one piece of work they were made for, so the repo is
+/// picked first and the worktree in it follows: `starts_in`, unless you pick another.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct StartRepo {
+    pub project: String,
+    pub repo: String,
+    pub starts_in: Worktree,
+}
+
+/// A repo's worktrees as the start bar's worktree menu lists them (the Mac's quick.ts
+/// `repoWorktrees`): first where a session starts on new work, a new worktree made from `from`,
+/// the reusable ones ready for it (free before landed) and the main checkout; then the ones a new
+/// session would join other work in, reusable ones with work under way and the rest, each kept
+/// for one piece of work. Each list the most recently active first.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct RepoWorktrees {
+    /// The checkout a new worktree is made from, as the harness makes it under the checkout it
+    /// starts in: the main checkout, else the latest; none for a repo of plain folders.
+    pub from: Option<Worktree>,
+    pub ready: Vec<Worktree>,
+    pub main: Option<Worktree>,
+    pub under_way: Vec<Worktree>,
+    pub others: Vec<Worktree>,
+}
+
+/// One repo's worktrees among one Mac's, most recently active first as those are.
+fn repo_of<'a>(worktrees: &'a [Worktree], project: &str, repo: &str) -> Vec<&'a Worktree> {
+    worktrees.iter().filter(|w| !w.chat && w.project == project && w.repo == repo).collect()
+}
+
+/// The checkout a new worktree is made from among a repo's (`RepoWorktrees::from`).
+fn made_from<'a>(of: &[&'a Worktree]) -> Option<&'a Worktree> {
+    of.iter().find(|w| w.main).or_else(|| of.iter().find(|w| !w.folder)).copied()
+}
+
+fn repo_worktrees(of: &[&Worktree]) -> RepoWorktrees {
+    let mut ready: Vec<Worktree> = of.iter().filter(|w| !w.main && w.takes_new_work()).map(|w| (*w).clone()).collect();
+    ready.sort_by_key(|w| w.reuse != Some(WorktreeReuse::Free));
+    let (under_way, others) = of.iter().filter(|w| !w.main && !w.takes_new_work()).map(|w| (*w).clone()).partition(|w| w.reuse.is_some());
+    RepoWorktrees { from: made_from(of).cloned(), ready, main: of.iter().find(|w| w.main).map(|w| (*w).clone()), under_way, others }
+}
+
+/// Where a session starts in a repo unless you pick its worktree (the Mac's quick.ts
+/// `startLaneIn`): with a new worktree, the checkout it's made from; else where new work goes from
+/// the main checkout (`new_work_in`, as the Mac's suggestions go), never joining work under way;
+/// else the main checkout, else the latest worktree. `of` is the repo's, among `all`.
+fn start_worktree_in<'a>(of: &[&'a Worktree], all: &'a [Worktree], new_worktree: bool) -> Option<&'a Worktree> {
+    if new_worktree {
+        if let Some(from) = made_from(of) {
+            return Some(from);
+        }
+    }
+    let first = of.iter().find(|w| w.main).or_else(|| of.first()).copied()?;
+    Some(new_work_in(first, 0.0, all, &[]).filter(|to| to.takes_new_work() || to.main).unwrap_or(first))
+}
+
+/// The repos a new session can start in on a Mac, in `project` (empty for any), the most recently
+/// active first, with where a session starts in each. The Mac's menu puts the repos of the
+/// worktrees you pinned first; the phone has no pins. `worktrees` are one Mac's, most recently
+/// active first.
+fn start_repos(worktrees: &[Worktree], project: &str) -> Vec<StartRepo> {
+    let mut out: Vec<StartRepo> = Vec::new();
+    for w in worktrees.iter().filter(|w| !w.chat && (project.is_empty() || w.project == project)) {
+        if out.iter().any(|r| r.project == w.project && r.repo == w.repo) {
+            continue;
+        }
+        if let Some(at) = start_worktree_in(&repo_of(worktrees, &w.project, &w.repo), worktrees, false) {
+            out.push(StartRepo { project: w.project.clone(), repo: w.repo.clone(), starts_in: at.clone() });
+        }
+    }
+    out
+}
+
 /// The worktree new work starts in on a Mac, in `project` (empty for any), unless you pick one:
-/// in the most recently active repo, where new work goes from its latest worktree
-/// (`new_work_in`), else its main checkout, as the Mac's panel picks one; else the latest
-/// worktree. `worktrees` are one Mac's, most recently active first.
+/// where it starts in the most recently active repo, as the Mac's panel picks one.
 fn start_worktree(worktrees: &[Worktree], project: &str) -> Option<Worktree> {
-    let here: Vec<&Worktree> = worktrees.iter().filter(|w| !w.chat && (project.is_empty() || w.project == project)).collect();
-    let latest = *here.first()?;
-    let picked = new_work_in(latest, 0.0, worktrees, &[]).or_else(|| here.iter().copied().find(|w| w.repo == latest.repo && w.project == latest.project && w.main));
-    Some(picked.unwrap_or(latest).clone())
+    start_repos(worktrees, project).into_iter().next().map(|r| r.starts_in)
 }
 
 #[uniffi::export]
@@ -2943,6 +3016,25 @@ impl Core {
     /// pick another (`start_worktree`).
     pub fn start_worktree(&self, device: String, project: String) -> Option<Worktree> {
         start_worktree(&self.worktrees(device), &project)
+    }
+
+    /// The repos a new session can start in on `device`, in `project` (empty for any), with
+    /// where it starts in each (`start_repos`).
+    pub fn start_repos(&self, device: String, project: String) -> Vec<StartRepo> {
+        start_repos(&self.worktrees(device), &project)
+    }
+
+    /// A repo's worktrees on `device` as the worktree menu lists them (`repo_worktrees`).
+    pub fn repo_worktrees(&self, device: String, project: String, repo: String) -> RepoWorktrees {
+        let all = self.worktrees(device);
+        repo_worktrees(&repo_of(&all, &project, &repo))
+    }
+
+    /// Where a session starts in a repo on `device` unless you pick its worktree; with
+    /// `new_worktree`, the checkout a new one is made from (`start_worktree_in`).
+    pub fn start_worktree_in(&self, device: String, project: String, repo: String, new_worktree: bool) -> Option<Worktree> {
+        let all = self.worktrees(device);
+        start_worktree_in(&repo_of(&all, &project, &repo), &all, new_worktree).cloned()
     }
 
     /// Where a session that improves Codealong itself starts (`improve_target_of`): Codealong's

@@ -2,8 +2,8 @@ import SwiftUI
 
 /// The bottom of the quick search: a glass capsule over the list that starts a new session with
 /// what's typed, or with nothing typed puts the cursor in the box for it. Under its title is where
-/// the session starts, and its menu changes that (the Mac, the worktree, the account, model and
-/// place), as the chips under the Mac's panel do; small, so the list keeps the screen. Over it are
+/// the session starts, and its menu changes that (the Mac, the repo and the worktree in it, the
+/// account, model and place), as the chips under the Mac's panel do; small, so the list keeps the screen. Over it are
 /// the Mac's suggestions for what's typed (send it to a session, open one, or start it elsewhere),
 /// which the Mac's panel lists first: here they ride above the keyboard with the capsule, where
 /// the keyboard can't cover them, and scroll among themselves when the list leaves too little room
@@ -29,7 +29,7 @@ struct StartBar: View {
     let suggest: (Suggestion) -> Void
 
     @Environment(Store.self) private var store
-    @State private var pickingWorktree = false
+    @State private var pickingRepo = false
     /// How tall the suggestions are, all of them, and the line over the capsule.
     @State private var suggestionsHeight: CGFloat = 0
     @State private var noteHeight: CGFloat = 0
@@ -104,9 +104,16 @@ struct StartBar: View {
         .animation(.snappy, value: note?.text)
         .animation(.snappy, value: prompt.isEmpty)
         .animation(.smooth, value: suggestions.map(\.key))
-        .sheet(isPresented: $pickingWorktree) {
+        .sheet(isPresented: $pickingRepo) {
             NavigationStack {
-                WorktreePicker(worktrees: composer.device.map { store.worktrees($0) } ?? [], chosen: Binding(get: { worktree }, set: { composer.worktreeID = $0?.id }), first: project.isEmpty ? nil : project)
+                RepoPicker(
+                    repos: composer.device.map { store.startRepos($0, project: "") } ?? [],
+                    worktrees: composer.device.map { store.worktrees($0) } ?? [],
+                    chosen: worktree,
+                    first: project.isEmpty ? nil : project,
+                    pickRepo: { composer.pick($0, store: store) },
+                    pickWorktree: { composer.pick($0) }
+                )
             }
         }
     }
@@ -167,19 +174,14 @@ struct StartBar: View {
                     }
                     .pickerStyle(.menu)
                 }
-                Button { pickingWorktree = true } label: {
-                    Label {
-                        Text("Worktree")
-                        Text(worktreeName)
-                    } icon: {
-                        Image(systemName: worktree?.chat == true ? "bubble.left" : "folder")
-                    }
+                // A menu row's value is a Text beside its Label, which iOS shows under the title.
+                Button { pickingRepo = true } label: {
+                    Label("Repo", systemImage: worktree?.chat == true ? "bubble.left" : "folder")
+                    Text(repoName)
                 }
                 .disabled(composer.device == nil)
-                if takesNewWorktree {
-                    Toggle(isOn: $composer.newWorktree) {
-                        Label("New worktree", systemImage: "plus.square.on.square")
-                    }
+                if let w = worktree, !w.chat, let device = composer.device, let trees = store.repoWorktrees(device, project: w.project, repo: w.repo) {
+                    worktreeMenu(trees, at: w)
                 }
             }
             if let choices = composer.choices {
@@ -244,8 +246,72 @@ struct StartBar: View {
         return w.chat ? "No project" : w.main ? "\(w.name) (main)" : w.name
     }
 
+    private var repoName: String {
+        guard let w = worktree else { return composer.device == nil ? "No Mac" : "No repo" }
+        return w.chat ? "No project" : w.repo
+    }
+
     /// A chat has no repo to make a worktree of.
     private var takesNewWorktree: Bool { composer.takesNewWorktree && worktree?.chat != true }
+
+    /// A new worktree is what starts.
+    private var inNewWorktree: Bool { takesNewWorktree && composer.newWorktree }
+
+    /// The repo's worktrees, as the Mac's worktree menu lists them (the core's `repo_worktrees`):
+    /// New worktree first, then the ones ready for new work and the main checkout, and the ones
+    /// that hold other work in menus of their own, as the Mac folds them away.
+    private func worktreeMenu(_ trees: RepoWorktrees, at w: Worktree) -> some View {
+        Menu {
+            if let from = trees.from {
+                Button { composer.newWorktree = true } label: {
+                    Label("New worktree", systemImage: inNewWorktree ? "checkmark" : "plus")
+                    Text(newWorktreeWords(from))
+                }
+                .disabled(!takesNewWorktree)
+            }
+            ForEach(trees.ready + (trees.main.map { [$0] } ?? []), id: \.id) { worktreeRow($0) }
+            if !trees.underWay.isEmpty {
+                Menu {
+                    ForEach(trees.underWay, id: \.id) { worktreeRow($0) }
+                } label: {
+                    Label("Work under way", systemImage: "hammer")
+                    Text(count(trees.underWay.count))
+                }
+            }
+            if !trees.others.isEmpty {
+                Menu {
+                    ForEach(trees.others, id: \.id) { worktreeRow($0) }
+                } label: {
+                    Label("Other worktrees", systemImage: "folder")
+                    Text(count(trees.others.count))
+                }
+            }
+        } label: {
+            Label("Worktree", systemImage: inNewWorktree ? "plus.square.on.square" : "arrow.triangle.branch")
+            Text(inNewWorktree ? "New worktree" : w.nameInRepo)
+        }
+    }
+
+    private func count(_ n: Int) -> String { n == 1 ? "1 worktree" : "\(n) worktrees" }
+
+    private func worktreeRow(_ w: Worktree) -> some View {
+        Button { composer.pick(w) } label: {
+            if !inNewWorktree && worktree?.id == w.id {
+                Label(w.nameInRepo, systemImage: "checkmark")
+            } else {
+                Text(w.nameInRepo)
+            }
+            if !w.heldWords.isEmpty { Text(w.heldWords) }
+        }
+    }
+
+    /// What New worktree says under its name, as the Mac's does (start.ts `newWorktreeDetail`):
+    /// who makes it from which checkout, or why it can't be made from here.
+    private func newWorktreeWords(_ from: Worktree) -> String {
+        let who = composer.chosenAccount?.harness ?? "Its harness"
+        if takesNewWorktree { return "\(who) makes one from \(from.nameInRepo)" }
+        return composer.place == "terminal" || composer.place == "background" ? "\(who) can't make one" : "The app has its own choice"
+    }
 
     private func placeSymbol(_ id: String) -> String {
         switch id {
