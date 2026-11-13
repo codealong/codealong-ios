@@ -1053,6 +1053,24 @@ final class Store {
         }
     }
 
+    /// The last of what a command a session left running in the background printed, as its Mac
+    /// reads it (the core's `taskOutput`); nil when it hasn't printed anything yet.
+    func taskOutput(_ key: String, id: String) async throws -> String? {
+        let core = try running()
+        return try await Task.detached { try core.conversation(key: key).taskOutput(id: id) }.value
+    }
+
+    /// Stops a command a session left running in the background: its Mac ends it and what it
+    /// started, and its harness tells the agent it ended. Says how that went, or why it didn't.
+    func stopTask(_ key: String, id: String) async -> String {
+        do {
+            let core = try running()
+            return try await Task.detached { try core.conversation(key: key).taskStop(id: id) }.value
+        } catch {
+            return words(error)
+        }
+    }
+
     /// What a message taken out comes to once its Mac no longer lists it: nothing to hide.
     private func settleRemovals() {
         for (key, list) in removals {

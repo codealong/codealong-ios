@@ -1093,6 +1093,8 @@ pub(crate) mod tests {
             at_a_prompt: false,
             mark: crate::Mark::Quiet,
             suggested_snooze: None,
+            background: None,
+            input_asked: None,
         }
     }
 

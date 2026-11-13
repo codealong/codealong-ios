@@ -61,7 +61,11 @@ further back, with the prompt you're reading the answer to pinned at the top and
 foot that goes back down to the newest. A session running
 inside Codealong on your Mac streams its reply as it's written, and one that only waits on a command
 says which at the end of its conversation: one you allowed in your terminal (*Running in Ghostty*)
-or one its turn left running in the background.
+or one its turn left running in the background. A line above its box counts the commands its agent
+left running in the background (a Claude Code session's shells and Monitors, a Codex thread's
+background terminals), and a tap lists them with where each stands and the last of what it printed,
+read again as it runs. One whose command waits at a question in a terminal on its Mac says so, with
+the question, to answer there.
 
 **Work through what's waiting.** Sessions that need you, PRs waiting on your review and finished
 turns come one after another, in the Mac's order: the ones moved to the top first, then each kind
@@ -92,7 +96,8 @@ need you, as on the Mac.
 - allow or deny what it wants to run (or deny it and say what to do instead), and answer its
   questions, folded to a line over the box while you read and brought up from that line or from
   the question's own line in the conversation;
-- stop its turn, with the square that takes send's place while it runs;
+- stop its turn, with the square that takes send's place while it runs, or a command its agent
+  left running in the background, from the list above its box;
 - switch a running session's model, effort or mode (a Claude Code background job's too, from a Mac
   of 0.18 or later, and a Codex app thread's from its next turn);
 - resume one that isn't running, where and on what model you pick;

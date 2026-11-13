@@ -11,7 +11,7 @@ use std::time::Duration;
 use codealong_peer::api::{self, params};
 use codealong_peer::client::Client;
 use codealong_peer::feed::{remote_key, split_remote};
-use codealong_peer::model::{Harness, Lane, OriginHow, Reuse, Session, SessionLimit, Status as PeerStatus, Surface, ELSEWHERE};
+use codealong_peer::model::{BackgroundTask, Harness, Lane, Need, OriginHow, Reuse, Session, SessionLimit, Status as PeerStatus, Surface, ELSEWHERE, TERMINAL_ASKS};
 use codealong_peer::{net, proto};
 
 uniffi::setup_scaffolding!();
@@ -288,6 +288,123 @@ pub struct SessionRow {
     /// A snooze to offer it, until the time its last reply says the work goes on (`suggested_snooze`).
     /// None from Macs before 2026-11-11.
     pub suggested_snooze: Option<SuggestedSnooze>,
+    /// The commands its agent left running in the background, as its harness lists them, which
+    /// the Mac's session header counts on a chip and lists under it (`background_commands`). None
+    /// when there are none, and from Macs before 2026-11-12.
+    pub background: Option<BackgroundCommands>,
+    /// A command it runs waits at a question in a terminal of Codealong's on its Mac (`Need::Input`),
+    /// which is answered there: what it asks, and that what's sent here goes to the session
+    /// (`input_note`). None from Macs before 2026-11-12.
+    pub input_asked: Option<String>,
+}
+
+/// What a session's agent left running in the background (`Session::tasks`), as the Mac's session
+/// header shows it (BackgroundBits.tsx): a chip that counts them and the list it opens, its
+/// harness's own list, as Claude Code's /tasks and Codex's /ps show it.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct BackgroundCommands {
+    /// How many run, else how many ended a little while ago, as the Mac's chip says it
+    /// (background.ts `taskChipWords`), in words that stand without its header around them.
+    pub words: String,
+    /// One or more still runs: the Mac's chip is green then.
+    pub running: bool,
+    /// The ones still running, then the ones that ended in the last ten minutes, oldest first in
+    /// each, as its Mac sends them.
+    pub commands: Vec<BackgroundCommand>,
+}
+
+/// A command a session's agent left running in the background: a Claude Code shell or Monitor, or
+/// a Codex background terminal (BackgroundBits.tsx `TaskRow`).
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct BackgroundCommand {
+    /// Its harness's id for it, which `Conversation::task_output` and `task_stop` take.
+    pub id: String,
+    /// What it's called on the list: the command, else what the agent said it's for (background.ts
+    /// `taskName`).
+    pub name: String,
+    /// The command as its Mac sent it, to copy; none where its harness didn't record it.
+    pub written: Option<String>,
+    /// Where it stands, with a live time (background.ts `taskState`): `Running · {for:<ms>}`,
+    /// `Done · {ago:<ms>}`, `Failed · exit 1 · {ago:<ms>}`.
+    pub state: String,
+    /// It still runs, so it can be stopped, and what it prints is read again while it's shown.
+    pub running: bool,
+    /// A Claude Code Monitor: every line it prints goes to the agent.
+    pub monitor: bool,
+    /// What's said under it: that it's a Monitor, and what the agent said it's for.
+    pub about: Option<String>,
+}
+
+/// What a session left running in the background (`BackgroundCommands`), from its Mac's
+/// `Session::tasks`.
+fn background_commands(s: &Session) -> Option<BackgroundCommands> {
+    if s.tasks.is_empty() {
+        return None;
+    }
+    let running = s.tasks.iter().filter(|t| t.ended_at.is_none()).count();
+    let count = |n: usize, what: &str| format!("{n} {} {what} in the background", if n == 1 { "command" } else { "commands" });
+    let words = if running > 0 { count(running, "running") } else { count(s.tasks.len(), "ended") };
+    let commands = s
+        .tasks
+        .iter()
+        .map(|t| {
+            let command = t.command.trim();
+            let about = t.about.trim();
+            let name = if !command.is_empty() {
+                command.split_whitespace().collect::<Vec<_>>().join(" ")
+            } else if !about.is_empty() {
+                about.to_string()
+            } else {
+                "A command its harness didn\u{2019}t record".to_string()
+            };
+            let said = [if t.monitor { "Monitor: each line it prints goes to the agent" } else { "" }, about].iter().filter(|w| !w.is_empty()).copied().collect::<Vec<_>>().join(" \u{b7} ");
+            BackgroundCommand {
+                id: t.id.clone(),
+                name,
+                written: Some(command.to_string()).filter(|c| !c.is_empty()),
+                state: task_state(t),
+                running: t.ended_at.is_none(),
+                monitor: t.monitor,
+                about: Some(said).filter(|w| !w.is_empty()),
+            }
+        })
+        .collect();
+    Some(BackgroundCommands { words, running: running > 0, commands })
+}
+
+/// Where a command left running in the background stands (background.ts `taskState`), with its
+/// time as a live one: `Running · 12m`, `Done · 3m ago`, `Failed · exit 1 · just now`.
+fn task_state(t: &BackgroundTask) -> String {
+    let Some(ended) = t.ended_at else {
+        return format!("Running \u{b7} {{for:{}}}", t.started_at);
+    };
+    let when = format!("{{ago:{ended}}}");
+    match t.status.as_deref() {
+        Some("killed") => format!("Stopped \u{b7} {when}"),
+        Some("stopped") => format!("Stopped as its session ended \u{b7} {when}"),
+        Some("failed") => match t.exit_code {
+            Some(code) => format!("Failed \u{b7} exit {code} \u{b7} {when}"),
+            None => format!("Failed \u{b7} {when}"),
+        },
+        _ => match t.exit_code {
+            Some(code) if code != 0 => format!("Ended \u{b7} exit {code} \u{b7} {when}"),
+            _ => format!("Done \u{b7} {when}"),
+        },
+    }
+}
+
+/// That a command a session runs waits at a question in a terminal of Codealong's on its Mac
+/// (`Need::Input`), as the Mac flags it Needs input and opens its drawer on that terminal: what it
+/// asks, as the Mac's excerpt has it after `TERMINAL_ASKS`, and that it's answered there. The
+/// phone has no way to type into that terminal, and what's sent from its box goes to the session,
+/// as the Mac's box's does.
+fn input_note(s: &Session) -> Option<String> {
+    if s.need() != Some(Need::Input) {
+        return None;
+    }
+    let asks = s.excerpt.as_deref().and_then(|e| e.strip_prefix(TERMINAL_ASKS)).map(str::trim).filter(|a| !a.is_empty());
+    let what = asks.map(|a| format!(": {a}.")).unwrap_or_else(|| ".".into());
+    Some(format!("A command it runs waits for you to type something in its terminal on its Mac{what} Answer it there: what you send here goes to the session, not the command."))
 }
 
 /// A snooze offered for a session whose last reply says its work goes on at a later time, with
@@ -1220,6 +1337,8 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 mark: mark_of(s, status, snoozed_until.is_some(), aside),
                 // Snoozed, working or not, as its Mac has it.
                 suggested_snooze: suggested_snooze(s, s.snoozed_until.is_some_and(|t| t > now), now),
+                background: background_commands(s),
+                input_asked: input_note(s),
             };
             if listed { sessions.push(row) } else { unlisted.push(row) }
         }
@@ -2123,6 +2242,25 @@ impl Conversation {
         let said = self.client.ask(&self.device, api::SESSION_UNQUEUE, params, ACT_WAIT).map_err(|e| older_mac(e, &self.client, &self.device, "take a queued message out from here"))?;
         let done: api::Unqueued = serde_json::from_value(said).map_err(|e| CoreError::Failed(e.to_string()))?;
         Ok(done.into())
+    }
+
+    /// The last of what a command it left running in the background printed (`id`, one of its
+    /// row's `background`), as its Mac reads it: the last 40 lines, as the Mac's list shows them
+    /// (BackgroundBits.tsx `OUTPUT_LINES`), without the blank ones it ends on. None when it hasn't
+    /// printed anything yet. Any Mac answers it; Macs before 2026-11-12 refuse it, and list none.
+    pub fn task_output(&self, id: String) -> Result<Option<String>, CoreError> {
+        let params = serde_json::to_value(params::Task { key: self.key.clone(), id }).map_err(|e| CoreError::Failed(e.to_string()))?;
+        let said = self.client.ask(&self.device, api::SESSION_TASK_OUTPUT, params, ACT_WAIT).map_err(|e| older_mac(e, &self.client, &self.device, "read what a background command printed from here"))?;
+        Ok(last_lines(said.as_str().unwrap_or_default(), TASK_OUTPUT_LINES))
+    }
+
+    /// Stops a command it left running in the background (`id`, one of its row's `background`):
+    /// its Mac ends its process and what that started, and its harness tells the agent it ended.
+    /// Says how it went. Needs remote control there; Macs before 2026-11-12 refuse it.
+    pub fn task_stop(&self, id: String) -> Result<String, CoreError> {
+        let params = serde_json::to_value(params::Task { key: self.key.clone(), id }).map_err(|e| CoreError::Failed(e.to_string()))?;
+        let said = self.client.ask(&self.device, api::SESSION_TASK_STOP, params, ACT_WAIT).map_err(|e| older_mac(e, &self.client, &self.device, "stop a background command from here"))?;
+        Ok(said.as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).unwrap_or_else(|| "Stopped.".into()))
     }
 
     /// How a message sent to it would reach it, as its Mac says; None for one Codealong runs, and
@@ -3339,6 +3477,8 @@ mod order_tests {
             agent_seen: None,
             side_answer: None,
             waits_on: None,
+            background: None,
+            input_asked: None,
             aside: false,
             finished: None,
             waits_finished: false,
@@ -3532,6 +3672,82 @@ mod order_tests {
         let allowed = Session { running: Some(RunningIn { yours: false, ..yours.running.clone().unwrap() }), ..yours.clone() };
         assert_eq!(mark_of(&allowed, Status::Working, false, false), Mark::Working);
         assert!(turn_running(&allowed));
+    }
+
+    #[test]
+    fn a_session_lists_what_its_agent_left_running_in_the_background_as_the_macs_header_does() {
+        let task = |id: &str, command: &str| BackgroundTask { id: id.into(), command: command.into(), started_at: 1_000, ..Default::default() };
+        let base = Session::new(Harness::Claude, "claude", "bg");
+        assert_eq!(background_commands(&base), None);
+        let session = Session {
+            tasks: vec![
+                BackgroundTask { about: "Start the dev server".into(), ..task("b1", "npm run dev\n  --port 4321") },
+                BackgroundTask { monitor: true, about: "Watch the deploy".into(), ..task("b2", "") },
+                BackgroundTask { ended_at: Some(9_000), status: Some("completed".into()), exit_code: Some(0), ..task("b3", "cargo test") },
+                BackgroundTask { ended_at: Some(9_000), status: Some("failed".into()), exit_code: Some(1), ..task("b4", "make lint") },
+                BackgroundTask { ended_at: Some(9_000), status: Some("killed".into()), ..task("b5", "tail -f log") },
+                BackgroundTask { ended_at: Some(9_000), status: Some("stopped".into()), ..task("b6", "sleep 900") },
+                BackgroundTask { ended_at: Some(9_000), status: Some("completed".into()), exit_code: Some(2), ..task("b7", "grep -r x") },
+                BackgroundTask { ended_at: Some(9_000), status: Some("failed".into()), ..task("b8", "") },
+            ],
+            ..base.clone()
+        };
+        let got = background_commands(&session).unwrap();
+        // Counted by what runs while any does, as the Mac's chip counts them.
+        assert_eq!((got.words.as_str(), got.running), ("2 commands running in the background", true));
+        let c = &got.commands;
+        assert_eq!(c.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["b1", "b2", "b3", "b4", "b5", "b6", "b7", "b8"], "in its Mac's order");
+        // The command on one line to name it, as written to copy; what it's for under it.
+        assert_eq!((c[0].name.as_str(), c[0].written.as_deref(), c[0].about.as_deref()), ("npm run dev --port 4321", Some("npm run dev\n  --port 4321"), Some("Start the dev server")));
+        // A Monitor its harness didn't record the command of is named by what it's for.
+        assert_eq!((c[1].name.as_str(), c[1].written.as_deref(), c[1].monitor), ("Watch the deploy", None, true));
+        assert_eq!(c[1].about.as_deref(), Some("Monitor: each line it prints goes to the agent \u{b7} Watch the deploy"));
+        assert_eq!(c[7].name, "A command its harness didn\u{2019}t record");
+        assert_eq!(
+            c.iter().map(|c| c.state.as_str()).collect::<Vec<_>>(),
+            [
+                "Running \u{b7} {for:1000}",
+                "Running \u{b7} {for:1000}",
+                "Done \u{b7} {ago:9000}",
+                "Failed \u{b7} exit 1 \u{b7} {ago:9000}",
+                "Stopped \u{b7} {ago:9000}",
+                "Stopped as its session ended \u{b7} {ago:9000}",
+                "Ended \u{b7} exit 2 \u{b7} {ago:9000}",
+                "Failed \u{b7} {ago:9000}",
+            ]
+        );
+        assert_eq!(c.iter().map(|c| c.running).collect::<Vec<_>>(), [true, true, false, false, false, false, false, false]);
+        // With none running, what ended a little while ago.
+        let ended = Session { tasks: session.tasks[2..3].to_vec(), ..base.clone() };
+        assert_eq!(background_commands(&ended).map(|b| (b.words, b.running)), Some(("1 command ended in the background".into(), false)));
+        let one = Session { tasks: session.tasks[..1].to_vec(), ..base };
+        assert_eq!(background_commands(&one).map(|b| b.words), Some("1 command running in the background".into()));
+    }
+
+    #[test]
+    fn what_a_background_command_printed_is_its_last_lines() {
+        assert_eq!(last_lines("", 40), None);
+        assert_eq!(last_lines(" \n\n  \n", 40), None, "only blanks is nothing printed yet");
+        assert_eq!(last_lines("  ready on 4321\n\n", 40).as_deref(), Some("  ready on 4321"), "its own indent stays");
+        let many: String = (1..=50).map(|n| format!("line {n}\n")).collect();
+        let got = last_lines(&many, 40).unwrap();
+        assert_eq!((got.lines().count(), got.lines().next(), got.lines().last()), (40, Some("line 11"), Some("line 50")));
+    }
+
+    #[test]
+    fn a_command_waiting_at_a_question_in_its_terminal_says_to_answer_it_there() {
+        let base = Session { status: PeerStatus::Needs, ..Session::new(Harness::Claude, "claude", "in") };
+        let input = Session { excerpt: Some(format!("{TERMINAL_ASKS}`Continue? [y/N]`")), ..base.clone() };
+        assert_eq!(
+            input_note(&input).as_deref(),
+            Some("A command it runs waits for you to type something in its terminal on its Mac: `Continue? [y/N]`. Answer it there: what you send here goes to the session, not the command.")
+        );
+        // What's typed here isn't its answer, so it sits at no prompt.
+        assert!(!input.waits_at_a_prompt());
+        assert_eq!(input_note(&Session { excerpt: Some(TERMINAL_ASKS.into()), ..base.clone() }).as_deref(), Some("A command it runs waits for you to type something in its terminal on its Mac. Answer it there: what you send here goes to the session, not the command."));
+        // Not a call to allow, nor one that's stopped needing you.
+        assert_eq!(input_note(&Session { excerpt: Some("Bash \u{b7} `ls`".into()), ..base.clone() }), None);
+        assert_eq!(input_note(&Session { status: PeerStatus::Working, ..input }), None);
     }
 
     #[test]
@@ -3898,6 +4114,21 @@ mod start_tests {
         assert_eq!((c.accounts[0].place.as_deref(), c.accounts[0].resume.as_deref()), (Some("codealong"), Some("background")));
         assert!(c.accounts[1].resumes.is_empty() && c.accounts[1].resume.is_none());
     }
+}
+
+/// How many lines of what a background command printed are shown (BackgroundBits.tsx
+/// `OUTPUT_LINES`).
+const TASK_OUTPUT_LINES: usize = 40;
+
+/// The last `n` lines of what a command printed, without the blank ones it ends on (background.ts
+/// `lastLines`); none when it printed nothing but blanks.
+fn last_lines(output: &str, n: usize) -> Option<String> {
+    let trimmed = output.trim_end();
+    if trimmed.trim().is_empty() {
+        return None;
+    }
+    let lines: Vec<&str> = trimmed.split('\n').collect();
+    Some(lines[lines.len().saturating_sub(n)..].join("\n"))
 }
 
 /// What a Mac's refusal of a request it doesn't know (`doesn't know how to …`, as every Mac since

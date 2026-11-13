@@ -131,6 +131,9 @@ struct SessionView: View {
     @State private var snoozing: SnoozePick?
     /// Its side conversations are up, with a question to ask as they open.
     @State private var aside: SideAsk?
+    /// What its agent left running in the background is listed (`BackgroundSheet`); with the
+    /// first's output shown, for a test (`PRESS=tasks`).
+    @State private var background: BackgroundShown?
     /// The mode picked here, until its Mac's feed says the one it's in.
     @State private var modePicked: String?
     /// A queued message Send now, Edit or Remove didn't do what it says for, and why.
@@ -257,6 +260,7 @@ struct SessionView: View {
         }
         .sheet(item: $snoozing) { SnoozePicker(pick: $0) }
         .sheet(item: $aside) { sideSheet($0) }
+        .sheet(item: $background) { BackgroundSheet(key: key, showFirst: $0.showFirst) }
         .alert("Rename", isPresented: $renaming) {
             TextField("Name", text: $newName)
             Button("Rename") { Task { await rename() } }
@@ -618,6 +622,9 @@ struct SessionView: View {
                     }
                 }
             }
+            if let asked = row?.inputAsked {
+                SessionNote(words: asked, symbol: "keyboard", tint: .orange, code: true)
+            }
             if let limit = row?.limit {
                 TimelineView(.periodic(from: .now, by: 30)) { context in
                     Label {
@@ -651,6 +658,9 @@ struct SessionView: View {
             }
             if let seen = row?.agentSeen {
                 SessionNote(words: seen, symbol: "eye", tint: .secondary)
+            }
+            if let commands = row?.background {
+                BackgroundLine(background: commands) { background = BackgroundShown() }
             }
             if let said {
                 Text(said).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
@@ -1539,6 +1549,12 @@ struct SessionView: View {
         case "questions":
             try? await Task.sleep(for: .seconds(2))
             if questionsLine != nil { withAnimation(.snappy) { questionsOpen = true } }
+        // The background line, and the first command's Output on its list.
+        case "tasks":
+            if row?.background != nil { background = BackgroundShown(showFirst: true) }
+        // Stop on the first command still running, said under the notes as the list says it.
+        case "taskstop":
+            if let first = row?.background?.commands.first(where: \.running) { said = await store.stopTask(key, id: first.id) }
         default: break
         }
     }
@@ -2173,6 +2189,9 @@ private struct SessionNote: View {
     let words: String
     let symbol: String
     let tint: Color
+    /// Its words have code in backticks, from its Mac (what a command asks), drawn as code. Not
+    /// for words an agent wrote, whose `*` and `_` would be read as emphasis.
+    var code = false
 
     /// A session its provider flagged, as the Mac's Flagged chip says it.
     static let flagged = "Its provider flagged a message in this conversation, so by default its Mac sends it nothing by itself (Settings › Automation there). You can still reply yourself."
@@ -2182,13 +2201,20 @@ private struct SessionNote: View {
 
     var body: some View {
         Label {
-            Text(words)
+            Text(code ? Clock.text(words, now: .now) : AttributedString(words))
         } icon: {
             Image(systemName: symbol).foregroundStyle(tint)
         }
         .font(.footnote)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+}
+
+/// The list of what a session's agent left running in the background is up.
+struct BackgroundShown: Identifiable {
+    let id = UUID()
+    /// The first's output shows as it opens, for a test (`PRESS=tasks`).
+    var showFirst = false
 }
 
 /// That an API error ended its last turn and nothing has gone on since, as the Mac's session
@@ -3300,6 +3326,9 @@ struct SessionGlance: View {
                     QuestionsCard(key: key, pending: pending, account: row?.account ?? "It", hosted: row?.hosted == true, canAct: canAct, why: why, answering: nil, open: .constant(false)) { _ in } decline: {}
                 }
             }
+            if let asked = row?.inputAsked {
+                SessionNote(words: asked, symbol: "keyboard", tint: .orange, code: true)
+            }
             if let limit = row?.limit {
                 Label {
                     Text(Clock.text(limit, now: .now))
@@ -3329,6 +3358,9 @@ struct SessionGlance: View {
             }
             if let seen = row?.agentSeen {
                 SessionNote(words: seen, symbol: "eye", tint: .secondary)
+            }
+            if let commands = row?.background {
+                BackgroundLine(background: commands) {}
             }
             if let said {
                 Text(said).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)

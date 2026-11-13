@@ -2,7 +2,8 @@ import Foundation
 
 /// The Mac writes live times into what a session says, `{ago:<ms>}` and `{for:<ms>}`, and code as
 /// backtick spans; the core writes `{in:<ms>}` for a time to come. This turns them into text for
-/// now.
+/// now, as the Mac's format.ts `withTimes` does: `{ago:}` is `4m ago`, `{for:}` how long since,
+/// `14m`, the Mac writing any "for" before it ("Stuck on `npm test` for {for:<ms>}").
 enum Clock {
     static func text(_ s: String, now: Date) -> AttributedString {
         var out = ""
@@ -16,7 +17,7 @@ enum Clock {
                     let past = ago(ms, now: now)
                     out += past == "now" ? "just now" : past + " ago"
                 } else if token.hasPrefix("for:") {
-                    out += "for " + span(ms, now: now)
+                    out += duration(ms, now: now)
                 } else if token.hasPrefix("in:") {
                     out += "in " + until(ms, now: now)
                 } else {
@@ -44,8 +45,16 @@ enum Clock {
         return brief(secs)
     }
 
-    private static func span(_ ms: Int64, now: Date) -> String {
-        brief(max(0, now.timeIntervalSince1970 - Double(ms) / 1000))
+    /// How long running work has gone, as the Mac's format.ts `duration` says it: `<1m`, `14m`,
+    /// `2h 5m`, `1d 3h`.
+    static func duration(_ ms: Int64, now: Date) -> String {
+        let mins = Int(max(0, now.timeIntervalSince1970 - Double(ms) / 1000) / 60)
+        switch mins {
+        case ..<1: return "<1m"
+        case ..<60: return "\(mins)m"
+        case ..<1440: return mins % 60 == 0 ? "\(mins / 60)h" : "\(mins / 60)h \(mins % 60)m"
+        default: return "\(mins / 1440)d \(mins / 60 % 24)h"
+        }
     }
 
     private static func brief(_ secs: Double) -> String {
