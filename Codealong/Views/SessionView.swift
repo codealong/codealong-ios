@@ -141,6 +141,7 @@ struct SessionView: View {
     /// When it came up here, or came forward: what a side conversation answered by then comes up.
     @State private var came: Int64 = 0
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openURL) private var openURL
     /// When Mark as done was last held here by work under way: done again soon after ends that too.
     @State private var heldAt: Date?
     @State private var finishing = false
@@ -234,7 +235,7 @@ struct SessionView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                TitleBlock(key: swipe.to?.key ?? key)
+                TitleBlock(key: swipe.to?.key ?? key, openPr: swipe.to == nil ? { openPr($0) } : nil)
             }
             ToolbarItem(placement: .topBarTrailing) {
                 ImproveButton()
@@ -506,6 +507,11 @@ struct SessionView: View {
         }
         if canStop {
             Button("Stop", systemImage: "stop.circle") { Task { await stop() } }
+        }
+        if let pr = row?.worktreePr {
+            Button("Open PR #\(String(pr.number))", systemImage: "arrow.triangle.pull") {
+                if let listed = store.pr(pr.key) { openPr(listed) } else if let url = URL(string: pr.url) { openURL(url) }
+            }
         }
         if row?.sides == true {
             Button("Ask on the side", systemImage: "bubble.left.and.text.bubble.right") { aside = SideAsk() }
@@ -1552,10 +1558,23 @@ struct SessionView: View {
         // The background line, and the first command's Output on its list.
         case "tasks":
             if row?.background != nil { background = BackgroundShown(showFirst: true) }
+        // A tap on the title, which opens its worktree's PR.
+        case "pr":
+            if let pr = row?.worktreePr.flatMap({ store.pr($0.key) }) { openPr(pr) }
         // Stop on the first command still running, said under the notes as the list says it.
         case "taskstop":
             if let first = row?.background?.commands.first(where: \.running) { said = await store.stopTask(key, id: first.id) }
         default: break
+        }
+    }
+
+    /// Its worktree's PR, over this page to come back from, as a row's Open PR opens it; on GitHub
+    /// for one whose repo has no GitHub name, which has no page here.
+    private func openPr(_ pr: PrRow) {
+        if !pr.slug.isEmpty {
+            follow(PrView.prefix + pr.key)
+        } else if let url = URL(string: pr.url) {
+            openURL(url)
         }
     }
 

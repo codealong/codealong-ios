@@ -139,11 +139,14 @@ enum Onward: Equatable {
     }
 }
 
-/// What a page is called in its bar: a session's title with its emblem, and its Mac, project and
-/// labels under it; a PR's number; nothing for the end of what waits. Sliding to another, the page names
-/// that one: its own takes a moment to draw once the slide is over.
+/// What a page is called in its bar: a session's title with its emblem, and its Mac, project, its
+/// worktree's PR and labels under it, a tap opening the PR where `openPr` is given; a PR's number;
+/// nothing for the end of what waits. Sliding to another, the page names that one: its own takes a
+/// moment to draw once the slide is over.
 struct TitleBlock: View {
     let key: String
+    /// Opens a session's PR, from a tap on its title.
+    var openPr: ((PrRow) -> Void)? = nil
     @Environment(Store.self) private var store
 
     var body: some View {
@@ -153,22 +156,59 @@ struct TitleBlock: View {
             // Verbatim: a localized number would be written #1,244.
             Text(verbatim: "#\(pr.number)").font(.headline)
         case .session(let row):
-            VStack(spacing: 0) {
-                HStack(spacing: 6) {
-                    if let emblem = row.emblem {
-                        EmblemView(emblem: emblem, mac: row.device, size: 18)
-                    }
-                    Text(row.title).font(.headline).lineLimit(1)
-                }
-                let place = "\(Names.short(row.deviceName)) · \(row.project)\(row.archived ? " · Archived" : "")"
-                withLabels(Text(place), row.labels).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                    .accessibilityLabel(row.labels.isEmpty ? place : "\(place), \(labelsSaid(row.labels))")
+            let pr = row.worktreePr.flatMap { store.pr($0.key) }
+            if let pr, let openPr {
+                Button { openPr(pr) } label: { sessionTitle(row, pr: pr, opens: true) }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Opens PR \(pr.number)")
+            } else {
+                sessionTitle(row, pr: pr, opens: false)
             }
         case nil where key == EndView.key:
             EmptyView()
         case nil:
             Text(key.hasPrefix(PrView.prefix) ? "PR" : "Session").font(.headline)
         }
+    }
+
+    /// A session's title, and under it where it is, its PR (`opens`: with a chevron, as a tap opens
+    /// it) and its labels.
+    private func sessionTitle(_ row: SessionRow, pr: PrRow?, opens: Bool) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                if let emblem = row.emblem {
+                    EmblemView(emblem: emblem, mac: row.device, size: 18)
+                }
+                Text(row.title).font(.headline).lineLimit(1)
+            }
+            let place = "\(Names.short(row.deviceName)) · \(row.project)\(row.archived ? " · Archived" : "")"
+            // The PR stays whole: where it is and its labels give way to it, as on a session's row.
+            HStack(spacing: 0) {
+                withLabels(Text(place), row.labels).lineLimit(1)
+                if let pr {
+                    Text("\(Text(verbatim: " · "))\(prText(pr))").fixedSize()
+                    if opens {
+                        Image(systemName: "chevron.right")
+                            .imageScale(.small)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.tertiary)
+                            .padding(.leading, 3)
+                    }
+                }
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel([place, pr.map { "PR \($0.number), \($0.standing.words)" }, row.labels.isEmpty ? nil : labelsSaid(row.labels)].compactMap { $0 }.joined(separator: ", "))
+        }
+    }
+
+    /// A PR as the line under a session's title names it: its icon, number and where it stands, as
+    /// a session's row ends with it (`PrBadge`).
+    private func prText(_ pr: PrRow) -> Text {
+        let text = Text("\(Text(Image(systemName: pr.mark.symbol)).foregroundStyle(pr.mark.color)) \(Text(verbatim: "#\(pr.number)"))")
+        guard let symbol = pr.standing.symbol, symbol != pr.mark.symbol else { return text }
+        return Text("\(text) \(Text(Image(systemName: symbol)).foregroundStyle(pr.standing.color))")
     }
 }
 

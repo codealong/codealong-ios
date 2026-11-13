@@ -123,7 +123,10 @@ its title, put on or taken off from its menu (*New label…* names one its Mac d
 found by name in the search. A turn its own agent marked seen says so rather than waiting on you.
 
 **Review and merge PRs.** The PRs that wait on your review are listed after the sessions whose
-turn ended (*Review requested*), longest waiting first. The menu's *PRs* page lists every PR your
+turn ended (*Review requested*), longest waiting first, and the *Sessions* menu at the top counts
+them. A session whose worktree has a PR ends the line that says where it is with its number, its
+icon and a mark for where it stands (checks passed or failing, approved, your move), and so does
+the line under its title, a tap on which opens the PR. The menu's *PRs* page lists every PR your
 Macs know: pinned ones, the reviews asked of you, yours, the other open ones, snoozed reviews, and
 the last week's merged and closed ones folded away. Yours are the ones opened by the GitHub account
 most of your Macs are signed in as; when one is signed in as another (a bot your agents open PRs

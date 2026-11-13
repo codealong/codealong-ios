@@ -704,7 +704,11 @@ struct TurnLabel: View {
     }
 
     static func symbol(_ turn: PrTurn) -> String {
-        switch turn.kind {
+        symbol(kind: turn.kind)
+    }
+
+    nonisolated static func symbol(kind: String) -> String {
+        switch kind {
         case "reply-needed": "arrowshape.turn.up.left"
         case "rereview-asked": "hourglass"
         // It waits on your review, as the Mac's mark for one asked of you has it.

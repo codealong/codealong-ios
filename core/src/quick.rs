@@ -134,6 +134,107 @@ pub struct PrRow {
     /// Where Codealong's agent stands on it, which says more than whose move it is and goes in its
     /// place; none from Macs before 2026-11-09.
     pub agent: Option<PrAgent>,
+    /// Where it stands, in a few words, as its row says it under its title and a session on it
+    /// beside its number (`pr_standing`).
+    pub standing: PrStanding,
+    /// Its icon beside its number (`pr_mark`).
+    pub mark: PrMark,
+}
+
+/// Where a PR stands, as GitHub's merge box would lead with it and the Mac's pill puts it
+/// (prStatus.ts): what's wrong first, then where Codealong's agent stands, whose move it is, and
+/// what its review and checks come to.
+#[derive(uniffi::Record, Clone, Debug, Default, PartialEq)]
+pub struct PrStanding {
+    pub kind: PrStandingKind,
+    /// "2 checks failing", "Author replied", "Approved \u{b7} ready to merge".
+    pub words: String,
+}
+
+/// Which of a PR's standings it is, which says how it's drawn.
+#[derive(uniffi::Enum, Clone, Debug, Default, PartialEq, Eq)]
+pub enum PrStandingKind {
+    Merged,
+    Closed,
+    Failing,
+    /// Codealong's agent approves it.
+    AgentApproves,
+    /// Codealong's agent reviews it, or reviews it again, before it's your move.
+    AgentReviewing,
+    Draft,
+    /// Whose move it is (`PrTurn`): its kind (`reply-needed`, `rereview-asked`, `assigned`, ...),
+    /// and that the move is yours.
+    Turn { turn: String, yours: bool },
+    /// Changes were asked for.
+    Changes,
+    Conflicts,
+    ChecksRunning,
+    /// Approved only before its latest commits, which GitHub still counts.
+    StaleApproval,
+    Approved,
+    ChecksPassed,
+    #[default]
+    Open,
+}
+
+/// A PR's icon beside its number, as the Mac's row draws it: merged, closed, a draft, waiting on
+/// your review, failing its checks, else open.
+#[derive(uniffi::Enum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PrMark {
+    #[default]
+    Open,
+    Draft,
+    Waits,
+    Failing,
+    Merged,
+    Closed,
+}
+
+/// Where a PR stands (`PrStanding`).
+pub(crate) fn pr_standing(pr: &PrRow) -> PrStanding {
+    use PrStandingKind as K;
+    let said = |kind: K, words: &str| PrStanding { kind, words: words.to_string() };
+    match pr.state.as_str() {
+        "merged" => return said(K::Merged, "Merged"),
+        "closed" => return said(K::Closed, "Closed"),
+        _ => {}
+    }
+    if pr.failing > 0 {
+        return said(K::Failing, &if pr.failing == 1 { "1 check failing".to_string() } else { format!("{} checks failing", pr.failing) });
+    }
+    // Where the agent stands says more still, a draft's too, as the Mac's pill leads with it.
+    if let Some(a) = &pr.agent {
+        return said(if a.kind == "approves" { K::AgentApproves } else { K::AgentReviewing }, &a.words);
+    }
+    if pr.state == "draft" {
+        return said(K::Draft, "Draft");
+    }
+    // Whose move it is says more than GitHub's state, as the Mac's pill has it in its place.
+    if let Some(t) = &pr.turn {
+        return said(K::Turn { turn: t.kind.clone(), yours: t.yours }, &t.words);
+    }
+    let ready = pr.merge == "clean";
+    match () {
+        _ if pr.state == "changes" => said(K::Changes, "Changes asked for"),
+        _ if pr.merge == "conflicts" => said(K::Conflicts, "Conflicts"),
+        _ if pr.pending > 0 => said(K::ChecksRunning, "Checks running"),
+        _ if pr.state == "approved" && pr.stale.is_some() => said(K::StaleApproval, if ready { "Stale approval \u{b7} ready to merge" } else { "Stale approval" }),
+        _ if pr.state == "approved" => said(K::Approved, if ready { "Approved \u{b7} ready to merge" } else { "Approved" }),
+        _ if pr.passed > 0 => said(K::ChecksPassed, "Checks passed"),
+        _ => said(K::Open, "Open"),
+    }
+}
+
+/// A PR's icon (`PrMark`).
+pub(crate) fn pr_mark(pr: &PrRow) -> PrMark {
+    match pr.state.as_str() {
+        "merged" => PrMark::Merged,
+        "closed" => PrMark::Closed,
+        "draft" => PrMark::Draft,
+        _ if pr.waits => PrMark::Waits,
+        _ if pr.failing > 0 => PrMark::Failing,
+        _ => PrMark::Open,
+    }
 }
 
 /// A label on a PR, as its repo on GitHub defines it.
@@ -733,6 +834,9 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                 turn: if ours { turn(p) } else { None },
                 // Your sign-off, as whose move it is, is asked of the account a Mac is signed in as.
                 agent: if ours { agent_pill(p) } else { None },
+                // Once the other Macs have had their say, below.
+                standing: PrStanding::default(),
+                mark: PrMark::default(),
             });
         }
     }
@@ -793,6 +897,8 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                 agent_review: None,
                 turn: None,
                 agent: None,
+                standing: PrStanding::default(),
+                mark: PrMark::default(),
             });
         }
     }
@@ -802,6 +908,9 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
         if let Some(i) = first {
             pr.sessions[..=i].rotate_right(1);
         }
+        // What every Mac that lists it said, whose move it is and where the agent stands among it.
+        pr.standing = pr_standing(pr);
+        pr.mark = pr_mark(pr);
     }
     out
 }
@@ -1244,7 +1353,42 @@ pub(crate) mod tests {
             agent_review: None,
             turn: None,
             agent: None,
+            standing: PrStanding::default(),
+            mark: PrMark::default(),
         }
+    }
+
+    #[test]
+    fn a_prs_standing_leads_with_what_its_merge_box_would() {
+        use PrStandingKind as K;
+        let base = pr_row("o/r#3", "T", false);
+        let with = |f: &dyn Fn(&mut PrRow)| {
+            let mut p = base.clone();
+            f(&mut p);
+            let s = pr_standing(&p);
+            (s.kind, s.words, pr_mark(&p))
+        };
+        assert_eq!(with(&|_| {}), (K::Open, "Open".into(), PrMark::Open));
+        assert_eq!(with(&|p| p.state = "merged".into()), (K::Merged, "Merged".into(), PrMark::Merged));
+        assert_eq!(with(&|p| p.state = "closed".into()), (K::Closed, "Closed".into(), PrMark::Closed));
+        // A failing check comes before anything else that's open.
+        assert_eq!(with(&|p| { p.failing = 2; p.state = "approved".into() }), (K::Failing, "2 checks failing".into(), PrMark::Failing));
+        assert_eq!(with(&|p| p.failing = 1).1, "1 check failing");
+        let agent = PrAgent { kind: "approves".into(), words: "Agent approves".into(), says: String::new(), approves: None };
+        assert_eq!(with(&|p| { p.agent = Some(agent.clone()); p.state = "draft".into() }), (K::AgentApproves, "Agent approves".into(), PrMark::Draft));
+        assert_eq!(with(&|p| p.agent = Some(PrAgent { kind: "reviewing".into(), words: "Agent reviewing".into(), ..agent.clone() })).0, K::AgentReviewing);
+        assert_eq!(with(&|p| p.state = "draft".into()), (K::Draft, "Draft".into(), PrMark::Draft));
+        let turn = PrTurn { kind: "reply-needed".into(), words: "Reply needed".into(), yours: true, says: String::new() };
+        assert_eq!(with(&|p| { p.turn = Some(turn.clone()); p.state = "changes".into() }).0, K::Turn { turn: "reply-needed".into(), yours: true });
+        assert_eq!(with(&|p| p.state = "changes".into()).1, "Changes asked for");
+        assert_eq!(with(&|p| { p.merge = "conflicts".into(); p.pending = 1 }).0, K::Conflicts);
+        assert_eq!(with(&|p| { p.pending = 1; p.passed = 3 }).0, K::ChecksRunning);
+        assert_eq!(with(&|p| { p.state = "approved".into(); p.stale = Some("x".into()) }).1, "Stale approval \u{b7} ready to merge");
+        assert_eq!(with(&|p| p.state = "approved".into()).1, "Approved \u{b7} ready to merge");
+        assert_eq!(with(&|p| { p.state = "approved".into(); p.merge = "blocked".into() }).1, "Approved");
+        assert_eq!(with(&|p| p.passed = 3).0, K::ChecksPassed);
+        // Your review asked of you marks it, over its checks.
+        assert_eq!(with(&|p| { p.waits = true; p.failing = 1 }).2, PrMark::Waits);
     }
 
     #[test]

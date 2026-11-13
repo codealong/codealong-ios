@@ -360,6 +360,16 @@ struct QuickView: View {
                 Text(page == .sessions ? "Sessions" : "PRs")
                     .font(.subheadline.weight(.semibold))
                     .contentTransition(.interpolate)
+                // Reviews waiting on you, while the PRs that list them are out of sight.
+                if page == .sessions && reviewCount > 0 {
+                    Text(verbatim: "\(reviewCount)")
+                        .font(.caption2.weight(.bold))
+                        .monospacedDigit()
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(.orange, in: .capsule)
+                }
                 Image(systemName: "chevron.down")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
@@ -370,7 +380,7 @@ struct QuickView: View {
             .foregroundStyle(.primary)
         }
         .tint(.primary)
-        .accessibilityLabel(page == .sessions ? "Sessions" : "PRs")
+        .accessibilityLabel(page == .sessions ? (reviewCount > 0 ? "Sessions, \(reviewCount == 1 ? "a PR waits" : "\(reviewCount) PRs wait") on your review" : "Sessions") : "PRs")
         .accessibilityHint("Switches between sessions and PRs, orders the sessions, and picks which GitHub accounts are yours")
     }
 
@@ -758,7 +768,7 @@ struct QuickView: View {
     /// the Mac.
     private func sessionRow(_ r: SessionRow, said hit: SaidHit? = nil, compact: Bool = false) -> some View {
         Button { path.append(r.key) } label: {
-            QuickSessionRow(row: r, said: hit, words: matching, showDevice: store.devices.count > 1, showProject: project.isEmpty, compact: compact)
+            QuickSessionRow(row: r, said: hit, words: matching, showDevice: store.devices.count > 1, showProject: project.isEmpty, compact: compact, pr: r.worktreePr.flatMap { store.pr($0.key) })
                 .contentShape(.rect)
         }
         .tint(.primary)

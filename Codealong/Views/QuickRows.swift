@@ -3,7 +3,8 @@ import SwiftUI
 /// A session in the list, as the Mac's panel lists one: its state, its title with the words that
 /// matched, what it's doing or asking (or the line of what was said that matched), and where it
 /// is, with how long its state has lasted. Compact, in the list by project under its worktree, it
-/// is its state, title and time on one line, as Codex's phone app lists a folder's chats.
+/// is its state, title and time on one line, as Codex's phone app lists a folder's chats. Its
+/// worktree's PR, where it has one, ends the line that says where it is (`PrBadge`).
 struct QuickSessionRow: View {
     let row: SessionRow
     var said: SaidHit?
@@ -11,6 +12,8 @@ struct QuickSessionRow: View {
     let showDevice: Bool
     var showProject = true
     var compact = false
+    /// Its worktree's PR, as the PRs listed have it; none on that PR's own page.
+    var pr: PrRow? = nil
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -116,6 +119,10 @@ struct QuickSessionRow: View {
                 .font(.footnote.monospaced())
                 .foregroundStyle(.tertiary)
                 .lineLimit(1)
+            // After where it is, which gives way to it: the worktree's name is cut short first.
+            if let pr {
+                PrBadge(pr: pr)
+            }
         }
     }
 
@@ -235,48 +242,97 @@ struct QuickPrRow: View {
         return parts.joined(separator: " · ")
     }
 
-    /// Where it stands, as GitHub's merge box would lead with it.
+    /// Where it stands, as the core says it (`PrStanding`): GitHub's merge box's lead.
     private var standing: (symbol: String?, words: String, color: Color) {
-        switch pr.state {
-        case "merged": return ("arrow.triangle.merge", "Merged", .purple)
-        case "closed": return ("xmark.circle", "Closed", .secondary)
-        default: break
+        (pr.standing.symbol, pr.standing.words, pr.standing.color)
+    }
+
+    private var symbol: String { pr.mark.symbol }
+
+    private var color: Color { pr.mark.color }
+}
+
+/// A session's PR at the end of the line that says where it is, as small as it can say it: its
+/// icon in its mark's color, its number, and where it stands as a symbol where that says more than
+/// the icon (checks passed or failing, approved, your move). Its page says the rest.
+struct PrBadge: View {
+    let pr: PrRow
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: pr.mark.symbol)
+                .foregroundStyle(pr.mark.color)
+            Text(verbatim: "#\(pr.number)")
+                .font(.footnote.monospaced())
+                .foregroundStyle(.secondary)
+            if let symbol = pr.standing.symbol, symbol != pr.mark.symbol {
+                Image(systemName: symbol)
+                    .foregroundStyle(pr.standing.color)
+            }
         }
-        if pr.failing > 0 { return ("xmark", pr.failing == 1 ? "1 check failing" : "\(pr.failing) checks failing", .red) }
-        // Where the agent stands says more still, a draft's too, as the Mac's pill leads with it.
-        if let agent = pr.agent { return (AgentLabel.symbol(agent), agent.words, agent.kind == "approves" ? Self.passed : .secondary) }
-        if pr.state == "draft" { return (nil, "Draft", .secondary) }
-        // Whose move it is says more than GitHub's state, as the Mac's pill has it in its place.
-        if let turn = pr.turn { return (TurnLabel.symbol(turn), turn.words, turn.yours ? .orange : .secondary) }
-        if pr.state == "changes" { return ("exclamationmark.bubble", "Changes asked for", .orange) }
-        if pr.merge == "conflicts" { return ("exclamationmark.triangle", "Conflicts", .orange) }
-        if pr.pending > 0 { return ("clock", "Checks running", .secondary) }
+        .font(.caption2.weight(.semibold))
+        .lineLimit(1)
+        .fixedSize()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("PR \(pr.number), \(pr.standing.words)")
+    }
+}
+
+extension PrStanding {
+    /// What's drawn beside its words, where anything is.
+    var symbol: String? {
+        switch kind {
+        case .merged: "arrow.triangle.merge"
+        case .closed: "xmark.circle"
+        case .failing: "xmark"
+        case .agentApproves: "checkmark.seal"
+        case .agentReviewing: "hourglass"
+        case .turn(let turn, _): TurnLabel.symbol(kind: turn)
+        case .changes: "exclamationmark.bubble"
+        case .conflicts: "exclamationmark.triangle"
+        case .checksRunning: "clock"
         // Approved only before its latest commits: GitHub still counts it, so it says so in amber.
-        if pr.state == "approved" && pr.stale != nil { return ("clock.badge.exclamationmark", pr.merge == "clean" ? "Stale approval · ready to merge" : "Stale approval", .orange) }
-        if pr.state == "approved" { return ("checkmark", pr.merge == "clean" ? "Approved · ready to merge" : "Approved", Self.passed) }
-        if pr.passed > 0 { return ("checkmark", "Checks passed", Self.passed) }
-        return (nil, "Open", .secondary)
-    }
-
-    /// Green dark enough to read as words on white, and the system's own on black.
-    private static let passed = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? .systemGreen : UIColor(red: 0.12, green: 0.55, blue: 0.23, alpha: 1) })
-
-    private var symbol: String {
-        switch pr.state {
-        case "merged": "arrow.triangle.merge"
-        case "closed": "xmark.circle"
-        default: "arrow.triangle.pull"
+        case .staleApproval: "clock.badge.exclamationmark"
+        case .approved, .checksPassed: "checkmark"
+        case .draft, .open: nil
         }
     }
 
-    private var color: Color {
-        switch pr.state {
-        case "merged": .purple
-        case "closed": .secondary
-        case "draft": .secondary
-        default: pr.waits ? .orange : pr.failing > 0 ? .red : .green
+    var color: Color {
+        switch kind {
+        case .merged: .purple
+        case .failing: .red
+        case .agentApproves, .approved, .checksPassed: .prPassed
+        case .turn(_, let yours): yours ? .orange : .secondary
+        case .changes, .conflicts, .staleApproval: .orange
+        case .closed, .agentReviewing, .draft, .checksRunning, .open: .secondary
         }
     }
+}
+
+extension PrMark {
+    var symbol: String {
+        switch self {
+        case .merged: "arrow.triangle.merge"
+        case .closed: "xmark.circle"
+        case .open, .draft, .waits, .failing: "arrow.triangle.pull"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .merged: .purple
+        case .closed, .draft: .secondary
+        case .waits: .orange
+        case .failing: .red
+        case .open: .green
+        }
+    }
+}
+
+extension Color {
+    /// A PR's green: dark enough to read as words on white, and the system's own on black.
+    static let prPassed = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? .systemGreen : UIColor(red: 0.12, green: 0.55, blue: 0.23, alpha: 1) })
 }
 
 /// A Mac's suggestion for what's typed: what it would do, where, why, and how likely, as the start
