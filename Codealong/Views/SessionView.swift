@@ -85,6 +85,8 @@ struct SessionView: View {
     /// The questions card is open, not folded to its line: the conversation's line for its call
     /// opens it too (`questionsLine`).
     @State private var questionsOpen = false
+    /// You're writing your own answer in the questions card, so the keyboard is up for it.
+    @State private var writingAnswer = false
     /// An answer on its way to the Mac: the card takes no other until it's there, so a second tap
     /// can't send another whose failure hides how the first went.
     @State private var answering: Choice?
@@ -454,6 +456,12 @@ struct SessionView: View {
             // Another call's questions start folded, as the card did when it had its own state:
             // the card isn't there between the two to see it change.
             .onChange(of: pending?.id) { _, _ in questionsOpen = false }
+            // Opening the questions puts the reply box's keyboard away, and what's written there
+            // stays: it would decline them, and with the keyboard up the card had only the room
+            // between it and the top, a line or two of the question and none of its choices.
+            .onChange(of: questionsOpen) { _, open in
+                if open { typing = false }
+            }
             // Takes no room: it floats over the top of the conversation while it has a prompt.
             .overlay(alignment: .top) {
                 VStack(spacing: 0) {
@@ -621,7 +629,7 @@ struct SessionView: View {
                         Task { await answer(pending, choice) }
                     }
                 } else {
-                    QuestionsCard(key: key, pending: pending, account: row?.account ?? "It", hosted: row?.hosted == true, canAct: canAct, why: whyNot, answering: answering, open: $questionsOpen, writing: typing) { answers in
+                    QuestionsCard(key: key, pending: pending, account: row?.account ?? "It", hosted: row?.hosted == true, canAct: canAct, why: whyNot, answering: answering, open: $questionsOpen, writing: typing, writingOwn: $writingAnswer) { answers in
                         Task { await answer(pending, .allow, questions: answers) }
                     } decline: {
                         Task { await answer(pending, .deny) }
@@ -671,8 +679,9 @@ struct SessionView: View {
             if let said {
                 Text(said).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
             }
-            // Not while you write here: the box needs the room, and what's next waits.
-            if let onward, draft.isEmpty && attached.isEmpty {
+            // Not while you write here, or your own answer to a question: the room is theirs, and
+            // what's next waits.
+            if let onward, draft.isEmpty && attached.isEmpty && !writingAnswer {
                 GoOnBar(next: onward, left: after.count, going: going(.seen), offers: SwipeOn.offers(row: row, pending: pending, acted: replied), pickTime: pickSnooze) { goOn(to: onward, doing: $0 ?? .seen) }
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -1885,7 +1894,11 @@ private struct ApprovalCard: View {
 /// go back as its answer, as the Mac's panel sends them. Decline stops the turn. It starts folded
 /// to a line of what it asks, so the conversation it came with can be read above it: open, a long
 /// question and its choices covered most of the screen. A tap opens it, and folds it again, as
-/// starting to write in the reply box does; the conversation's line for the call opens it too.
+/// starting to write in the reply box does; the conversation's line for the call opens it too, and
+/// opening it puts the box's keyboard away. While you write your own answer, the keyboard leaves
+/// little room: what only explains (the note over it, the line under its buttons) makes way for
+/// the question and its choices, and your field stays in view under them rather than scrolling
+/// out of sight with them.
 private struct QuestionsCard: View {
     /// The session's: what's picked is kept under it (`Store.keptAnswers`).
     let key: String
@@ -1900,6 +1913,9 @@ private struct QuestionsCard: View {
     @Binding var open: Bool
     /// The reply box has the keyboard.
     var writing = false
+    /// Your own answer's field has the keyboard: the screen's, which leaves the bar to the next
+    /// out meanwhile.
+    var writingOwn: Binding<Bool> = .constant(false)
     let answer: ([QuestionAnswer]) -> Void
     let decline: () -> Void
     @Environment(Store.self) private var store
@@ -1907,6 +1923,7 @@ private struct QuestionsCard: View {
     @State private var own: [String: String] = [:]
     /// The question showing.
     @State private var at = 0
+    @FocusState private var ownFocused: Bool
 
     var body: some View {
         let questions = pending.questions
@@ -1947,6 +1964,11 @@ private struct QuestionsCard: View {
         .onChange(of: writing) { _, now in
             if now { withAnimation(.snappy) { open = false } }
         }
+        .onChange(of: ownFocused) { _, now in
+            withAnimation(.snappy) { writingOwn.wrappedValue = now }
+        }
+        // Answered or declined with the keyboard up, it goes with its field.
+        .onDisappear { writingOwn.wrappedValue = false }
         // What was picked for these before you went to another session, or before this card was
         // drawn again, is here again; another set of questions starts folded, at its first, with
         // nothing picked, unless some were picked for it before.
@@ -2006,7 +2028,7 @@ private struct QuestionsCard: View {
     @ViewBuilder
     private func card(_ q: Question, shown: Int, next: Int?) -> some View {
         let questions = pending.questions
-        if pending.unwritten {
+        if pending.unwritten && !ownFocused {
             // What it wrote with them isn't in the conversation above yet.
             Text("What \(account) wrote with this question shows in the conversation once it’s answered\(hosted ? "" : "; where it runs on its Mac has it now").")
                 .font(.footnote)
@@ -2015,13 +2037,23 @@ private struct QuestionsCard: View {
         if questions.count > 1 {
             steps(showing: shown)
         }
-        // As tall as the question is, up to a point, and it scrolls past that.
-        UpTo(most: 320) {
-            ScrollView {
-                question(q, alone: questions.count == 1)
-                    .id(q.question)
+        VStack(alignment: .leading, spacing: 8) {
+            // As tall as the question is, up to a point, and it scrolls past that.
+            UpTo(most: 320) {
+                ScrollView {
+                    question(q, alone: questions.count == 1)
+                        .id(q.question)
+                }
+                .scrollBounceBehavior(.basedOnSize)
             }
-            .scrollBounceBehavior(.basedOnSize)
+            // What an exit asks takes nothing but its choices.
+            if !pending.exiting {
+                TextField(q.options.isEmpty ? "Your answer" : "Or write your own answer", text: Binding(get: { own[q.question] ?? "" }, set: { type(q, $0) }), axis: .vertical)
+                    .lineLimit(1...4)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($ownFocused)
+                    .disabled(!canAct || answering != nil)
+            }
         }
         if canAct {
             HStack {
@@ -2044,9 +2076,11 @@ private struct QuestionsCard: View {
                 }
             }
             .disabled(answering != nil)
-            Text(pending.exiting ? "It’s exiting. Cancel keeps it open, at its prompt." : "\(q.multiSelect ? "Pick one or more." : "Pick one, or write your own.") Decline stops the turn, or write below to say something else.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+            if !ownFocused {
+                Text(pending.exiting ? "It’s exiting. Cancel keeps it open, at its prompt." : "\(q.multiSelect ? "Pick one or more." : "Pick one, or write your own.") Decline stops the turn, or write below to say something else.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
         } else if let why {
             Text(why).font(.footnote).foregroundStyle(.secondary)
         }
@@ -2115,13 +2149,6 @@ private struct QuestionsCard: View {
                 .buttonStyle(.plain)
                 .disabled(!canAct || answering != nil)
                 .accessibilityAddTraits(on ? .isSelected : [])
-            }
-            // What an exit asks takes nothing but its choices.
-            if !pending.exiting {
-                TextField(q.options.isEmpty ? "Your answer" : "Or write your own answer", text: Binding(get: { own[q.question] ?? "" }, set: { type(q, $0) }), axis: .vertical)
-                    .lineLimit(1...4)
-                    .textFieldStyle(.roundedBorder)
-                    .disabled(!canAct || answering != nil)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
