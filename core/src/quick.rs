@@ -139,10 +139,10 @@ pub struct PrRow {
     pub standing: PrStanding,
     /// Its icon beside its number (`pr_mark`).
     pub mark: PrMark,
-    /// The keys its Macs name it by, in lower case, but `key` itself: one from before its repo was
-    /// renamed, say, or its own in lower case where it isn't, which a session's worktree PR
-    /// (`WorktreePr::key`) can have, so it's found by those too.
-    pub aliases: Vec<String>,
+    /// Every key its Macs name it by, in lower case, `key`'s among them: one from before its repo
+    /// was renamed, say, or its own in another case, any of which a session's worktree PR
+    /// (`WorktreePr::key`) can have, so it's found by those whatever their case.
+    pub known_as: Vec<String>,
 }
 
 /// Where a PR stands, as GitHub's merge box would lead with it and the Mac's pill puts it
@@ -841,7 +841,7 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                 // Once the other Macs have had their say, below.
                 standing: PrStanding::default(),
                 mark: PrMark::default(),
-                aliases: Vec::new(),
+                known_as: Vec::new(),
             });
         }
     }
@@ -904,20 +904,18 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                 agent: None,
                 standing: PrStanding::default(),
                 mark: PrMark::default(),
-                aliases: Vec::new(),
+                known_as: Vec::new(),
             });
         }
     }
-    // Its own key in lower case too, where that differs: a worktree's URL can spell the repo in
-    // another case than the PR list's.
-    for (alias, &i) in &at {
-        if *alias != out[i].key {
-            out[i].aliases.push(alias.clone());
-        }
+    // Every key it was placed under, its own among them, each in lower case: a worktree's URL can
+    // spell the repo in another case than the PR list's, either way round.
+    for (name, &i) in &at {
+        out[i].known_as.push(name.clone());
     }
     // Its primary session leads its sessions, as the Mac's row names it first.
     for pr in &mut out {
-        pr.aliases.sort();
+        pr.known_as.sort();
         let first = pr.primary.as_ref().and_then(|p| pr.sessions.iter().position(|s| *s == p.key));
         if let Some(i) = first {
             pr.sessions[..=i].rotate_right(1);
@@ -1369,7 +1367,7 @@ pub(crate) mod tests {
             agent: None,
             standing: PrStanding::default(),
             mark: PrMark::default(),
-            aliases: Vec::new(),
+            known_as: Vec::new(),
         }
     }
 
@@ -1711,8 +1709,9 @@ pub(crate) mod tests {
         let feeds = vec![(mac("asleep", false), &asleep), (mac("awake", true), &awake)];
         let prs = all_prs(&feeds, &crate::github::You::default());
         assert_eq!(prs.iter().map(|p| (p.key.as_str(), p.device.as_str())).collect::<Vec<_>>(), [("new/app#1", "awake")]);
-        // A session's worktree on the Mac asleep names it the old way, which finds it too.
-        assert_eq!(prs[0].aliases, ["old/app#1"]);
+        // A session's worktree on the Mac asleep names it the old way, which finds it too; and its
+        // key, in lower case already, is there for one that spells it otherwise (`New/App#1`).
+        assert_eq!(prs[0].known_as, ["new/app#1", "old/app#1"]);
     }
 
     #[test]
@@ -1733,7 +1732,7 @@ pub(crate) mod tests {
         assert_eq!(prs[0].device, "driving");
         assert_eq!(prs[0].sessions, vec!["@driving:claude:b:2", "@driving:claude:b:3", "@watching:claude:a:1"]);
         // A session's worktree names it by either Mac's URL, in either case.
-        assert_eq!((prs[0].key.as_str(), prs[0].aliases.clone()), ("N/App#5", vec!["n/app#5".to_string(), "o/app#5".to_string()]));
+        assert_eq!((prs[0].key.as_str(), prs[0].known_as.clone()), ("N/App#5", vec!["n/app#5".to_string(), "o/app#5".to_string()]));
 
         // A Mac whose PR list doesn't have it (an older build sends none; a PR merged a day ago
         // is left out) has only its worktrees to go by: two of one repo on the PR's branch each

@@ -575,10 +575,11 @@ final class Store {
         if let i = trail.lastIndex(of: key) { trail.removeSubrange(i...) }
     }
 
-    /// A PR by its key (`owner/name#number`), or another its Macs name it by (`PrRow.aliases`, in
-    /// lower case): a session's worktree can name it as its repo was called before a rename.
+    /// A PR by its key (`owner/name#number`), or any its Macs name it by, in any case
+    /// (`PrRow.knownAs`): a session's worktree can name it as its repo was called before a rename,
+    /// or spell the repo otherwise.
     func pr(_ key: String) -> PrRow? {
-        prs.first { $0.key == key } ?? prs.first { $0.aliases.contains(key.lowercased()) }
+        prs.first { $0.key == key } ?? prs.first { $0.knownAs.contains(key.lowercased()) }
     }
 
     /// A PR's description, reviews, comments, changed files and your draft review of it, as its
