@@ -136,7 +136,8 @@ final class Store {
     /// another app.
     @ObservationIgnored private var inFront = false
     /// Launched for a check that goes through your real sessions (`LOOK_ONLY=1 scripts/run.sh`):
-    /// nothing gone on from here is marked seen on its Mac, so the check leaves them as they were.
+    /// nothing gone on from here is marked seen or done on its Mac, so the check leaves them as
+    /// they were.
     private let lookOnly = ProcessInfo.processInfo.environment["CODEALONG_LOOK_ONLY"] == "1"
     /// The sessions a check goes through, in order, in place of what waits on you
     /// (`QUEUE=<key>,<key> scripts/run.sh`): any sessions, waiting or not.
@@ -801,6 +802,9 @@ final class Store {
     /// answers, the session shown then says how it went (`tellLater`). Work under way holds it, as
     /// it holds Mark as done, and one held or not reached comes round again.
     func doneLater(_ key: String, title: String) {
+        // A swipe marks a finished turn done, so a check going through real sessions would end
+        // them: there it comes round again, as one left unseen does.
+        guard !lookOnly else { return comeRound(key) }
         Task {
             do {
                 let outcome = try await done(key, stop: false)

@@ -292,7 +292,7 @@ scripts/build.sh                    # the core for the simulator if core/ change
 CORE=1 scripts/build.sh             # rebuild the core too
 scripts/run.sh                      # install and launch on the booted simulator
 LINK_CODE=cal1… scripts/run.sh      # launch with a Mac's link code, as if entered
-LOOK_ONLY=1 QUEUE=<key>,<key> OPEN=<key> scripts/run.sh  # go through real sessions, marking none seen
+LOOK_ONLY=1 QUEUE=<key>,<key> OPEN=<key> scripts/run.sh  # go through real sessions, marking none seen or done
 (cd core && cargo test)             # the core's tests
 ```
 
