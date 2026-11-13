@@ -139,9 +139,9 @@ pub struct PrRow {
     pub standing: PrStanding,
     /// Its icon beside its number (`pr_mark`).
     pub mark: PrMark,
-    /// The other keys its Macs name it by, in lower case: one from before its repo was renamed,
-    /// say, which a session's worktree PR (`WorktreePr::key`) can still have, so it's found by
-    /// those too.
+    /// The keys its Macs name it by, in lower case, but `key` itself: one from before its repo was
+    /// renamed, say, or its own in lower case where it isn't, which a session's worktree PR
+    /// (`WorktreePr::key`) can have, so it's found by those too.
     pub aliases: Vec<String>,
 }
 
@@ -908,8 +908,10 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
             });
         }
     }
+    // Its own key in lower case too, where that differs: a worktree's URL can spell the repo in
+    // another case than the PR list's.
     for (alias, &i) in &at {
-        if !alias.eq_ignore_ascii_case(&out[i].key) {
+        if *alias != out[i].key {
             out[i].aliases.push(alias.clone());
         }
     }
@@ -1730,6 +1732,8 @@ pub(crate) mod tests {
         assert_eq!(prs.len(), 1);
         assert_eq!(prs[0].device, "driving");
         assert_eq!(prs[0].sessions, vec!["@driving:claude:b:2", "@driving:claude:b:3", "@watching:claude:a:1"]);
+        // A session's worktree names it by either Mac's URL, in either case.
+        assert_eq!((prs[0].key.as_str(), prs[0].aliases.clone()), ("N/App#5", vec!["n/app#5".to_string(), "o/app#5".to_string()]));
 
         // A Mac whose PR list doesn't have it (an older build sends none; a PR merged a day ago
         // is left out) has only its worktrees to go by: two of one repo on the PR's branch each
