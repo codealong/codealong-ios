@@ -10,6 +10,9 @@ struct RepoPicker: View {
     let worktrees: [Worktree]
     let chosen: Worktree?
     let first: String?
+    /// New worktree is on, for an account that makes one: a repo picked starts in a new worktree
+    /// of it, which its row says, as the Mac's does.
+    let newWorktree: Bool
     let pickRepo: (StartRepo) -> Void
     let pickWorktree: (Worktree) -> Void
     @Environment(\.dismiss) private var dismiss
@@ -36,10 +39,11 @@ struct RepoPicker: View {
         return order.map { ($0, groups[$0] ?? []) }
     }
 
-    /// The worktrees what's typed names, where it names no repo.
+    /// The worktrees what's typed names, where it names no repo: by name or branch, with its
+    /// repo's and project's names, as the Mac's panel finds them.
     private var named: [Worktree] {
         guard !words.isEmpty, shownRepos.isEmpty else { return [] }
-        return worktrees.filter { !$0.chat && has("\($0.name) \($0.branch ?? "")") }
+        return worktrees.filter { !$0.chat && has("\($0.name) \($0.branch ?? "") \($0.repo) \($0.project)") }
     }
 
     private var chats: [Worktree] { worktrees.filter { $0.chat && has("no project chat") } }
@@ -49,7 +53,7 @@ struct RepoPicker: View {
             ForEach(shownRepos, id: \.0) { project, rows in
                 Section(project) {
                     ForEach(rows, id: \.repo) { r in
-                        row(r.repo, r.startsIn.startsHere, on: chosen?.chat == false && chosen?.project == r.project && chosen?.repo == r.repo) { pickRepo(r) }
+                        row(r.repo, newWorktree ? "New worktree" : r.startsIn.startsHere, on: chosen?.chat == false && chosen?.project == r.project && chosen?.repo == r.repo) { pickRepo(r) }
                     }
                 }
             }

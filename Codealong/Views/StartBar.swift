@@ -111,6 +111,7 @@ struct StartBar: View {
                     worktrees: composer.device.map { store.worktrees($0) } ?? [],
                     chosen: worktree,
                     first: project.isEmpty ? nil : project,
+                    newWorktree: composer.takesNewWorktree && composer.newWorktree,
                     pickRepo: { composer.pick($0, store: store) },
                     pickWorktree: { composer.pick($0) }
                 )
