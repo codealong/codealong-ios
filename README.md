@@ -71,9 +71,11 @@ the question, to answer there.
 turns come one after another, in the Mac's order: the ones moved to the top first, then each kind
 the longest waiting first, and the ones you go on from come round again after the rest. While something else waits on you, a bar over the
 reply box says how many more do and what swiping left does to the session you're reading: marks it
-seen and goes on. Opening one doesn't mark it seen, so one you read and go back from is still
-waiting. Tap the bar to do something else instead, and go on as you pick it: leave it as it is
-(to come round again after the rest), mark it done, archive it, or snooze it for a while. Swipe
+seen and goes on, or marks it done where its Mac says its work is finished (a PR of its merged, a
+todo of its done, its own status line) and it only waits for you to read it. Opening one doesn't
+mark it seen, so one you read and go back from is still waiting. Tap the bar to do something else
+instead, and go on as you pick it: leave it as it is (to come round again after the rest), mark it
+seen or done, archive it, or snooze it for a while. Swipe
 right to go back to the one you came from, leaving this one as it is. One you replied to, one
 still working, and one waiting on you to allow something are left as they are, and holding *Send* sends and goes straight
 on. A PR's page has the same bar over its review box: swiping on from a review you haven't given

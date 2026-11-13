@@ -10,11 +10,12 @@ protocol GoOnPick: Hashable {
 }
 
 /// What going on from a session's screen to the next that waits on you can do to it. A swipe, Go
-/// to next in the menu and ⌘] mark it seen, which opening it doesn't; a tap on the bar over the
-/// box offers the rest, and the one picked is done as it goes on. Leave as it is goes on without
-/// marking it anything, so a turn that ended stays in Your turn, or one that asks you something
-/// in Needs you, and comes round again after the rest. A snooze runs for a time the menus offer,
-/// as the session's own Snooze does (`Snooze`), or for one picked.
+/// to next in the menu and ⌘] mark it seen, which opening it doesn't, or mark a finished turn done
+/// (`swipe`); a tap on the bar over the box offers the rest, and the one picked is done as it goes
+/// on. Leave as it is goes on without marking it anything, so a turn that ended stays in Your
+/// turn, or one that asks you something in Needs you, and comes round again after the rest. A
+/// snooze runs for a time the menus offer, as the session's own Snooze does (`Snooze`), or for one
+/// picked.
 enum SwipeOn: GoOnPick {
     case keep, seen, done, archive
     case snooze(Snooze.For)
@@ -45,12 +46,20 @@ enum SwipeOn: GoOnPick {
         return nil
     }
 
-    /// What the bar's menu offers besides marking it seen, as it is now (`Going.offered`).
+    /// What a swipe does to it: marks it done where it waits on you only to be read and its Mac is
+    /// sure its work is done (a PR of its merged, a todo of its done, its own status line), as its
+    /// Finished note asks once you've read it; otherwise marks it seen. Looks finished, which only
+    /// the read of its last reply says, is left to be marked done from the menu.
+    static func swipe(row: SessionRow?) -> SwipeOn {
+        row?.finished?.sure == true && row?.waitsFinished == true ? .done : .seen
+    }
+
+    /// What the bar's menu offers besides what a swipe does, as it is now (`Going.offered`).
     static func offers(row: SessionRow?, pending: Pending?, acted: Bool) -> [SwipeOn] {
         // An archived one, opened from a search, is in no list to wait in: it isn't offered
         // archiving or snoozing, as its menu doesn't offer them.
-        let picks: [SwipeOn] = row?.archived == true ? [.keep, .done] : [.keep, .done, .archive] + Snooze.For.offered.map(SwipeOn.snooze)
-        return Going.offered(picks, besides: .seen) {
+        let picks: [SwipeOn] = row?.archived == true ? [.keep, .seen, .done] : [.keep, .seen, .done, .archive] + Snooze.For.offered.map(SwipeOn.snooze)
+        return Going.offered(picks, besides: swipe(row: row)) {
             Going.of($0, row: row, pending: pending, acted: acted)
         }
     }

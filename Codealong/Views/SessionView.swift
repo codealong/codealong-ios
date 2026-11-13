@@ -10,10 +10,12 @@ import SwiftUI
 /// a swipe goes on, to a PR's page as to a session's screen, or on the last to the end of what
 /// waits. Holding Send sends and goes on at once. Going on marks it seen, so a turn that ended
 /// leaves Your turn and a reply that asks you something leaves Needs you; opening it, or a turn
-/// ending while it's open, doesn't, so one read and gone back from is where it was. A tap on
-/// the bar offers leaving it as it is, marking it done, archiving it or snoozing it instead, and
-/// goes on as it does it (`SwipeOn`). One you replied to here, or one at work, is left as it is, and
-/// one skipped while it waits on a call to allow comes round again after the rest (`Going`).
+/// ending while it's open, doesn't, so one read and gone back from is where it was. A finished
+/// turn whose Mac is sure its work is done (its Finished note) is marked done instead, as the note
+/// asks once you've read it. A tap on the bar offers leaving it as it is, marking it seen or done,
+/// archiving it or snoozing it instead, and goes on as it does it (`SwipeOn`). One you replied to
+/// here, or one at work, is left as it is, and one skipped while it waits on a call to allow comes
+/// round again after the rest (`Going`).
 ///
 /// The box says how a message gets there, as its Mac says (typed into its terminal, its
 /// background job, a message from Codealong), once you write: until then it's folded to a line
@@ -53,9 +55,9 @@ struct SessionView: View {
     @Environment(Store.self) private var store
     /// The inbox's project: what's next stays in it.
     @AppStorage("project") private var project = ""
-    /// What going on does to this one: marking it seen, as a swipe does, unless the bar's menu
-    /// picked something else to do as it went on.
-    @State private var doing = SwipeOn.seen
+    /// What the bar's menu picked to do to this one as it went on; nil for what a swipe does
+    /// (`swipeDoes`).
+    @State private var doing: SwipeOn?
     /// You replied or answered here: going on leaves it to the turn you gave it.
     @State private var acted = false
     /// You're going through what waits on you here (`Store.goingThrough`), as you were once: with
@@ -218,7 +220,7 @@ struct SessionView: View {
 
     var body: some View {
         // The screen follows a swipe, and what it goes to comes in beside it.
-        Paged(swipe: swipe, key: key, next: onward, back: before, leaves: [.done, .archive].contains(going(doing)), ready: opened) {
+        Paged(swipe: swipe, key: key, next: onward, back: before, leaves: [.done, .archive].contains(going(doing ?? swipeDoes)), ready: opened) {
             page.environment(\.imageMac, row?.device)
                 .environment(\.openURL, OpenURLAction { openLink($0) })
         }
@@ -682,7 +684,7 @@ struct SessionView: View {
             // Not while you write here, or your own answer to a question: the room is theirs, and
             // what's next waits.
             if let onward, draft.isEmpty && attached.isEmpty && !writingAnswer {
-                GoOnBar(next: onward, left: after.count, going: going(.seen), offers: SwipeOn.offers(row: row, pending: pending, acted: replied), pickTime: pickSnooze) { goOn(to: onward, doing: $0 ?? .seen) }
+                GoOnBar(next: onward, left: after.count, going: going(swipeDoes), offers: SwipeOn.offers(row: row, pending: pending, acted: replied), pickTime: pickSnooze) { goOn(to: onward, doing: $0) }
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
             // Snoozed from here as from its Snooze menu: it goes on to what's next, if anything.
@@ -1716,6 +1718,10 @@ struct SessionView: View {
     /// What going on to the next with `pick` does to this one.
     private func going(_ pick: SwipeOn) -> Going { Going.of(pick, row: row, pending: pending, acted: replied) }
 
+    /// What a swipe, Go to next and ⌘] pick: marking it seen, or done where its Mac is sure a turn
+    /// left only to read finished its work (`SwipeOn.swipe`).
+    private var swipeDoes: SwipeOn { SwipeOn.swipe(row: row) }
+
     /// You replied or answered here, or a message to it is on its way: going on leaves it to that,
     /// until it waits on you anew (the turn you gave it ended while you watched, say), when going
     /// on does to it what it does to any.
@@ -1734,7 +1740,7 @@ struct SessionView: View {
         }
     }
 
-    /// Goes on to `next`, doing `pick` to this one: marking it seen, as a swipe does, or what was
+    /// Goes on to `next`, doing `pick` to this one: what a swipe does (`swipeDoes`), or what was
     /// picked from the bar's menu, where that applies (`Going`). Marked seen as it
     /// slides, as it always was (`slide`), it comes round after the rest until its Mac's feed has
     /// it seen, so one whose Mac didn't take that comes round again. Marking it done or archiving it waits on
@@ -1743,8 +1749,9 @@ struct SessionView: View {
     /// (`Store.doneLater`, `Store.archiveLater`). Done marks it seen on its Mac, so the slide
     /// doesn't: one that work under way held stays as it was, rather than leaving Your turn
     /// though it wasn't done.
-    private func goOn(to next: Onward, doing pick: SwipeOn = .seen, speed: CGFloat = 0) {
+    private func goOn(to next: Onward, doing picked: SwipeOn? = nil, speed: CGFloat = 0) {
         guard swipe.to == nil else { return }
+        let pick = picked ?? swipeDoes
         doing = pick
         switch going(pick) {
         case .done:
@@ -3413,7 +3420,7 @@ struct SessionGlance: View {
             }
             if let next = onward, !open {
                 let replied = !(store.outgoing[key] ?? []).isEmpty
-                GoOnBar(next: next, left: after.count, going: Going.of(.seen, row: row, pending: pending, acted: replied), offers: SwipeOn.offers(row: row, pending: pending, acted: replied)) { _ in }
+                GoOnBar(next: next, left: after.count, going: Going.of(SwipeOn.swipe(row: row), row: row, pending: pending, acted: replied), offers: SwipeOn.offers(row: row, pending: pending, acted: replied)) { _ in }
             }
             if let suggested = row?.suggestedSnooze, Date.now.ms < suggested.offeredTill {
                 SnoozeSuggestionLine(suggested: suggested) {}
