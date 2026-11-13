@@ -139,6 +139,10 @@ pub struct PrRow {
     pub standing: PrStanding,
     /// Its icon beside its number (`pr_mark`).
     pub mark: PrMark,
+    /// The other keys its Macs name it by, in lower case: one from before its repo was renamed,
+    /// say, which a session's worktree PR (`WorktreePr::key`) can still have, so it's found by
+    /// those too.
+    pub aliases: Vec<String>,
 }
 
 /// Where a PR stands, as GitHub's merge box would lead with it and the Mac's pill puts it
@@ -837,6 +841,7 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                 // Once the other Macs have had their say, below.
                 standing: PrStanding::default(),
                 mark: PrMark::default(),
+                aliases: Vec::new(),
             });
         }
     }
@@ -899,11 +904,18 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                 agent: None,
                 standing: PrStanding::default(),
                 mark: PrMark::default(),
+                aliases: Vec::new(),
             });
+        }
+    }
+    for (alias, &i) in &at {
+        if !alias.eq_ignore_ascii_case(&out[i].key) {
+            out[i].aliases.push(alias.clone());
         }
     }
     // Its primary session leads its sessions, as the Mac's row names it first.
     for pr in &mut out {
+        pr.aliases.sort();
         let first = pr.primary.as_ref().and_then(|p| pr.sessions.iter().position(|s| *s == p.key));
         if let Some(i) = first {
             pr.sessions[..=i].rotate_right(1);
@@ -1355,6 +1367,7 @@ pub(crate) mod tests {
             agent: None,
             standing: PrStanding::default(),
             mark: PrMark::default(),
+            aliases: Vec::new(),
         }
     }
 
@@ -1696,6 +1709,8 @@ pub(crate) mod tests {
         let feeds = vec![(mac("asleep", false), &asleep), (mac("awake", true), &awake)];
         let prs = all_prs(&feeds, &crate::github::You::default());
         assert_eq!(prs.iter().map(|p| (p.key.as_str(), p.device.as_str())).collect::<Vec<_>>(), [("new/app#1", "awake")]);
+        // A session's worktree on the Mac asleep names it the old way, which finds it too.
+        assert_eq!(prs[0].aliases, ["old/app#1"]);
     }
 
     #[test]

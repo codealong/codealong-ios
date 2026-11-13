@@ -758,8 +758,9 @@ struct QuickView: View {
     }
 
     /// How many PRs wait on your review, for the menu.
+    /// The reviews that wait on you, pinned ones too, which the list puts with the pinned.
     private var reviewCount: Int {
-        store.prList(project: project).first { $0.group == .reviews }?.rows.count ?? 0
+        store.prList(project: project).flatMap(\.rows).filter(\.waits).count
     }
 
     // MARK: Rows
