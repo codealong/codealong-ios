@@ -2769,7 +2769,8 @@ private struct PeerMessage: View {
                 .foregroundStyle(.secondary)
             MarkdownText(text: item.text)
                 .fixedSize(horizontal: false, vertical: true)
-                .onGeometryChange(for: Bool.self) { $0.size.height > cut + 1 } action: { long = $0 }
+                // The size is read off the main actor, so it gets the cut as a value.
+                .onGeometryChange(for: Bool.self) { [cut = cut] in $0.size.height > cut + 1 } action: { long = $0 }
                 .frame(maxHeight: opened ? nil : cut, alignment: .top)
                 .clipped()
                 // The cut fades out, so it reads as more to come.

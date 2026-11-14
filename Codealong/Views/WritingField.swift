@@ -118,7 +118,7 @@ private struct Words: UIViewRepresentable {
         /// doesn't keep it, as a disabled TextField doesn't.
         func followFocus() {
             if wantsFocus, isEditable, !isFirstResponder, window != nil {
-                becomeFirstResponder()
+                _ = becomeFirstResponder()
             } else if !(wantsFocus && isEditable), isFirstResponder {
                 resignFirstResponder()
             }
