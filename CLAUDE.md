@@ -53,13 +53,15 @@ the core whenever `core/` isn't what it was last built from).
   sends it its feed, answers its requests, and never dials it or asks it to search.
 - It never sends a feed and answers every request with a refusal.
 - It reads with `session-page`, `session-newer`, `session-pending`, `session-way`,
-  `start-options`, `route`, `search`, `session-task-output`, `side-get` and `side-past`, and
-  organizes (`mark-seen`, `session-archive`, `session-rename`, `session-raise`, `session-label`)
-  with any Mac. It can only act (`session-send`, `session-answer`, `session-cancel`,
-  `session-steer`, `session-unqueue`, `session-task-stop`, `session-resume`, `session-model`,
-  `session-effort`, `session-mode`, `session-fork`, `session-edit`, `session-done`, `start`,
-  `side-ask`, `side-close`, `side-forget`)
-  where the Mac has remote control on (Settings › Devices there), and each of those is written
+  `session-stream`, `session-watch`, `start-options`, `route`, `search`, `session-task-output`,
+  `side-get`, `side-past`, `pr-detail`, `pr-merge-box` and `image-read`, and organizes
+  (`mark-seen`, `mark-unread`, `session-archive`, `session-rename`, `session-raise`,
+  `session-pin`, `session-snooze`, `session-quiet`, `session-label`, `session-suggest`,
+  `pr-snooze`) with any Mac. It can only act (`session-send`, `session-answer`,
+  `session-cancel`, `session-steer`, `session-unqueue`, `session-task-stop`, `session-resume`,
+  `session-model`, `session-effort`, `session-mode`, `session-fork`, `session-edit`,
+  `session-done`, `start`, `side-ask`, `side-close`, `side-forget`, `pr-review`, `pr-merge`,
+  `image-keep`) where the Mac has remote control on (Settings › Devices there), and each of those is written
   to that Mac's `devices.log`. Who may ask for what is the main repo's `api::REQUESTS`; a Mac of an older
   build refuses a request it doesn't know, and the phone says why.
 - A Mac takes what the phone sends as yours, as it takes what you type in its windows (a phone

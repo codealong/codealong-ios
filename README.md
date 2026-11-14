@@ -65,7 +65,8 @@ or one its turn left running in the background. A line above its box counts the 
 left running in the background (a Claude Code session's shells and Monitors, a Codex thread's
 background terminals), and a tap lists them with where each stands and the last of what it printed,
 read again as it runs. One whose command waits at a question in a terminal on its Mac says so, with
-the question, to answer there.
+the question, to answer there. One whose last turn ended on an API error says so under its
+conversation, in its harness's words, with *Try again* beside it.
 
 **Work through what's waiting.** Sessions that need you, PRs waiting on your review and finished
 turns come one after another, in the Mac's order: the ones moved to the top first, then each kind
@@ -145,8 +146,10 @@ branch, ready for review and the branch's deletion. Your Mac's `gh` does it as y
 that Mac; reading and snoozing a review don't.
 
 **Start new work.** Type a prompt in the same box and start it with the capsule at the bottom,
-which says where it starts: its menu picks the Mac, worktree, account, model, effort and place,
-in an existing worktree, a new one, or a chat in no project. The + beside the box attaches
+which says where it starts: its menu picks the Mac, the repo (a sheet of the Mac's repos under
+their projects, each saying where a session would start in it) and the worktree in it (*New
+worktree* first, then the ones ready for new work), or a chat in no project, and the account,
+model, effort and place. The + beside the box attaches
 photos, and an image pasted into it attaches too; they go with the prompt as they go with a reply. As you type, it finds sessions by what was said in them, and the Mac you pick suggests
 where the prompt belongs when it has Jev's suggestions on, over the capsule so the keyboard never
 covers them (send it to a session, open one, or start it in another worktree), and says when a
