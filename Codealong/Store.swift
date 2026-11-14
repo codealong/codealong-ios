@@ -8,8 +8,9 @@ import UIKit
 final class Store {
     private(set) var devices: [DeviceRow] = []
     private(set) var sessions: [SessionRow] = []
-    /// Sessions open here that `sessions` doesn't list, by key: older ones and archived ones, which
-    /// only a search finds (`follow`).
+    /// Sessions open here or gone on from that `sessions` doesn't list, by key: older ones and
+    /// archived ones, which only a search finds (`follow`), and ones a swipe marked done or
+    /// archived, which swiping back goes to (`trail`).
     private var others: [String: SessionRow] = [:]
     /// The keys of the pages open in the list's path, the sessions among them read from the core
     /// when `sessions` doesn't have them (`follow`).
@@ -203,8 +204,8 @@ final class Store {
 
     private func readOthers() {
         let listed = Set(sessions.map(\.key))
-        let wanted = followed.filter { !listed.contains($0) }
-        let read = wanted.isEmpty ? [] : core?.sessions(keys: wanted) ?? []
+        let wanted = Set(followed + trail.filter { !$0.hasPrefix(PrView.prefix) }).subtracting(listed)
+        let read = wanted.isEmpty ? [] : core?.sessions(keys: Array(wanted)) ?? []
         let now = Dictionary(read.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
         if now != others { others = now }
     }
@@ -562,11 +563,12 @@ final class Store {
         return (data, image)
     }
 
-    /// The session or PR you went on from to `key`, the latest that's still listed: where swiping
-    /// back goes.
+    /// The session or PR you went on from to `key`, the latest the Macs still have: where swiping
+    /// back goes. One that going on marked done or archived has left the list, and is gone back
+    /// to all the same.
     func previous(of key: String) -> Waiting? {
         for k in trail.reversed() where k != key {
-            if let w = waiting(k) { return w }
+            if let w = waiting(k) ?? others[k].map(Waiting.session) { return w }
         }
         return nil
     }
