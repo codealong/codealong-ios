@@ -3794,7 +3794,10 @@ private struct ModelMenu: View {
             let effort = rules.row?.effort
             let shown = [model, effort].compactMap { $0 }.joined(separator: " · ")
             let modes = (rules.row?.modes ?? []).filter { !$0.id.isEmpty }
-            let mode = modes.first { $0.id == modePicked } ?? rules.row?.mode
+            // The one picked here until its Mac's feed has it: the feed's own once it does, which
+            // says whether its Mac only expects it, though the switch's answer came after it.
+            let fed = rules.row?.mode
+            let mode = fed.flatMap { $0.id == modePicked ? $0 : nil } ?? modes.first { $0.id == modePicked } ?? fed
             // The mode as its harness names it, in italics while its Mac only expects it, having
             // pressed Shift+Tab in its terminal (the Mac's ModeLabel.tsx).
             let modeText = mode.map { Text($0.label).italic($0.expected) }
