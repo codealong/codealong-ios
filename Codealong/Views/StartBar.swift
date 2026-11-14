@@ -259,10 +259,12 @@ struct StartBar: View {
     private var inNewWorktree: Bool { takesNewWorktree && composer.newWorktree }
 
     /// The repo's worktrees, as the Mac's worktree menu lists them (the core's `repo_worktrees`):
-    /// New worktree first, then the ones ready for new work and the main checkout, and the ones
-    /// that hold other work in menus of their own, as the Mac folds them away.
+    /// the main checkout first, the one you know the repo by, then New worktree and the ones ready
+    /// for new work, and the ones that hold other work in menus of their own, as the Mac folds them
+    /// away.
     private func worktreeMenu(_ trees: RepoWorktrees, at w: Worktree) -> some View {
         Menu {
+            if let main = trees.main { worktreeRow(main) }
             if let from = trees.from {
                 Button { composer.newWorktree = true } label: {
                     Label("New worktree", systemImage: inNewWorktree ? "checkmark" : "plus")
@@ -270,7 +272,7 @@ struct StartBar: View {
                 }
                 .disabled(!takesNewWorktree)
             }
-            ForEach(trees.ready + (trees.main.map { [$0] } ?? []), id: \.id) { worktreeRow($0) }
+            ForEach(trees.ready, id: \.id) { worktreeRow($0) }
             if !trees.underWay.isEmpty {
                 Menu {
                     ForEach(trees.underWay, id: \.id) { worktreeRow($0) }

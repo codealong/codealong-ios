@@ -84,8 +84,7 @@ struct SessionView: View {
     /// only what it means (a page to read, a prompt to pin) should redraw.
     @State private var scroll = ScrollSpot()
     @State private var pending: Pending?
-    /// The questions card is open, not folded to its line: the conversation's line for its call
-    /// opens it too (`questionsLine`).
+    /// The questions card is open, not folded to its line.
     @State private var questionsOpen = false
     /// You're writing your own answer in the questions card, so the keyboard is up for it.
     @State private var writingAnswer = false
@@ -371,7 +370,9 @@ struct SessionView: View {
                             }
                         }
                     }
-                    ForEach(Entry.of(items)) { entry in
+                    // The call the card below shows has no line here: the card stands in its place
+                    // at the conversation's end.
+                    ForEach(Entry.of(items.filter { $0.id != cardLine })) { entry in
                         switch entry {
                         case .said(let item) where item.kind == .you:
                             ItemView(item: item, putBack: canAct ? { draft = $0 } : nil, editFrom: canAct && item.editable && row?.edits == true ? { editing = item } : nil)
@@ -383,7 +384,7 @@ struct SessionView: View {
                                 .id(item.id)
                         case .said(let item): ItemView(item: item)
                         case .tools(let calls):
-                            ToolRun(calls: calls, below: calls.last.map(\.id) == questionsLine ? QuestionsBelow(open: questionsOpen) { withAnimation(.snappy) { questionsOpen = true } } : nil)
+                            ToolRun(calls: calls)
                         }
                     }
                     // A reply being written, or what it works on while it only waits on a command,
@@ -573,7 +574,7 @@ struct SessionView: View {
                 if let suggested = row?.suggestedSnooze, Date.now.ms < suggested.offeredTill {
                     let until = Date(ms: suggested.until)
                     Section {
-                        Button(Snooze.suggested(until)) { Task { await snooze(until: until) } }
+                        Button(Snooze.suggested(until, because: suggested.because)) { Task { await snooze(until: until) } }
                     }
                 }
                 ForEach(Snooze.choices()) { c in
@@ -642,15 +643,8 @@ struct SessionView: View {
                 SessionNote(words: asked, symbol: "keyboard", tint: .orange, code: true)
             }
             if let limit = row?.limit {
-                TimelineView(.periodic(from: .now, by: 30)) { context in
-                    Label {
-                        Text(Clock.text(limit, now: context.date))
-                    } icon: {
-                        Image(systemName: "gauge.with.dots.needle.100percent").foregroundStyle(.orange)
-                    }
-                    .font(.footnote)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
+                // Snoozed from here as from its Snooze menu: it goes on to what's next, if anything.
+                LimitNote(words: limit, suggested: row?.suggestedSnooze) { until in Task { await snooze(until: until) } }
             }
             if let error = row?.apiError {
                 // Sent as the box sends a message, so one that isn't running goes on where the box
@@ -687,8 +681,9 @@ struct SessionView: View {
                 GoOnBar(next: onward, left: after.count, going: going(swipeDoes), offers: SwipeOn.offers(row: row, pending: pending, acted: replied), pickTime: pickSnooze) { goOn(to: onward, doing: $0) }
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
-            // Snoozed from here as from its Snooze menu: it goes on to what's next, if anything.
-            if let suggested = row?.suggestedSnooze, Date.now.ms < suggested.offeredTill {
+            // Snoozed from here as from its Snooze menu: it goes on to what's next, if anything. A
+            // limit's is the button beside what its note says of it.
+            if let suggested = row?.suggestedSnooze, suggested.why == .reply, Date.now.ms < suggested.offeredTill {
                 SnoozeSuggestionLine(suggested: suggested) { Task { await snooze(until: Date(ms: suggested.until)) } }
             }
             if let suggestions = row?.suggestions {
@@ -894,11 +889,12 @@ struct SessionView: View {
 
     private var whyNot: String? { store.cannotReach(row) }
 
-    /// The conversation's line for the call whose questions the card below shows (the core's
-    /// `questionsBelow`), as the Mac's questionsBox.ts has it: it opens the card once it's folded,
-    /// rather than a copy of them, which couldn't be answered and read as the card losing its picks.
-    private var questionsLine: String? {
-        guard let pending, pending.cannot == nil, let last = items.last, questionsBelow(last: last, pending: pending) else { return nil }
+    /// The conversation's line for the call the card below shows, questions to answer or a call to
+    /// allow (the core's `cardShows`), which the conversation leaves out, as the Mac's
+    /// questionsBox.ts has it since 2026-11-13: it said the call again just above the card. Folded,
+    /// the questions card's head still says them, and opens them.
+    private var cardLine: String? {
+        guard let pending, let last = items.last, cardShows(last: last, pending: pending) else { return nil }
         return last.id
     }
 
@@ -1530,9 +1526,16 @@ struct SessionView: View {
     /// What a test asked to press: `raise` is Move to top or Back in line, `remove` and `edit` press
     /// those beside the first message it holds, `tryagain` is Try again beside an API error that
     /// ended its last turn, `send:<words>` sends those, and `label:<name>` puts
-    /// that label on, or takes it off where it wears it, as Labels › and New label… do.
+    /// that label on, or takes it off where it wears it, as Labels › and New label… do. `box`
+    /// opens the reply box, as a tap on it does, and `mode:<id>` picks that mode in the menu beside
+    /// Send, where it offers one.
     private func pressed(_ what: String) async {
         let held = heldShown.first
+        if what.hasPrefix("mode:") {
+            let id = String(what.dropFirst("mode:".count))
+            if canAct && rules.switchesMode && row?.modes.contains(where: { $0.id == id }) == true { await switchMode(id) }
+            return
+        }
         if what.hasPrefix("send:") {
             store.post(key, title: title, text: String(what.dropFirst("send:".count)), how: .send(now: false))
             return
@@ -1553,6 +1556,7 @@ struct SessionView: View {
         }
         switch what {
         case "raise": await raise()
+        case "box": if canAct { typing = true }
         // Try again beside the note of an API error that ended its last turn.
         case "tryagain":
             if let error = row?.apiError, error.button != nil, canAct, pending == nil, (store.outgoing[key] ?? []).isEmpty { await send(text: error.message) }
@@ -1560,12 +1564,12 @@ struct SessionView: View {
             if let held { await removeHeld(held) }
         case "edit":
             if let held, let words = store.heldWords(key, held) { await editHeld(held, words: words) }
-        // What the conversation's line for the card's questions does, once the screen has settled
-        // as a tap would find it: animated while the bars' insets still come in, the box went
-        // below the screen.
+        // What a tap on the questions card's folded head does, once the screen has settled as a
+        // tap would find it: animated while the bars' insets still come in, the box went below
+        // the screen.
         case "questions":
             try? await Task.sleep(for: .seconds(2))
-            if questionsLine != nil { withAnimation(.snappy) { questionsOpen = true } }
+            if let pending, !pending.questions.isEmpty, pending.cannot == nil { withAnimation(.snappy) { questionsOpen = true } }
         // The background line, and the first command's Output on its list.
         case "tasks":
             if row?.background != nil { background = BackgroundShown(showFirst: true) }
@@ -1685,9 +1689,10 @@ struct SessionView: View {
         }
     }
 
-    /// Switches one Codealong runs to another mode: the one picked shows at once, then the one its
-    /// agent says it's in, which may be another (Accept edits for Auto, on a model that doesn't
-    /// take it), until its Mac's feed has it.
+    /// Switches it to another mode: the one picked shows at once, then the one its Mac says it's
+    /// in, which may be another (Accept edits for Auto, on a model that doesn't take it), until its
+    /// Mac's feed has it. One in a terminal says it only with its next prompt, so its Mac's feed
+    /// has it as expected until then.
     private func switchMode(_ mode: String) async {
         guard let conv = conversation else { return }
         switching = true
@@ -1901,9 +1906,9 @@ private struct ApprovalCard: View {
 /// go back as its answer, as the Mac's panel sends them. Decline stops the turn. It starts folded
 /// to a line of what it asks, so the conversation it came with can be read above it: open, a long
 /// question and its choices covered most of the screen. A tap opens it, and folds it again, as
-/// starting to write in the reply box does; the conversation's line for the call opens it too, and
-/// opening it puts the box's keyboard away. While you write your own answer, the keyboard leaves
-/// little room: what only explains (the note over it, the line under its buttons) makes way for
+/// starting to write in the reply box does, and opening it puts the box's keyboard away. Folded, it
+/// stands for the call's line in the conversation, which leaves it out (`cardLine`). While you
+/// write your own answer, the keyboard leaves little room: what only explains (the note over it, the line under its buttons) makes way for
 /// the question and its choices, and your field stays in view under them rather than scrolling
 /// out of sight with them.
 private struct QuestionsCard: View {
@@ -1915,8 +1920,7 @@ private struct QuestionsCard: View {
     let canAct: Bool
     let why: String?
     let answering: Choice?
-    /// Open, not folded to its line: the screen's, which the conversation's line for the call
-    /// opens too.
+    /// Open, not folded to its line: the screen's, which `PRESS=questions` opens too.
     @Binding var open: Bool
     /// The reply box has the keyboard.
     var writing = false
@@ -2342,7 +2346,52 @@ private struct SnoozeSuggestionLine: View {
         .buttonStyle(.plain)
         .modifier(WaitingCard(tint: nil, padding: 0))
         .accessibilityLabel("Snooze until \(when), as its reply says")
-        .accessibilityHint("It leaves what waits on you until then. \(suggested.by)")
+        .accessibilityHint("It leaves what waits on you until then. \(suggested.by ?? "")")
+    }
+}
+
+/// What a usage limit that stopped it comes to (the core's `limit_words`), with Snooze until it
+/// lifts beside it while that's offered (the Mac's SessionHeader.tsx, since 2026-11-13; the
+/// core's `SuggestedSnooze` for a limit): a tap snoozes it until the limit lifts, as the first
+/// time in its Snooze menu does. It's back then, for the minute or few until its Mac tells it to
+/// carry on, where its Mac does.
+private struct LimitNote: View {
+    let words: String
+    let suggested: SuggestedSnooze?
+    /// A still page's (one sliding in): drawn as it is now, not kept ticking.
+    var now: Date?
+    let snooze: (Date) -> Void
+
+    var body: some View {
+        if let now {
+            note(now: now)
+        } else {
+            TimelineView(.periodic(from: .now, by: 30)) { context in
+                note(now: context.date)
+            }
+        }
+    }
+
+    private func note(now: Date) -> some View {
+        let lifts = suggested.flatMap { $0.why == .limit && now.ms < $0.offeredTill ? $0 : nil }
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Label {
+                Text(Clock.text(words, now: now))
+            } icon: {
+                Image(systemName: "gauge.with.dots.needle.100percent").foregroundStyle(.orange)
+            }
+            .font(.footnote)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if let lifts {
+                // Checked again as it's tapped: drawn up to 30 seconds ago, the offer may have ended.
+                Button("Snooze until it lifts") {
+                    if Date.now.ms < lifts.offeredTill { snooze(Date(ms: lifts.until)) }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityHint("It leaves what waits on you until \(Snooze.words(Date(ms: lifts.until))), when the limit lifts")
+            }
+        }
     }
 }
 
@@ -2929,8 +2978,6 @@ struct PromptText: View {
 /// the calls are the quiet part of the conversation.
 private struct ToolRun: View {
     let calls: [Item]
-    /// The card below shows its last call's questions.
-    var below: QuestionsBelow?
     @State private var open = false
 
     var body: some View {
@@ -2955,7 +3002,7 @@ private struct ToolRun: View {
                 ForEach(calls.dropLast(), id: \.id) { ToolLine(item: $0) }
             }
             if let last = calls.last {
-                ToolLine(item: last, below: below)
+                ToolLine(item: last)
             }
         }
     }
@@ -2975,49 +3022,28 @@ private struct ToolRun: View {
     }
 }
 
-/// The questions card below shows a call's questions: whether it's open, and what opens it.
-private struct QuestionsBelow {
-    let open: Bool
-    let show: () -> Void
-}
-
 /// A tool call as one quiet line, red when it failed, that opens to what went in and came out. A
-/// call that asked you questions says so and opens to them, with what you picked, unless the card
-/// below shows them: then it opens the card, once it's folded, and is still while it's open. A page
-/// on the web it made or opened (an artifact Claude Code published) is a link under it.
+/// call that asked you questions says so and opens to them, with what you picked. The call the
+/// card below shows has none while it does (`cardLine`). A page on the web it made or opened (an
+/// artifact Claude Code published) is a link under it.
 private struct ToolLine: View {
     let item: Item
-    var below: QuestionsBelow?
     @State private var open = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Button {
-                if let below {
-                    below.show()
-                } else {
-                    withAnimation(.snappy) { open.toggle() }
-                }
+                withAnimation(.snappy) { open.toggle() }
             } label: {
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Text(inline(label))
-                        .font(.caption)
-                        .foregroundStyle(item.failed ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
-                        .lineLimit(open && below == nil ? nil : 1)
-                    // It opens what's below, as the card's own head says.
-                    if below?.open == false {
-                        Image(systemName: "chevron.up")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(.rect)
+                Text(inline(label))
+                    .font(.caption)
+                    .foregroundStyle(item.failed ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+                    .lineLimit(open ? nil : 1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(.rect)
             }
             .buttonStyle(.plain)
-            .disabled(below?.open == true)
             .accessibilityLabel(item.failed ? "Failed: \(label)" : label)
-            .accessibilityHint(below?.open == false ? "Shows its questions below, to answer" : "")
             if let link = item.link, let url = URL(string: link.url) {
                 HStack(spacing: 6) {
                     Link(destination: url) {
@@ -3047,7 +3073,7 @@ private struct ToolLine: View {
                     }
                 }
             }
-            if open && below == nil {
+            if open {
                 if !item.questions.isEmpty {
                     AskedList(questions: item.questions)
                     // Declined, or refused: why, from its result. Answered, the picks say it all.
@@ -3309,7 +3335,9 @@ struct SessionGlance: View {
 
     @ViewBuilder
     private var glance: some View {
-        let entries = Entry.of(kept.items)
+        // The call the card below shows has no line, as on its screen (`cardLine`).
+        let cardLine = kept.pending.flatMap { p in kept.items.last.flatMap { cardShows(last: $0, pending: p) ? $0.id : nil } }
+        let entries = Entry.of(kept.items.filter { $0.id != cardLine })
         // Its newest at the foot, what doesn't fit going off the top: laid over a screen's worth of
         // nothing, so it's a screen high however long the conversation is (a frame that fills the
         // screen grows to fit what's in it, and pushed the screen beside it down).
@@ -3383,13 +3411,7 @@ struct SessionGlance: View {
                 SessionNote(words: asked, symbol: "keyboard", tint: .orange, code: true)
             }
             if let limit = row?.limit {
-                Label {
-                    Text(Clock.text(limit, now: .now))
-                } icon: {
-                    Image(systemName: "gauge.with.dots.needle.100percent").foregroundStyle(.orange)
-                }
-                .font(.footnote)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                LimitNote(words: limit, suggested: row?.suggestedSnooze, now: .now) { _ in }
             }
             if let error = row?.apiError {
                 ApiErrorLine(note: error, tryAgain: canAct && pending == nil ? {} : nil)
@@ -3422,7 +3444,7 @@ struct SessionGlance: View {
                 let replied = !(store.outgoing[key] ?? []).isEmpty
                 GoOnBar(next: next, left: after.count, going: Going.of(SwipeOn.swipe(row: row), row: row, pending: pending, acted: replied), offers: SwipeOn.offers(row: row, pending: pending, acted: replied)) { _ in }
             }
-            if let suggested = row?.suggestedSnooze, Date.now.ms < suggested.offeredTill {
+            if let suggested = row?.suggestedSnooze, suggested.why == .reply, Date.now.ms < suggested.offeredTill {
                 SnoozeSuggestionLine(suggested: suggested) {}
             }
             if let suggestions = row?.suggestions {
@@ -3676,9 +3698,12 @@ private struct ReplyRules {
         return inApp || (switchable && (row.hosted || account.switchesEffort))
     }
 
-    /// One Codealong runs switches to another of the modes its agent offers, any time.
+    /// It switches to another of the modes it offers, any time, where its Mac lists them (the
+    /// Mac's SessionReply.tsx `switchesMode`): one Codealong runs, through its agent, and one in a
+    /// terminal or a Claude Code background job, by Shift+Tab pressed there (the Mac's cycle.rs),
+    /// which its Mac refuses while it waits on you, and says why.
     var switchesMode: Bool {
-        guard let row, row.live, row.hosted else { return false }
+        guard let row, row.live else { return false }
         return row.modes.filter { !$0.id.isEmpty }.count > 1
     }
 
@@ -3758,9 +3783,9 @@ private struct ModelMenu: View {
             } label: {
                 // On what, and under it where.
                 if takesModel {
-                    label([model, effort].compactMap { $0 }.joined(separator: " · "), under: "in \(place)")
+                    label(Text([model, effort].compactMap { $0 }.joined(separator: " · ")), under: Text("in \(place)"))
                 } else {
-                    label("in \(place)")
+                    label(Text("in \(place)"))
                 }
             }
             .accessibilityLabel(takesModel ? "Goes on in \(place) on \(model)\(effort.map { ", \($0) effort" } ?? "")" : "Goes on in \(place)")
@@ -3770,9 +3795,12 @@ private struct ModelMenu: View {
             let shown = [model, effort].compactMap { $0 }.joined(separator: " · ")
             let modes = (rules.row?.modes ?? []).filter { !$0.id.isEmpty }
             let mode = modes.first { $0.id == modePicked } ?? rules.row?.mode
-            let words = shown.isEmpty ? (mode?.label ?? "Model") : shown
-            let under = shown.isEmpty ? nil : mode?.label
-            let spoken = "\(model.map { "Model: \($0)" } ?? "Model")\(effort.map { ", \($0) effort" } ?? "")\(mode.map { ", \($0.label) mode" } ?? "")"
+            // The mode as its harness names it, in italics while its Mac only expects it, having
+            // pressed Shift+Tab in its terminal (the Mac's ModeLabel.tsx).
+            let modeText = mode.map { Text($0.label).italic($0.expected) }
+            let words = shown.isEmpty ? (modeText ?? Text("Model")) : Text(shown)
+            let under = shown.isEmpty ? nil : modeText
+            let spoken = "\(model.map { "Model: \($0)" } ?? "Model")\(effort.map { ", \($0) effort" } ?? "")\(mode.map { ", \($0.label) mode\($0.expected ? ", as its Mac expects until your next message" : "")" } ?? "")"
             if let account = rules.account, rules.switchesModel || rules.switchesEffort || rules.switchesMode {
                 // A switch of model or effort waits while the command would go in as a prompt or
                 // answer what it asks (`switchWaits`); an app takes one for its next turn, and a
@@ -3821,7 +3849,7 @@ private struct ModelMenu: View {
                         .disabled(switching)
                     }
                 } label: {
-                    label(switching ? "Switching…" : words, under: switching ? nil : under)
+                    label(switching ? Text("Switching…") : words, under: switching ? nil : under)
                 }
                 .accessibilityLabel(spoken)
                 .accessibilityHint(rules.inApp ? "Switches this session's model or effort, for it alone, from its next turn" : "Switches this session's model, effort or mode, for it alone")
@@ -3832,13 +3860,13 @@ private struct ModelMenu: View {
         }
     }
 
-    private func label(_ text: String, under: String? = nil, menu: Bool = true) -> some View {
+    private func label(_ text: Text, under: Text? = nil, menu: Bool = true) -> some View {
         UpToWide(most: 130) {
             HStack(spacing: 3) {
                 VStack(alignment: .trailing, spacing: 0) {
-                    Text(text)
+                    text
                     if let under {
-                        Text(under).font(.caption2.weight(.regular)).foregroundStyle(.tertiary)
+                        under.font(.caption2.weight(.regular)).foregroundStyle(.tertiary)
                     }
                 }
                 .lineLimit(1)

@@ -847,11 +847,12 @@ struct QuickView: View {
                 }
                 .disabled(!online)
                 Menu("Snooze", systemImage: "moon.zzz") {
-                    // The time its last reply says the work goes on, first and apart, as on the Mac.
+                    // The time its limit lifts, or its last reply says the work goes on, first and
+                    // apart, as on the Mac.
                     if let suggested = r.suggestedSnooze, Date.now.ms < suggested.offeredTill {
                         let until = Date(ms: suggested.until)
                         Section {
-                            Button(Snooze.suggested(until)) { act { try await store.snooze(r.key, until: until) } }
+                            Button(Snooze.suggested(until, because: suggested.because)) { act { try await store.snooze(r.key, until: until) } }
                         }
                     }
                     ForEach(Snooze.choices()) { c in

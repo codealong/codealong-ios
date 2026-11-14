@@ -96,12 +96,14 @@ need you, as on the Mac.
   now* to put it in the turn at once, *Edit* to take it out into the box, and *Remove* so it's never
   sent;
 - allow or deny what it wants to run (or deny it and say what to do instead), and answer its
-  questions, folded to a line over the box while you read and brought up from that line or from
-  the question's own line in the conversation;
+  questions, folded to a line over the box while you read and brought up from that line: the card
+  over the box stands in for the call's line in the conversation until it's answered;
 - stop its turn, with the square that takes send's place while it runs, or a command its agent
   left running in the background, from the list above its box;
 - switch a running session's model, effort or mode (a Claude Code background job's too, from a Mac
-  of 0.18 or later, and a Codex app thread's from its next turn);
+  of 0.18 or later, and a Codex app thread's from its next turn): the mode of one in a terminal by
+  Shift+Tab pressed there, a background job's from a Mac of 0.21 or later, said in italics until its
+  next prompt shows it took;
 - resume one that isn't running, where and on what model you pick;
 - fork it, go on from before one of your prompts with an edit of it (hold the prompt, *Edit from
   here*), or mark it done (closing it where its Mac can);
@@ -118,7 +120,8 @@ Renaming, archiving, marking seen, *Mark as unread*, *Move to top* (first in eve
 device, and listed under *Moved to top*, until you send it something or see its finished turn;
 *Back in line* undoes it), *Snooze*
 (off what waits on you until the time you pick, on every device; a session whose last reply says its
-work goes on later is offered a snooze until then, above its box and first in its menu) and *Quiet* (its turns stop waiting
+work goes on later is offered a snooze until then, above its box and first in its menu, and one
+stopped at its usage limit a snooze until the limit lifts, beside the limit's note) and *Quiet* (its turns stop waiting
 on you; it comes to you only when it needs you) work with any Mac, remote control or not, and so
 do *Labels*: the labels you put on a session there, as todos wear them, shown on its row and under
 its title, put on or taken off from its menu (*New label…* names one its Mac doesn't have yet), and

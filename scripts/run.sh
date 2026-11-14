@@ -10,14 +10,15 @@
 # the session OPEN opens and sends it, opening its side conversations, and PRESS=raise|remove|edit
 # presses Move to top (or Back in line) there, or Remove or Edit beside the first message it holds;
 # PRESS=send:<words> sends those to it, as the box does, PRESS=tryagain presses Try again beside an
-# API error that ended its last turn, PRESS=questions presses the
-# conversation's line for the questions the card below shows, PRESS=tasks opens the list of what
+# API error that ended its last turn, PRESS=questions opens the questions card below, as a tap
+# on its folded head does, PRESS=tasks opens the list of what
 # its agent left running in the background with the first one's output shown, PRESS=taskstop
 # presses Stop on the first of those still running, PRESS=pr taps the title, which opens the
 # session's PR, PRESS=label:<name> puts that
-# label on it, or takes it off where it wears it, and PRESS=link:<url> opens that link as a tap on
+# label on it, or takes it off where it wears it, PRESS=link:<url> opens that link as a tap on
 # it in the conversation does (a `codealong://session/…` one, named as that session's Mac names
-# its sessions).
+# its sessions), PRESS=box opens its reply box as a tap on it does, and PRESS=mode:<id> picks
+# that mode (`acceptEdits`, say) in the menu beside Send.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 APP=DerivedData/Build/Products/Debug-iphonesimulator/Codealong.app

@@ -186,8 +186,10 @@ pub struct SessionRow {
     /// How it goes about what would need your say (Claude Code's manual, plan or bypass
     /// permissions), as its harness last wrote it, where its Mac says.
     pub mode: Option<ModeChoice>,
-    /// The modes it can be switched to from here, in its agent's order: for a session Codealong
-    /// runs, whose agent takes a switch; none for one that runs elsewhere.
+    /// The modes it can be switched to from here, in its agent's order (`Session::modes`): for a
+    /// session Codealong runs, whose agent takes a switch, and one in a terminal its Mac presses
+    /// Shift+Tab in (cycle.rs), a Claude Code background job's too from Macs since 2026-11-13;
+    /// none for one that runs elsewhere, nor from Macs that can't switch it.
     pub modes: Vec<ModeChoice>,
     /// The messages its harness holds until the turn it's taking ends, in the order they'll go,
     /// where its harness says what they are (the Codex app's queue), whoever sent them.
@@ -285,8 +287,9 @@ pub struct SessionRow {
     pub at_a_prompt: bool,
     /// What its status mark draws (`mark_of`), as the Mac's SessionGlyph does.
     pub mark: Mark,
-    /// A snooze to offer it, until the time its last reply says the work goes on (`suggested_snooze`).
-    /// None from Macs before 2026-11-11.
+    /// A snooze to offer it, until the usage limit that stopped it lifts, else the time its last
+    /// reply says the work goes on (`suggested_snooze`). A reply's is none from Macs before
+    /// 2026-11-11.
     pub suggested_snooze: Option<SuggestedSnooze>,
     /// The commands its agent left running in the background, as its harness lists them, which
     /// the Mac's session header counts on a chip and lists under it (`background_commands`). None
@@ -407,32 +410,58 @@ fn input_note(s: &Session) -> Option<String> {
     Some(format!("A command it runs waits for you to type something in its terminal on its Mac{what} Answer it there: what you send here goes to the session, not the command."))
 }
 
-/// A snooze offered for a session whose last reply says its work goes on at a later time, with
-/// nothing for you or it to do before then (snooze.ts `suggestedSnooze`): first in its Snooze menu
-/// and on a line above its box. Only offered: nothing snoozes by itself.
+/// A snooze offered for a session stopped at its usage limit, until the limit lifts, or one whose
+/// last reply says its work goes on at a later time, with nothing for you or it to do before then
+/// (snooze.ts `suggestedSnooze`): first in its Snooze menu, and for a reply on a line above its
+/// box, for a limit as a button beside what the page says of it. Only offered: nothing snoozes by
+/// itself.
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
 pub struct SuggestedSnooze {
-    /// When the work goes on, which the snooze runs to: 9 that morning where Jev read a day, any
-    /// time an agent that tagged it said.
+    /// When the snooze runs to: when the limit lifts; or when the work goes on, 9 that morning
+    /// where Jev read a day, any time an agent that tagged it said.
     pub until: i64,
     /// It's offered only before this, a little ahead of `until`: a snooze any shorter isn't worth
     /// it.
     pub offered_till: i64,
+    /// Why then.
+    pub why: SnoozeWhy,
+    /// What ends its line in a Snooze menu, after the time: "as its reply says", "when its limit
+    /// lifts" (snooze.ts `SUGGESTED_WHY`).
+    pub because: String,
     /// Who read the reply that way: "Jev’s read", or "Tagged by" the agent's session, with what it
-    /// noted (insights.ts `readBy`).
-    pub by: String,
+    /// noted (insights.ts `readBy`). None for a limit, which its harness said.
+    pub by: Option<String>,
+}
+
+/// Why a snooze is offered until a time (snooze.ts `SuggestedSnooze.why`).
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SnoozeWhy {
+    /// Its last reply says the work goes on then.
+    Reply,
+    /// The usage limit that stopped its turn lifts then: nothing goes on before it, and its Mac
+    /// may tell it to carry on a few minutes after.
+    Limit,
 }
 
 /// A suggested snooze less than this far off isn't worth one (snooze.ts `WORTH`).
 const SNOOZE_WORTH_MS: i64 = 5 * 60 * 1000;
 
-/// The snooze to offer a session (`SuggestedSnooze`): until its read's `waits_until`, while that's
-/// worth a snooze, and for none that's snoozed already or archived (snooze.ts `suggestedSnooze`).
-fn suggested_snooze(s: &Session, snoozed: bool, now: i64) -> Option<SuggestedSnooze> {
+/// The snooze to offer a session (`SuggestedSnooze`), while it's worth one, and for none that's
+/// snoozed already or archived (snooze.ts `suggestedSnooze`): until the usage limit that stopped
+/// its turn lifts, while it isn't working, where its harness said when; else until its read's
+/// `waits_until`.
+fn suggested_snooze(s: &Session, working: bool, snoozed: bool, now: i64) -> Option<SuggestedSnooze> {
+    if snoozed || s.archived {
+        return None;
+    }
+    let lifts = s.limit.as_ref().and_then(|l| l.resets_at).filter(|_| !working);
+    if let Some(until) = lifts.filter(|t| t - SNOOZE_WORTH_MS > now) {
+        return Some(SuggestedSnooze { until, offered_till: until - SNOOZE_WORTH_MS, why: SnoozeWhy::Limit, because: "when its limit lifts".into(), by: None });
+    }
     let insight = s.insight.as_ref()?;
     let until = insight.waits_until?;
     let offered_till = until - SNOOZE_WORTH_MS;
-    if offered_till <= now || snoozed || s.archived {
+    if offered_till <= now {
         return None;
     }
     let read = match &insight.by {
@@ -440,7 +469,7 @@ fn suggested_snooze(s: &Session, snoozed: bool, now: i64) -> Option<SuggestedSno
         Some(_) => format!("Tagged by {}", insight.by_title.as_deref().filter(|t| !t.is_empty()).unwrap_or("an agent")),
     };
     let note = insight.note.as_deref().filter(|n| insight.by.is_some() && !n.is_empty()).map(|n| format!(": {n}")).unwrap_or_default();
-    Some(SuggestedSnooze { until, offered_till, by: format!("{read}{note}") })
+    Some(SuggestedSnooze { until, offered_till, why: SnoozeWhy::Reply, because: "as its reply says".into(), by: Some(format!("{read}{note}")) })
 }
 
 /// What a session's status mark draws, as the Mac's SessionGlyph (ui/primitives.tsx) does,
@@ -815,6 +844,10 @@ pub struct ModeChoice {
     /// How much it lets the session do without asking you, as the Mac's `ModeKind` names it:
     /// `plan`, `read-only`, `asks`, `edits`, `auto`, `skips`, or `other`.
     pub kind: String,
+    /// The mode its Mac expects it to be in after pressing Shift+Tab in its terminal, which its
+    /// harness says only with the next prompt (Claude Code): said in italics until then, as the
+    /// Mac's ModeLabel.tsx does. False from Macs before 2026-10-22.
+    pub expected: bool,
 }
 
 impl From<&codealong_peer::model::SessionMode> for ModeChoice {
@@ -829,7 +862,7 @@ impl From<&codealong_peer::model::SessionMode> for ModeChoice {
             ModeKind::Skips => "skips",
             ModeKind::Other => "other",
         };
-        ModeChoice { id: m.id.clone(), label: m.label.clone(), detail: m.detail.clone(), kind: kind.into() }
+        ModeChoice { id: m.id.clone(), label: m.label.clone(), detail: m.detail.clone(), kind: kind.into(), expected: m.expected }
     }
 }
 
@@ -1336,7 +1369,7 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 at_a_prompt: s.waits_at_a_prompt(),
                 mark: mark_of(s, status, snoozed_until.is_some(), aside),
                 // Snoozed, working or not, as its Mac has it.
-                suggested_snooze: suggested_snooze(s, s.snoozed_until.is_some_and(|t| t > now), now),
+                suggested_snooze: suggested_snooze(s, status == Status::Working, s.snoozed_until.is_some_and(|t| t > now), now),
                 background: background_commands(s),
                 input_asked: input_note(s),
             };
@@ -1730,21 +1763,37 @@ fn question_of(q: &api::Question, answers: Option<&std::collections::BTreeMap<St
     }
 }
 
-/// Whether the conversation's last item is the line of the call whose questions the card below
-/// shows (`pending`), as the Mac's questionsBox.ts tells it: a call with no answer yet, asking the
-/// same questions with the same choices. Its line then opens no copy of them, which couldn't be
-/// answered, and shows the card instead. Known by what it asks, not by its id: a session can wait
-/// on two calls at once (a subagent's and its own), and the card shows the one asked first where
-/// the conversation's last is the latest; another's line opens its own copy as before. Not by
-/// headers nor by whether a question takes several, which a background job's record doesn't say
-/// (the engine's claude/registry.rs `job_questions`).
+/// Whether the conversation's last item is the line of the call the card below shows (`pending`),
+/// questions to answer or a call to allow, as the Mac's questionsBox.ts `showsCall` tells it: a
+/// call with no answer yet that asks the same. The conversation then leaves its line out, which
+/// would say it again just above the card: the card stands in its place at the conversation's end,
+/// and folded, its head still says the questions and opens them (the Mac's since 2026-11-13). Once
+/// answered, it's a line like any other.
+///
+/// Known by what it asks, not by its id: a session can wait on two calls at once (a subagent's and
+/// its own), and the card shows the one asked first where the conversation's last is the latest,
+/// which keeps its line. Questions by their words and choices, not by headers nor by whether one
+/// takes several, which a background job's record doesn't say (the engine's claude/registry.rs
+/// `job_questions`); and only those the card can answer, since it shows the ones it can't as a
+/// call, whose line opens to them. A call to allow by its label and its input (`calledOf`), which
+/// Claude Code makes alike for the two, the input as well since an MCP tool's label is its name
+/// alone; where a harness makes them differ, the line stays.
 #[uniffi::export]
-pub fn questions_below(last: Item, pending: Pending) -> bool {
+pub fn card_shows(last: Item, pending: Pending) -> bool {
     fn asked(questions: &[Question]) -> Vec<(&str, Vec<&str>)> {
         questions.iter().map(|q| (q.question.trim(), q.options.iter().map(|o| o.label.trim()).collect())).collect()
     }
+    fn called<'a>(label: &'a str, input: &'a Option<String>) -> (&'a str, &'a str) {
+        (label.trim(), input.as_deref().unwrap_or("").trim())
+    }
     let waiting = last.kind == ItemKind::Tool && last.output.is_none() && !last.failed && !last.questions.iter().any(|q| q.answered);
-    waiting && !pending.questions.is_empty() && asked(&last.questions) == asked(&pending.questions)
+    if !waiting {
+        return false;
+    }
+    if !pending.questions.is_empty() {
+        return pending.cannot.is_none() && asked(&last.questions) == asked(&pending.questions);
+    }
+    last.questions.is_empty() && called(&last.text, &last.input) == called(&pending.label, &pending.input)
 }
 
 /// How to answer what a session waits on.
@@ -2290,8 +2339,10 @@ impl Conversation {
         self.client.switch_effort(&self.device, &self.key, &effort).map_err(|e| CoreError::Failed(older_mac(e, &self.client, &self.device, "switch effort from here")))
     }
 
-    /// Switches one its Mac runs itself to another of the modes its agent offers (`id`, one of
-    /// its row's `modes`), for it alone. Macs before 2026-10-14 refuse it.
+    /// Switches it to another of the modes it offers (`id`, one of its row's `modes`), for it
+    /// alone: one its Mac runs itself through its agent, one in a terminal or a background job by
+    /// Shift+Tab pressed there (the Mac's cycle.rs), which its Mac refuses while it waits on you.
+    /// Macs before 2026-10-14 refuse it.
     pub fn switch_mode(&self, id: String) -> Result<ModeSwitch, CoreError> {
         let switched = self.client.switch_mode(&self.device, &self.key, &id).map_err(|e| CoreError::Failed(older_mac(e, &self.client, &self.device, "switch modes from here")))?;
         Ok(ModeSwitch { message: switched.message, mode: switched.mode })
@@ -2559,7 +2610,7 @@ mod tests {
     }
 
     #[test]
-    fn the_line_of_the_call_the_questions_card_shows_points_at_the_card() {
+    fn the_conversation_leaves_out_the_line_of_the_call_the_card_shows() {
         let ask = |question: &str, labels: &[&str], header: Option<&str>, multi: bool| api::Question {
             question: question.into(),
             header: header.map(String::from),
@@ -2588,16 +2639,54 @@ mod tests {
         let which = ask("Which color?", &["Red", "Blue"], Some("Color"), false);
         // The same questions and choices, though the call's id isn't the card's, and its record
         // says no header nor whether it takes several, as a background job's doesn't.
-        assert!(questions_below(line(&[which.clone()], None), card(&[ask(" Which color? ", &["Red ", "Blue"], None, true)])));
-        // Other choices, or other questions, are another call's: its line opens its own.
-        assert!(!questions_below(line(&[which.clone()], None), card(&[ask("Which color?", &["Red", "Green"], Some("Color"), false)])));
-        assert!(!questions_below(line(&[which.clone()], None), card(&[which.clone(), ask("Why?", &["Because"], None, false)])));
-        // Answered, or with no questions on the card, it opens to what was asked as before.
+        assert!(card_shows(line(&[which.clone()], None), card(&[ask(" Which color? ", &["Red ", "Blue"], None, true)])));
+        // Other choices, or other questions, are another call's: its line stays.
+        assert!(!card_shows(line(&[which.clone()], None), card(&[ask("Which color?", &["Red", "Green"], Some("Color"), false)])));
+        assert!(!card_shows(line(&[which.clone()], None), card(&[which.clone(), ask("Why?", &["Because"], None, false)])));
+        // Answered, it's a line like any other.
         let mut answered = item("result", 30, Some("call-2"), Some("ok"));
         answered.answers = [("Which color?".to_string(), vec!["Red".to_string()])].into();
-        assert!(!questions_below(line(&[which.clone()], Some(answered)), card(&[which.clone()])));
-        assert!(!questions_below(line(&[which.clone()], None), card(&[])));
-        assert!(!questions_below(line(&[], None), card(&[])));
+        assert!(!card_shows(line(&[which.clone()], Some(answered)), card(&[which.clone()])));
+        // Questions the card can't answer, it shows as a call: the line, which opens to them, stays.
+        let cannot = Pending { cannot: Some("Answer them in its terminal.".into()), ..card(&[which.clone()]) };
+        assert!(!card_shows(line(&[which.clone()], None), cannot));
+        // Nor is a call that asks questions the card's call to allow, whatever its label.
+        assert!(!card_shows(line(&[which.clone()], None), card(&[])));
+    }
+
+    #[test]
+    fn the_conversation_leaves_out_the_line_of_the_call_to_allow_the_card_shows() {
+        let card = |label: &str, input: Option<&str>| Pending {
+            id: "call-1".into(),
+            label: label.into(),
+            input: input.map(String::from),
+            cannot: None,
+            always: true,
+            no_once: false,
+            plan: false,
+            questions: vec![],
+            unwritten: false,
+            exiting: false,
+        };
+        let line = |label: &str, input: Option<&str>, result: Option<api::Item>| {
+            let mut call = item("tool", 20, Some("call-2"), None);
+            call.text = label.into();
+            call.input = input.map(String::from);
+            let mut t = Thread::default();
+            t.take(api::Page { items: [Some(call), result].into_iter().flatten().collect(), before: None, after: 40 }, false);
+            t.shown().pop().unwrap()
+        };
+        // Its label and input alike, whatever spaces end them, though the ids differ.
+        assert!(card_shows(line("Bash · `npm test`", Some("npm test"), None), card(" Bash · `npm test` ", Some("npm test\n"))));
+        assert!(card_shows(line("Fetch", None, None), card("Fetch", Some(""))));
+        // Another command, or another call of the same MCP tool, whose label is its name alone,
+        // waiting at the same time: the card shows the one asked first, and the latest keeps its line.
+        assert!(!card_shows(line("Bash · `npm run build`", Some("npm run build"), None), card("Bash · `npm test`", Some("npm test"))));
+        assert!(!card_shows(line("mcp__linear__create_issue", Some("{\"title\":\"Second\"}"), None), card("mcp__linear__create_issue", Some("{\"title\":\"First\"}"))));
+        // Ran, it's a line like any other.
+        assert!(!card_shows(line("Bash · `npm test`", Some("npm test"), Some(item("result", 30, Some("call-2"), Some("ok")))), card("Bash · `npm test`", Some("npm test"))));
+        // Another label for the same input is another call's.
+        assert!(!card_shows(line("Bash · `npm test`", Some("npm test"), None), card("Bash", Some("npm test"))));
     }
 
     #[test]
@@ -3073,10 +3162,11 @@ pub struct StartRepo {
 }
 
 /// A repo's worktrees as the start bar's worktree menu lists them (the Mac's quick.ts
-/// `repoWorktrees`): first where a session starts on new work, a new worktree made from `from`,
-/// the reusable ones ready for it (free before landed) and the main checkout; then the ones a new
-/// session would join other work in, reusable ones with work under way and the rest, each kept
-/// for one piece of work. Each list the most recently active first.
+/// `repoWorktrees`): first the main checkout, the one you know the repo by (the Mac's since
+/// 2026-11-13), then where else a session starts on new work, a new worktree made from `from` and
+/// the reusable ones ready for it (free before landed); then the ones a new session would join
+/// other work in, reusable ones with work under way and the rest, each kept for one piece of
+/// work. Each list the most recently active first.
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
 pub struct RepoWorktrees {
     /// The checkout a new worktree is made from, as the harness makes it under the checkout it
@@ -3793,19 +3883,48 @@ mod order_tests {
         const DAY: i64 = 24 * 60 * 60 * 1000;
         let read = |insight: SessionInsight| Session { insight: Some(insight), ..Session::new(Harness::Claude, "claude", "later") };
         let jev = read(SessionInsight { waits_until: Some(NOW + DAY), ..Default::default() });
-        assert_eq!(suggested_snooze(&jev, false, NOW), Some(SuggestedSnooze { until: NOW + DAY, offered_till: NOW + DAY - SNOOZE_WORTH_MS, by: "Jev\u{2019}s read".into() }));
+        assert_eq!(suggested_snooze(&jev, false, false, NOW), Some(SuggestedSnooze { until: NOW + DAY, offered_till: NOW + DAY - SNOOZE_WORTH_MS, why: SnoozeWhy::Reply, because: "as its reply says".into(), by: Some("Jev\u{2019}s read".into()) }));
         // An agent's tag says who, and what it noted.
         let tagged = read(SessionInsight { waits_until: Some(NOW + DAY), by: Some("k".into()), by_title: Some("Orchestrator".into()), note: Some("The freeze lifts Monday.".into()), ..Default::default() });
-        assert_eq!(suggested_snooze(&tagged, false, NOW).map(|s| s.by), Some("Tagged by Orchestrator: The freeze lifts Monday.".into()));
+        assert_eq!(suggested_snooze(&tagged, false, false, NOW).and_then(|s| s.by), Some("Tagged by Orchestrator: The freeze lifts Monday.".into()));
         let unnamed = read(SessionInsight { waits_until: Some(NOW + DAY), by: Some("k".into()), ..Default::default() });
-        assert_eq!(suggested_snooze(&unnamed, false, NOW).map(|s| s.by), Some("Tagged by an agent".into()));
+        assert_eq!(suggested_snooze(&unnamed, false, false, NOW).and_then(|s| s.by), Some("Tagged by an agent".into()));
         // None once it's all but here or gone by, while it's snoozed or archived, and for a
         // reply that names no time.
-        assert_eq!(suggested_snooze(&read(SessionInsight { waits_until: Some(NOW + SNOOZE_WORTH_MS), ..Default::default() }), false, NOW), None);
-        assert_eq!(suggested_snooze(&read(SessionInsight { waits_until: Some(NOW - DAY), ..Default::default() }), false, NOW), None);
-        assert_eq!(suggested_snooze(&jev, true, NOW), None);
-        assert_eq!(suggested_snooze(&Session { archived: true, ..jev.clone() }, false, NOW), None);
-        assert_eq!(suggested_snooze(&read(SessionInsight::default()), false, NOW), None);
+        assert_eq!(suggested_snooze(&read(SessionInsight { waits_until: Some(NOW + SNOOZE_WORTH_MS), ..Default::default() }), false, false, NOW), None);
+        assert_eq!(suggested_snooze(&read(SessionInsight { waits_until: Some(NOW - DAY), ..Default::default() }), false, false, NOW), None);
+        assert_eq!(suggested_snooze(&jev, false, true, NOW), None);
+        assert_eq!(suggested_snooze(&Session { archived: true, ..jev.clone() }, false, false, NOW), None);
+        assert_eq!(suggested_snooze(&read(SessionInsight::default()), false, false, NOW), None);
+        // A reply's time is offered while it works too.
+        assert_eq!(suggested_snooze(&jev, true, false, NOW).map(|s| s.why), Some(SnoozeWhy::Reply));
+    }
+
+    #[test]
+    fn a_session_stopped_at_its_usage_limit_is_offered_a_snooze_until_it_lifts() {
+        use codealong_peer::model::SessionInsight;
+        const NOW: i64 = 1_000_000_000;
+        const HOUR: i64 = 60 * 60 * 1000;
+        const DAY: i64 = 24 * HOUR;
+        let limit = SessionLimit { meter: Some("session".into()), resets_at: Some(NOW + 3 * HOUR), spend_capped: false, at: NOW - HOUR, move_to: None, continues: true, model: None };
+        let stopped = Session { limit: Some(limit.clone()), ..Session::new(Harness::Claude, "claude", "limited") };
+        assert_eq!(
+            suggested_snooze(&stopped, false, false, NOW),
+            Some(SuggestedSnooze { until: NOW + 3 * HOUR, offered_till: NOW + 3 * HOUR - SNOOZE_WORTH_MS, why: SnoozeWhy::Limit, because: "when its limit lifts".into(), by: None })
+        );
+        // The limit's time comes ahead of a reply's (snooze.ts `suggestedSnooze`).
+        let read_too = Session { insight: Some(SessionInsight { waits_until: Some(NOW + DAY), ..Default::default() }), ..stopped.clone() };
+        assert_eq!(suggested_snooze(&read_too, false, false, NOW).map(|s| (s.why, s.until)), Some((SnoozeWhy::Limit, NOW + 3 * HOUR)));
+        // Working again, or with the limit all but lifted, a reply's time is offered, if any.
+        assert_eq!(suggested_snooze(&read_too, true, false, NOW).map(|s| s.why), Some(SnoozeWhy::Reply));
+        assert_eq!(suggested_snooze(&stopped, true, false, NOW), None);
+        let lifting = Session { limit: Some(SessionLimit { resets_at: Some(NOW + SNOOZE_WORTH_MS), ..limit.clone() }), ..read_too.clone() };
+        assert_eq!(suggested_snooze(&lifting, false, false, NOW).map(|s| s.why), Some(SnoozeWhy::Reply));
+        // A limit that doesn't say when it lifts offers none; nor does one snoozed or archived.
+        let unsaid = Session { limit: Some(SessionLimit { resets_at: None, ..limit.clone() }), ..stopped.clone() };
+        assert_eq!(suggested_snooze(&unsaid, false, false, NOW), None);
+        assert_eq!(suggested_snooze(&stopped, false, true, NOW), None);
+        assert_eq!(suggested_snooze(&Session { archived: true, ..stopped.clone() }, false, false, NOW), None);
     }
 
     #[test]
