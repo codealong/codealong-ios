@@ -200,7 +200,7 @@ pub struct SessionRow {
     /// Its provider refused a message in it, or flagged it under its content policy: its Mac
     /// sends it nothing by itself by default (Settings › Automation there).
     pub flagged: bool,
-    /// Its last turn was cut off partway (its terminal closed, Codealong or the Mac restarted)
+    /// Its last turn was cut off partway (its terminal closed, Codealong or the machine restarted)
     /// and nothing has been said since: what that comes to, as the Mac says it.
     pub cut_off: Option<String>,
     /// While it runs, the page that opens it in the Claude app, through its Remote Control: what
@@ -328,7 +328,7 @@ pub struct BackgroundCommand {
     /// The command as its Mac sent it, to copy; none where its harness didn't record it.
     pub written: Option<String>,
     /// Where it stands, with a live time (background.ts `taskState`): `Running · {for:<ms>}`,
-    /// `Done · {ago:<ms>}`, `Failed · exit 1 · {ago:<ms>}`.
+    /// `Done · {ago:<ms>}`, `Failed · exit 1 · {ago:<ms>}`, `Ran out of time · {ago:<ms>}`.
     pub state: String,
     /// It still runs, so it can be stopped, and what it prints is read again while it's shown.
     pub running: bool,
@@ -385,6 +385,8 @@ fn task_state(t: &BackgroundTask) -> String {
     match t.status.as_deref() {
         Some("killed") => format!("Stopped \u{b7} {when}"),
         Some("stopped") => format!("Stopped as its session ended \u{b7} {when}"),
+        // A Claude Code Monitor whose time ran out, which its harness says in words, not a status.
+        Some("expired") => format!("Ran out of time \u{b7} {when}"),
         Some("failed") => match t.exit_code {
             Some(code) => format!("Failed \u{b7} exit {code} \u{b7} {when}"),
             None => format!("Failed \u{b7} {when}"),
@@ -1407,7 +1409,7 @@ fn count_runs(rows: &mut [SessionRow]) {
 }
 
 /// What a cut-off turn comes to, as the Mac's session header says it (lanes.ts `cutOffWords`).
-const CUT_OFF: &str = "Its last turn was cut off partway: what ran it ended (its terminal closed, Codealong or the Mac restarted, or it was killed). Resume it, or send it something, to carry on.";
+const CUT_OFF: &str = "Its last turn was cut off partway: what ran it ended (its terminal closed, Codealong or the machine restarted, or it was killed). Resume it, or send it something, to carry on.";
 
 /// The page that opens a session in the Claude app by its Remote Control session (`session_…`),
 /// as the Mac's Open in Claude app does with `claude://code/<id>`: on the phone, the web's address
@@ -1428,7 +1430,7 @@ pub struct ApiErrorNote {
     /// The same where there's no button (this device can't act on it there), which ends telling
     /// you to send it something.
     pub says_alone: String,
-    /// It couldn't reach its API (the Mac slept, the network dropped, the connection was refused),
+    /// It couldn't reach its API (the machine slept, the network dropped, the connection was refused),
     /// rather than the API answering with an error.
     pub lost: bool,
     /// The button: "Try again", or "Try now" where its Mac carries it on by itself once the API can
@@ -1452,7 +1454,7 @@ fn api_error_note(s: &Session, status: Status) -> Option<ApiErrorNote> {
     let said = s.api_error.as_ref().map(|e| e.said.trim().trim_end_matches(|c: char| c.is_whitespace() || c == '.')).filter(|w| !w.is_empty());
     let what = match said {
         Some(said) => format!("Its last turn ended on an API error: {said}."),
-        None => "Its last turn ended because it couldn\u{2019}t reach its API: the Mac slept, or the network dropped.".to_string(),
+        None => "Its last turn ended because it couldn\u{2019}t reach its API: the machine slept, or the network dropped.".to_string(),
     };
     let continues = s.connection_lost.as_ref().is_some_and(|l| l.continues);
     let (says, says_alone) = if continues {
@@ -3779,6 +3781,7 @@ mod order_tests {
                 BackgroundTask { ended_at: Some(9_000), status: Some("stopped".into()), ..task("b6", "sleep 900") },
                 BackgroundTask { ended_at: Some(9_000), status: Some("completed".into()), exit_code: Some(2), ..task("b7", "grep -r x") },
                 BackgroundTask { ended_at: Some(9_000), status: Some("failed".into()), ..task("b8", "") },
+                BackgroundTask { monitor: true, ended_at: Some(9_000), status: Some("expired".into()), ..task("b9", "tail -f build.log") },
             ],
             ..base.clone()
         };
@@ -3786,7 +3789,7 @@ mod order_tests {
         // Counted by what runs while any does, as the Mac's chip counts them.
         assert_eq!((got.words.as_str(), got.running), ("2 commands running in the background", true));
         let c = &got.commands;
-        assert_eq!(c.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["b1", "b2", "b3", "b4", "b5", "b6", "b7", "b8"], "in its Mac's order");
+        assert_eq!(c.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["b1", "b2", "b3", "b4", "b5", "b6", "b7", "b8", "b9"], "in its Mac's order");
         // The command on one line to name it, as written to copy; what it's for under it.
         assert_eq!((c[0].name.as_str(), c[0].written.as_deref(), c[0].about.as_deref()), ("npm run dev --port 4321", Some("npm run dev\n  --port 4321"), Some("Start the dev server")));
         // A Monitor its harness didn't record the command of is named by what it's for.
@@ -3804,9 +3807,11 @@ mod order_tests {
                 "Stopped as its session ended \u{b7} {ago:9000}",
                 "Ended \u{b7} exit 2 \u{b7} {ago:9000}",
                 "Failed \u{b7} {ago:9000}",
+                // A Monitor whose time ran out says so, as the Mac's list does.
+                "Ran out of time \u{b7} {ago:9000}",
             ]
         );
-        assert_eq!(c.iter().map(|c| c.running).collect::<Vec<_>>(), [true, true, false, false, false, false, false, false]);
+        assert_eq!(c.iter().map(|c| c.running).collect::<Vec<_>>(), [true, true, false, false, false, false, false, false, false]);
         // With none running, what ended a little while ago.
         let ended = Session { tasks: session.tasks[2..3].to_vec(), ..base.clone() };
         assert_eq!(background_commands(&ended).map(|b| (b.words, b.running)), Some(("1 command ended in the background".into(), false)));
@@ -3865,8 +3870,8 @@ mod order_tests {
         // A Mac from before 2026-11-11 sends only the lost connection, without its words.
         let older = Session { connection_lost: Some(ConnectionLost { at: 5, continues: false }), ..base.clone() };
         let note = api_error_note(&older, Status::Idle).unwrap();
-        assert_eq!(note.says, "Its last turn ended because it couldn\u{2019}t reach its API: the Mac slept, or the network dropped.");
-        assert_eq!(note.says_alone, "Its last turn ended because it couldn\u{2019}t reach its API: the Mac slept, or the network dropped. Send it something to try again.");
+        assert_eq!(note.says, "Its last turn ended because it couldn\u{2019}t reach its API: the machine slept, or the network dropped.");
+        assert_eq!(note.says_alone, "Its last turn ended because it couldn\u{2019}t reach its API: the machine slept, or the network dropped. Send it something to try again.");
         // Words that are only spaces are none.
         let blank = Session { api_error: Some(ApiError { at: 5, said: " . ".into() }), ..older.clone() };
         assert_eq!(api_error_note(&blank, Status::Idle).map(|n| n.says), api_error_note(&older, Status::Idle).map(|n| n.says));
