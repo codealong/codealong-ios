@@ -1436,7 +1436,10 @@ struct SessionView: View {
             said = try await Task.detached { try conv.runCommand(text: text, block: false) }.value
             draft = ""
             typing = false
-            store.dealtWith(key)
+            // Its turn on what it prints comes next, so it's out of what waits on you, but not
+            // when it waits on you to allow or answer something, which the command doesn't (the
+            // Mac's terminal.rs `overlay_yours`).
+            if pending == nil { store.dealtWith(key) }
         } catch {
             said = words(error)
         }
