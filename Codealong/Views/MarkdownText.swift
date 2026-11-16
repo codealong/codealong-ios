@@ -52,8 +52,9 @@ struct MarkdownText: View {
                 .overlay(alignment: .leading) {
                     Capsule().fill(.quaternary).frame(width: 3)
                 }
-        case .code(let s):
-            CodeView(text: s, onPage: written)
+        case .code(let s, let run):
+            // A prompt's blocks are yours, not commands its agent wrote for you to run.
+            CodeView(text: s, run: written ? .no : run, onPage: written)
         case .table(let align, let head, let rows):
             TableView(align: align, head: head, rows: rows, onPage: written)
         case .rule:
@@ -88,22 +89,45 @@ private enum MarkdownCache {
     }
 }
 
-/// A fenced code block: as written, scrolling sideways, with a button that copies it.
+/// A fenced code block: as written, scrolling sideways, with a button that copies it, and one
+/// that runs it on the session's Mac when it's shell commands and the page says where they run
+/// (`RunPlace`), as the Mac's Run beside a shell block does.
 struct CodeView: View {
     let text: String
+    var run: CodeRun = .no
     /// On the page's color, in a prompt's tinted bubble.
     var onPage = false
+    @Environment(\.runPlace) private var place
 
     var body: some View {
+        let runs = place.map { offersRun(in: $0) } ?? false
         ScrollView(.horizontal) {
             Text(text)
                 .font(.caption.monospaced())
                 .padding(8)
-                .padding(.trailing, 28)
+                .padding(.trailing, runs ? 56 : 28)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(onPage ? AnyShapeStyle(.background) : AnyShapeStyle(.background.secondary), in: .rect(cornerRadius: 8))
-        .overlay(alignment: .topTrailing) { CopyButton(text: text) }
+        .overlay(alignment: .topTrailing) {
+            HStack(spacing: 0) {
+                if runs, let place {
+                    // A block led by `!` runs as `!` in the box does; any other without its comments.
+                    RunButton(text: text, block: run != .typed, place: place)
+                }
+                CopyButton(text: text)
+            }
+        }
+    }
+
+    /// One with no language runs only when each of its lines starts with a command its Mac has,
+    /// once the Mac has said which it has.
+    private func offersRun(in place: RunPlace) -> Bool {
+        switch run {
+        case .block, .typed: true
+        case .ifCommands: place.commandsKnown && place.conversation.isCommandBlock(text: text)
+        case .no: false
+        }
     }
 }
 

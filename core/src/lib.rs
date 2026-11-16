@@ -25,10 +25,12 @@ mod lists;
 mod queue;
 mod quick;
 mod review;
+mod run;
 mod sounds;
 pub use lists::*;
 pub use md::*;
 pub use quick::*;
+pub use run::{bang_command, CodeRun};
 pub use sounds::Sound;
 
 /// Changes reach Swift at most this often: a busy Mac sends a feed a second, and each can come
@@ -41,6 +43,8 @@ const RECENT_MS: i64 = 3 * 24 * 60 * 60 * 1000;
 const LOOK_BACK: usize = 16;
 /// How long a request that acts on a session waits for its Mac, as the client's own do.
 const ACT_WAIT: Duration = Duration::from_secs(40);
+/// How long a request that only reads waits, as the client's own do.
+const READ_WAIT: Duration = Duration::from_secs(15);
 
 /// What Swift implements to hear that `Core::snapshot` has something new.
 #[uniffi::export(callback_interface)]
@@ -894,6 +898,7 @@ pub struct Core {
     /// The Macs' GitHub accounts and the ones you picked as yours (`github`).
     github: Mutex<github::Github>,
     watched: Watched,
+    commands: run::Commands,
 }
 
 /// The sessions each Mac is asked to send the replies of as they're written, by the Mac as a
@@ -961,7 +966,7 @@ impl Core {
                 std::thread::sleep(COALESCE);
             })
             .map_err(|e| CoreError::Failed(e.to_string()))?;
-        Ok(Arc::new(Core { client, conversations, kept: kept::Kept::default(), chimer: Mutex::default(), github, watched: Watched::default() }))
+        Ok(Arc::new(Core { client, conversations, kept: kept::Kept::default(), chimer: Mutex::default(), github, watched: Watched::default(), commands: run::Commands::default() }))
     }
 
     /// This phone's device key, as hex.
@@ -1004,7 +1009,7 @@ impl Core {
             if let Some(s) = kept::load(&saved, &key, continues.as_deref()) {
                 thread = Thread { loaded: true, items: s.items, before: s.before, after: s.after, ..Thread::default() };
             }
-            Arc::new(Conversation { client: self.client.clone(), device: device.to_string(), key: own.to_string(), st: Mutex::new(thread), saved, remote: key.clone(), continues: continues.clone(), watched: self.watched.clone() })
+            Arc::new(Conversation { client: self.client.clone(), device: device.to_string(), key: own.to_string(), st: Mutex::new(thread), saved, remote: key.clone(), continues: continues.clone(), watched: self.watched.clone(), commands: self.commands.clone() })
         }))
     }
 
@@ -1927,6 +1932,7 @@ pub struct Conversation {
     remote: String,
     continues: Option<String>,
     watched: Watched,
+    commands: run::Commands,
 }
 
 #[derive(Default)]
@@ -2312,6 +2318,41 @@ impl Conversation {
         let params = serde_json::to_value(params::Task { key: self.key.clone(), id }).map_err(|e| CoreError::Failed(e.to_string()))?;
         let said = self.client.ask(&self.device, api::SESSION_TASK_STOP, params, ACT_WAIT).map_err(|e| older_mac(e, &self.client, &self.device, "stop a background command from here"))?;
         Ok(said.as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).unwrap_or_else(|| "Stopped.".into()))
+    }
+
+    /// Runs a command for it on its Mac, as `!` in its box or Run on a block in its conversation
+    /// does there: in a terminal under it or a tab of the Mac's terminal app, as you, in the
+    /// folder it works in, and it's told what the command printed once it ends. `block` is a
+    /// shell block's text (`CodeRun::Block`, `IfCommands`), else it's led by `!` as typed. Says
+    /// how it went. Needs remote control there; Macs before 2026-11-15 refuse it.
+    pub fn run_command(&self, text: String, block: bool) -> Result<String, CoreError> {
+        let params = serde_json::to_value(params::RunCommand { key: self.key.clone(), text, block, ..Default::default() }).map_err(|e| CoreError::Failed(e.to_string()))?;
+        let said = self.client.ask(&self.device, api::SESSION_RUN, params, ACT_WAIT).map_err(|e| older_mac(e, &self.client, &self.device, "run commands from here"))?;
+        Ok(said.as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).unwrap_or_else(|| "Running it. What it prints goes to the session when it ends.".into()))
+    }
+
+    /// Asks its Mac which commands its shell takes, for the blocks with no language in what it
+    /// wrote (`CodeRun::IfCommands`), unless that was asked lately. Says whether they're known now:
+    /// false when its Mac didn't answer, or is from before 2026-11-15 and doesn't say, when such
+    /// blocks have Copy alone.
+    pub fn learn_commands(&self) -> bool {
+        if let Some((_, false)) = run::known(&self.commands, &self.device) {
+            return true;
+        }
+        match self.client.ask(&self.device, api::SHELL_COMMANDS, serde_json::json!({}), READ_WAIT).ok().and_then(|v| serde_json::from_value::<Vec<String>>(v).ok()) {
+            Some(names) => {
+                run::keep(&self.commands, &self.device, names);
+                true
+            }
+            // What was known before stands until its Mac says again.
+            None => run::known(&self.commands, &self.device).is_some(),
+        }
+    }
+
+    /// Whether a block with no language in what it wrote is commands its Mac's shell takes, as
+    /// far as that's known (`learn_commands`).
+    pub fn is_command_block(&self, text: String) -> bool {
+        run::known(&self.commands, &self.device).is_some_and(|(names, _)| run::is_command_block(&text, &names))
     }
 
     /// How a message sent to it would reach it, as its Mac says; None for one Codealong runs, and

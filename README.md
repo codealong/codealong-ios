@@ -105,6 +105,11 @@ need you, as on the Mac.
   of 0.18 or later, and a Codex app thread's from its next turn): the mode of one in a terminal by
   Shift+Tab pressed there, a background job's from a Mac of 0.21 or later, said in italics until its
   next prompt shows it took;
+- run a command its agent wrote for you to run: *Run* beside a shell block in its reply (asked
+  first) runs it in a terminal on its Mac, as you, in the folder it works in, and the session is
+  told what it printed once it ends, as Run on the Mac does; a message that starts with `!` runs
+  the same way. A block with no language gets Run when each of its lines starts with a command
+  that Mac has. Needs a Mac newer than 0.22;
 - resume one that isn't running, where and on what model you pick;
 - fork it, go on from before one of your prompts with an edit of it (hold the prompt, *Edit from
   here*), or mark it done (closing it where its Mac can);

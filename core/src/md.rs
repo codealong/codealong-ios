@@ -9,6 +9,8 @@
 //! and indentation stay (`prompt_markdown`), and the images Codealong kept for them are shown apart
 //! (`prompt_parts`). A tool's output isn't Markdown, but its web links open too (`linked_output`).
 
+use crate::run::{code_run, fence_lang, CodeRun};
+
 /// A block of what an agent wrote.
 #[derive(uniffi::Enum, Clone, Debug, PartialEq)]
 pub enum MdBlock {
@@ -17,7 +19,8 @@ pub enum MdBlock {
     /// `start`: an ordered list's first number, which goes on after a code block in the list.
     List { ordered: bool, start: u32, items: Vec<String> },
     Quote { text: String },
-    Code { text: String },
+    /// `run`: whether it runs as commands for the session on its Mac (`run::code_run`).
+    Code { text: String, run: CodeRun },
     /// Rows have as many cells as the header, as GitHub pads or trims them.
     Table { align: Vec<MdAlign>, head: Vec<String>, rows: Vec<Vec<String>> },
     Rule,
@@ -438,6 +441,7 @@ fn read_blocks(src: &str, depth: u8, written: bool, out: &mut Vec<(u8, MdBlock)>
         if is_fence(line) {
             // A fence in a list is indented with the list, and so are the lines inside it.
             let indent = line.len() - line.trim_start_matches(' ').len();
+            let lang = fence_lang(line);
             let mut body = Vec::new();
             i += 1;
             while i < lines.len() && !is_fence(lines[i]) {
@@ -447,8 +451,11 @@ fn read_blocks(src: &str, depth: u8, written: bool, out: &mut Vec<(u8, MdBlock)>
                 i += 1;
             }
             // A block still being written (a reply as it streams) has no closing fence yet.
+            let closed = i < lines.len();
             i += 1;
-            out.push((depth, MdBlock::Code { text: body.join("\n") }));
+            let text = body.join("\n");
+            let run = code_run(&lang, &text, closed);
+            out.push((depth, MdBlock::Code { text, run }));
             continue;
         }
         if let Some((level, text)) = heading(line) {
@@ -867,7 +874,7 @@ mod tests {
                 MdBlock::List { ordered: true, start: 3, items: vec!["three".into()] },
                 MdBlock::Quote { text: "quoted more".into() },
                 MdBlock::Rule,
-                MdBlock::Code { text: "fn main() {}".into() },
+                MdBlock::Code { text: "fn main() {}".into(), run: CodeRun::No },
                 para("After"),
             ]
         );
@@ -877,12 +884,13 @@ mod tests {
             blocks(list),
             [
                 MdBlock::List { ordered: true, start: 4, items: vec!["four".into()] },
-                MdBlock::Code { text: "cargo test".into() },
+                MdBlock::Code { text: "cargo test".into(), run: CodeRun::IfCommands },
                 MdBlock::List { ordered: true, start: 5, items: vec!["five".into()] },
             ]
         );
-        // A reply still being written has no closing fence yet.
-        assert_eq!(blocks("```\nhalf"), [MdBlock::Code { text: "half".into() }]);
+        // A reply still being written has no closing fence yet, so it doesn't run until it has.
+        assert_eq!(blocks("```\nhalf"), [MdBlock::Code { text: "half".into(), run: CodeRun::No }]);
+        assert_eq!(blocks("```sh\nnpm test\n```"), [MdBlock::Code { text: "npm test".into(), run: CodeRun::Block }]);
         // A hash without a space, or seven of them, isn't a heading.
         assert_eq!(blocks("#hashtag"), [para("#hashtag")]);
         assert_eq!(blocks("####### seven"), [para("####### seven")]);
@@ -928,7 +936,7 @@ mod tests {
         // A code block under an item is part of it, whole however its lines are indented.
         assert_eq!(
             parts("- Run:\n  ```\nmake all\n  ```\n- Then check."),
-            [(0, list(false, 1, &["Run:"])), (1, MdBlock::Code { text: "make all".into() }), (0, list(false, 1, &["Then check."]))]
+            [(0, list(false, 1, &["Run:"])), (1, MdBlock::Code { text: "make all".into(), run: CodeRun::IfCommands }), (0, list(false, 1, &["Then check."]))]
         );
         // The numbers go on after what's under an item.
         assert_eq!(parts("1. one\n   more under it\n\n   - x\n2. two"), [(0, list(true, 1, &["one more under it"])), (1, list(false, 1, &["x"])), (0, list(true, 2, &["two"]))]);
@@ -1037,7 +1045,7 @@ mod tests {
                 para("Fix **this**, see log.txt:\n  indented\nlast line"),
                 list(false, 1, &["one\nwrapped", "two"]),
                 MdBlock::Quote { text: "said\ntwice".into() },
-                MdBlock::Code { text: "ls *.ts".into() },
+                MdBlock::Code { text: "ls *.ts".into(), run: CodeRun::IfCommands },
             ]
         );
         // A kept file's name is escaped once, so its underscores show as they are.

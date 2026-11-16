@@ -105,6 +105,9 @@ struct SessionView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var sending = false
     @State private var said: String?
+    /// Its Mac has said which commands its shell takes, for Run on the blocks with no language in
+    /// what its agent wrote.
+    @State private var commandsKnown = false
     /// The reply it's writing, while it takes a turn Codealong runs on its Mac.
     @State private var live: Live?
     @State private var watching = false
@@ -416,6 +419,7 @@ struct SessionView: View {
                 }
                 .padding(.horizontal)
                 .padding(.vertical, 12)
+                .environment(\.runPlace, runPlace)
             }
             .scrollPosition($position)
             .defaultScrollAnchor(.bottom)
@@ -790,7 +794,7 @@ struct SessionView: View {
         }
         .buttonStyle(.plain)
         .disabled(!canSend)
-        .accessibilityLabel("Send")
+        .accessibilityLabel(bangCommand(text: draft) && !denying ? "Run" : "Send")
         // Held, as Messages offers its send options: send and go straight on.
         .contextMenu {
             if canSendNow {
@@ -889,6 +893,13 @@ struct SessionView: View {
 
     private var whyNot: String? { store.cannotReach(row) }
 
+    /// Where the commands its agent wrote for you run, for the Run beside a shell block: on its
+    /// Mac, where it can be acted on from here.
+    private var runPlace: RunPlace? {
+        guard canAct, let conversation, let row else { return nil }
+        return RunPlace(conversation: conversation, mac: Names.short(row.deviceName), account: row.account, commandsKnown: commandsKnown) { said = $0 }
+    }
+
     /// The conversation's line for the call the card below shows, questions to answer or a call to
     /// allow (the core's `cardShows`), which the conversation leaves out, as the Mac's
     /// questionsBox.ts has it since 2026-11-13: it said the call again just above the card. Folded,
@@ -932,6 +943,7 @@ struct SessionView: View {
         }
         takeLateOutcome()
         await refresh()
+        if canAct { commandsKnown = await Task.detached { conv.learnCommands() }.value }
         // Opened from the feeds saved before its Mac answered (the app was just opened, or a link
         // opened it): what was kept shows meanwhile, and it's read again the moment the Mac is
         // connected (every two seconds where it says it is but didn't answer), for half a minute.
@@ -1349,6 +1361,16 @@ struct SessionView: View {
             aside = SideAsk(question: question)
             return
         }
+        // A command led by `!` runs on its Mac for it, as `!` in the Mac's box runs one, rather
+        // than going to it as words.
+        if reply == nil, !denying, bangCommand(text: text) {
+            if !attached.isEmpty {
+                said = "A command runs with words only: take the images off to run it, or send them in a reply."
+                return
+            }
+            await runCommand(text)
+            return
+        }
         // A message, or one that goes on with a session that isn't running, goes without waiting:
         // it shows at once, and the store says if it doesn't go.
         if !denying {
@@ -1384,6 +1406,22 @@ struct SessionView: View {
             clear()
             typing = false
             done(result, outcome: "\(p.questions.isEmpty ? "Denied" : "Declined") “\(title)”, saying what to do instead.", thenNext: thenNext)
+        } catch {
+            said = words(error)
+        }
+    }
+
+    /// Runs a command typed in the box, led by `!`, on its Mac: it waits for the Mac to say it
+    /// started, and stays in the box if it didn't.
+    private func runCommand(_ text: String) async {
+        guard let conv = conversation else { return }
+        sending = true
+        defer { sending = false }
+        do {
+            said = try await Task.detached { try conv.runCommand(text: text, block: false) }.value
+            draft = ""
+            typing = false
+            store.dealtWith(key)
         } catch {
             said = words(error)
         }
@@ -1525,7 +1563,8 @@ struct SessionView: View {
     /// Quiets it, or makes it heard again, as the Mac's Quiet does.
     /// What a test asked to press: `raise` is Move to top or Back in line, `remove` and `edit` press
     /// those beside the first message it holds, `tryagain` is Try again beside an API error that
-    /// ended its last turn, `send:<words>` sends those, and `label:<name>` puts
+    /// ended its last turn, `send:<words>` sends those, `type:<words>` writes them in the box and
+    /// presses Send (a command led by `!` runs on its Mac), and `label:<name>` puts
     /// that label on, or takes it off where it wears it, as Labels › and New label… do. `box`
     /// opens the reply box, as a tap on it does, and `mode:<id>` picks that mode in the menu beside
     /// Send, where it offers one.
@@ -1538,6 +1577,11 @@ struct SessionView: View {
         }
         if what.hasPrefix("send:") {
             store.post(key, title: title, text: String(what.dropFirst("send:".count)), how: .send(now: false))
+            return
+        }
+        if what.hasPrefix("type:") {
+            draft = String(what.dropFirst("type:".count))
+            if canSend { await send() }
             return
         }
         // A link opened as a tap on it in the conversation opens it.

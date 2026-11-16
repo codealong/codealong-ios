@@ -53,12 +53,12 @@ the core whenever `core/` isn't what it was last built from).
   sends it its feed, answers its requests, and never dials it or asks it to search.
 - It never sends a feed and answers every request with a refusal.
 - It reads with `session-page`, `session-newer`, `session-pending`, `session-way`,
-  `session-stream`, `session-watch`, `start-options`, `route`, `search`, `session-task-output`,
+  `session-stream`, `session-watch`, `start-options`, `route`, `search`, `session-task-output`, `shell-commands`,
   `side-get`, `side-past`, `pr-detail`, `pr-merge-box` and `image-read`, and organizes
   (`mark-seen`, `mark-unread`, `session-archive`, `session-rename`, `session-raise`,
   `session-pin`, `session-snooze`, `session-quiet`, `session-label`, `session-suggest`,
   `pr-snooze`) with any Mac. It can only act (`session-send`, `session-answer`,
-  `session-cancel`, `session-steer`, `session-unqueue`, `session-task-stop`, `session-resume`,
+  `session-cancel`, `session-steer`, `session-unqueue`, `session-task-stop`, `session-run-command`, `session-resume`,
   `session-model`, `session-effort`, `session-mode`, `session-fork`, `session-edit`,
   `session-done`, `start`, `side-ask`, `side-close`, `side-forget`, `pr-review`, `pr-merge`,
   `image-keep`) where the Mac has remote control on (Settings › Devices there), and each of those is written
