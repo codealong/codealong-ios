@@ -650,6 +650,10 @@ struct SessionView: View {
             if let asked = row?.inputAsked {
                 SessionNote(words: asked, symbol: "keyboard", tint: .orange, code: true)
             }
+            // Its terminal's screen, as read: plain words, not code or markdown.
+            if let waits = row?.helperWaits {
+                SessionNote(words: waits, symbol: "terminal", tint: .orange)
+            }
             if let limit = row?.limit {
                 // Snoozed from here as from its Snooze menu: it goes on to what's next, if anything.
                 LimitNote(words: limit, suggested: row?.suggestedSnooze) { until in Task { await snooze(until: until) } }
@@ -3472,6 +3476,9 @@ struct SessionGlance: View {
             }
             if let asked = row?.inputAsked {
                 SessionNote(words: asked, symbol: "keyboard", tint: .orange, code: true)
+            }
+            if let waits = row?.helperWaits {
+                SessionNote(words: waits, symbol: "terminal", tint: .orange)
             }
             if let limit = row?.limit {
                 LimitNote(words: limit, suggested: row?.suggestedSnooze, now: .now) { _ in }

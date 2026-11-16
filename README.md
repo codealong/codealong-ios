@@ -65,7 +65,9 @@ or one its turn left running in the background. A line above its box counts the 
 left running in the background (a Claude Code session's shells and Monitors, a Codex thread's
 background terminals), and a tap lists them with where each stands and the last of what it printed,
 read again as it runs. One whose command waits at a question in a terminal on its Mac says so, with
-the question, to answer there. One whose last turn ended on an API error says so under its
+the question, to answer there, and one whose helper waits in its terminal there before it starts
+(Codex's review of a repo's hooks) says what that shows, to answer from the helper's line on the
+Mac. One whose last turn ended on an API error says so under its
 conversation, in its harness's words, with *Try again* beside it.
 
 **Work through what's waiting.** Sessions that need you, PRs waiting on your review and finished

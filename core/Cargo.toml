@@ -18,7 +18,7 @@ crate-type = ["staticlib"]
 [dependencies]
 # The main repo's crate, pinned to a commit in its origin/main; move the pin to take a newer one
 # (CLAUDE.md, "The main repo is the source of the protocol").
-codealong-peer = { git = "https://github.com/codealong/codealong.git", rev = "06a7a028f470ca943f064b4e1c672fedccb09cb9" }
+codealong-peer = { git = "https://github.com/codealong/codealong.git", rev = "8409aeda7b47cda542f2375d5aac8ceaaf247e3b" }
 iroh = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

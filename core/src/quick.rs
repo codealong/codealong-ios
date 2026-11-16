@@ -1216,6 +1216,7 @@ pub(crate) mod tests {
             suggested_snooze: None,
             background: None,
             input_asked: None,
+            helper_waits: None,
         }
     }
 

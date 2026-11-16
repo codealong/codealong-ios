@@ -11,7 +11,7 @@ use std::time::Duration;
 use codealong_peer::api::{self, params};
 use codealong_peer::client::Client;
 use codealong_peer::feed::{remote_key, split_remote};
-use codealong_peer::model::{BackgroundTask, Harness, Lane, Need, OriginHow, Reuse, Session, SessionLimit, Status as PeerStatus, Surface, ELSEWHERE, TERMINAL_ASKS};
+use codealong_peer::model::{BackgroundTask, Harness, Lane, Need, OriginHow, Reuse, Session, SessionLimit, Status as PeerStatus, Surface, ELSEWHERE, START_WAITS, TERMINAL_ASKS};
 use codealong_peer::{net, proto};
 
 uniffi::setup_scaffolding!();
@@ -303,6 +303,10 @@ pub struct SessionRow {
     /// which is answered there: what it asks, and that what's sent here goes to the session
     /// (`input_note`). None from Macs before 2026-11-12.
     pub input_asked: Option<String>,
+    /// A helper its agent started waits in its terminal on its Mac, on a screen of its own, before
+    /// it starts (`Need::Start`), which is answered there: what that shows, and that what's sent
+    /// here goes to the session (`start_note`). None from Macs before 2026-11-16.
+    pub helper_waits: Option<String>,
 }
 
 /// What a session's agent left running in the background (`Session::tasks`), as the Mac's session
@@ -414,6 +418,26 @@ fn input_note(s: &Session) -> Option<String> {
     let asks = s.excerpt.as_deref().and_then(|e| e.strip_prefix(TERMINAL_ASKS)).map(str::trim).filter(|a| !a.is_empty());
     let what = asks.map(|a| format!(": {a}.")).unwrap_or_else(|| ".".into());
     Some(format!("A command it runs waits for you to type something in its terminal on its Mac{what} Answer it there: what you send here goes to the session, not the command."))
+}
+
+/// That a helper a session's agent started waits in its terminal on its Mac before it starts, on a
+/// screen of its own (Codex's review of a repo's hooks), so the session needs you for it
+/// (`Need::Start`), as the Mac labels it Helper waits: what its terminal shows, as the Mac's
+/// excerpt has it after `START_WAITS` (its harness, then that, or that it hasn't started in its
+/// terminal), and where it's answered. The Mac answers it, shows its tab or stops it from the
+/// helper's line under the session's title, which goes to no other device (starting.rs); what's
+/// sent from here goes to the session, as from the Mac's box.
+fn start_note(s: &Session) -> Option<String> {
+    if s.need() != Some(Need::Start) {
+        return None;
+    }
+    let shows = s.excerpt.as_deref().and_then(|e| e.strip_prefix(START_WAITS)).map(str::trim).filter(|a| !a.is_empty());
+    let what = match shows {
+        Some(a) if a.ends_with(['.', '?', '!']) => format!(" {a}"),
+        Some(a) => format!(" {a}."),
+        None => String::new(),
+    };
+    Some(format!("A helper it started waits in its terminal on its Mac before it starts.{what} Answer it there, from the helper's line under this session's title: what you send here goes to the session."))
 }
 
 /// A snooze offered for a session stopped at its usage limit, until the limit lifts, or one whose
@@ -1379,6 +1403,7 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 suggested_snooze: suggested_snooze(s, status == Status::Working, s.snoozed_until.is_some_and(|t| t > now), now),
                 background: background_commands(s),
                 input_asked: input_note(s),
+                helper_waits: start_note(s),
             };
             if listed { sessions.push(row) } else { unlisted.push(row) }
         }
@@ -3606,6 +3631,7 @@ mod order_tests {
             waits_on: None,
             background: None,
             input_asked: None,
+            helper_waits: None,
             aside: false,
             finished: None,
             waits_finished: false,
@@ -3878,6 +3904,31 @@ mod order_tests {
         // Not a call to allow, nor one that's stopped needing you.
         assert_eq!(input_note(&Session { excerpt: Some("Bash \u{b7} `ls`".into()), ..base.clone() }), None);
         assert_eq!(input_note(&Session { status: PeerStatus::Working, ..input }), None);
+    }
+
+    #[test]
+    fn a_helper_waiting_before_it_starts_says_to_answer_it_on_its_mac() {
+        let base = Session { status: PeerStatus::Needs, ..Session::new(Harness::Claude, "claude", "in") };
+        let start = Session { excerpt: Some(format!("{START_WAITS}Codex: Hooks need review")), ..base.clone() };
+        assert_eq!(
+            start_note(&start).as_deref(),
+            Some("A helper it started waits in its terminal on its Mac before it starts. Codex: Hooks need review. Answer it there, from the helper's line under this session's title: what you send here goes to the session.")
+        );
+        // What's typed here goes to the session, not the helper: it sits at no prompt, and no turn
+        // runs, so Stop and Send now don't show.
+        assert!(!start.waits_at_a_prompt());
+        assert!(!turn_running(&start));
+        // Where its screen wasn't read, the Mac says it hasn't started; and words that end a
+        // sentence of their own keep it.
+        let unread = Session { excerpt: Some(format!("{START_WAITS}Codex hasn't started in Rex")), ..base.clone() };
+        assert!(start_note(&unread).unwrap().contains(" Codex hasn't started in Rex. Answer it there"));
+        let asks = Session { excerpt: Some(format!("{START_WAITS}Codex: Trust this folder?")), ..base.clone() };
+        assert!(start_note(&asks).unwrap().contains(" Codex: Trust this folder? Answer it there"));
+        assert!(start_note(&Session { excerpt: Some(START_WAITS.into()), ..base.clone() }).unwrap().starts_with("A helper it started waits in its terminal on its Mac before it starts. Answer it there"));
+        // Not a command at a question, a call to allow, nor one that's stopped needing you.
+        assert_eq!(start_note(&Session { excerpt: Some(format!("{TERMINAL_ASKS}`Continue? [y/N]`")), ..base.clone() }), None);
+        assert_eq!(start_note(&Session { excerpt: Some("Bash \u{b7} `ls`".into()), ..base.clone() }), None);
+        assert_eq!(start_note(&Session { status: PeerStatus::Working, ..start }), None);
     }
 
     #[test]
