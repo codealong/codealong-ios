@@ -105,9 +105,9 @@ struct SessionView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var sending = false
     @State private var said: String?
-    /// Its Mac has said which commands its shell takes, for Run on the blocks with no language in
-    /// what its agent wrote.
-    @State private var commandsKnown = false
+    /// How many commands its Mac has said its shell takes, for Run on the blocks with no language
+    /// in what its agent wrote: they look again as it changes.
+    @State private var commands: UInt32 = 0
     /// The reply it's writing, while it takes a turn Codealong runs on its Mac.
     @State private var live: Live?
     @State private var watching = false
@@ -428,6 +428,10 @@ struct SessionView: View {
             // drag reached the keyboard, which reading back rarely does.)
             .scrollDismissesKeyboard(.immediately)
             .accessibilityIdentifier("conversation")
+            // Remote control turned on there, say: its Mac's commands are asked for now.
+            .onChange(of: canAct) { _, now in
+                if now { Task { await learnCommands() } }
+            }
             .simultaneousGesture(TapGesture().onEnded { typing = false })
             .gesture(QueueSwipe(back: before != nil, moved: { swipe.moved($0) }, ended: swiped))
             .onScrollGeometryChange(for: Bool.self) { geo in
@@ -794,7 +798,7 @@ struct SessionView: View {
         }
         .buttonStyle(.plain)
         .disabled(!canSend)
-        .accessibilityLabel(bangCommand(text: draft) && !denying ? "Run" : "Send")
+        .accessibilityLabel(bangCommand(text: draft) ? "Run" : "Send")
         // Held, as Messages offers its send options: send and go straight on.
         .contextMenu {
             if canSendNow {
@@ -856,7 +860,9 @@ struct SessionView: View {
         let words = !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         // Images alone are a reply too, once each is kept on its Mac; a deny takes only words.
         let images = !attached.isEmpty && !denying
-        return canAct && !sending && !waitsElsewhere && (words || images) && loadingPhotos == 0 && !attached.contains { $0.state == .keeping }
+        // A command led by `!` runs on its Mac whatever the session waits on there.
+        let elsewhere = waitsElsewhere && !bangCommand(text: draft)
+        return canAct && !sending && !elsewhere && (words || images) && loadingPhotos == 0 && !attached.contains { $0.state == .keeping }
     }
 
     /// What's written can go into the turn it's taking at once.
@@ -897,7 +903,7 @@ struct SessionView: View {
     /// Mac, where it can be acted on from here.
     private var runPlace: RunPlace? {
         guard canAct, let conversation, let row else { return nil }
-        return RunPlace(conversation: conversation, mac: Names.short(row.deviceName), account: row.account, commandsKnown: commandsKnown) { said = $0 }
+        return RunPlace(conversation: conversation, mac: Names.short(row.deviceName), account: row.account, commandsKnown: commands > 0) { said = $0 }
     }
 
     /// The conversation's line for the call the card below shows, questions to answer or a call to
@@ -943,7 +949,6 @@ struct SessionView: View {
         }
         takeLateOutcome()
         await refresh()
-        if canAct { commandsKnown = await Task.detached { conv.learnCommands() }.value }
         // Opened from the feeds saved before its Mac answered (the app was just opened, or a link
         // opened it): what was kept shows meanwhile, and it's read again the moment the Mac is
         // connected (every two seconds where it says it is but didn't answer), for half a minute.
@@ -1093,6 +1098,15 @@ struct SessionView: View {
             problem = words(error)
         }
         await readPending()
+        await learnCommands()
+    }
+
+    /// Which commands its Mac's shell takes, for Run on the blocks with no language, where it can
+    /// be acted on from here: asked whenever it's read, since the Mac may have been away, or had
+    /// remote control off, when it was opened. The core asks its Mac once a minute at most.
+    private func learnCommands() async {
+        guard canAct, let conv = conversation else { return }
+        commands = await Task.detached { conv.learnCommands() }.value
     }
 
     /// What it waits on you for, which comes from the Mac only when it's waiting. Only the latest
@@ -1362,8 +1376,9 @@ struct SessionView: View {
             return
         }
         // A command led by `!` runs on its Mac for it, as `!` in the Mac's box runs one, rather
-        // than going to it as words.
-        if reply == nil, !denying, bangCommand(text: text) {
+        // than going to it as words. It doesn't reach the session, so it runs while the session
+        // waits on you too, rather than answering what it waits on.
+        if reply == nil, bangCommand(text: text) {
             if !attached.isEmpty {
                 said = "A command runs with words only: take the images off to run it, or send them in a reply."
                 return

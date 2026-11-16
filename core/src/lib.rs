@@ -2332,21 +2332,15 @@ impl Conversation {
     }
 
     /// Asks its Mac which commands its shell takes, for the blocks with no language in what it
-    /// wrote (`CodeRun::IfCommands`), unless that was asked lately. Says whether they're known now:
-    /// false when its Mac didn't answer, or is from before 2026-11-15 and doesn't say, when such
-    /// blocks have Copy alone.
-    pub fn learn_commands(&self) -> bool {
-        if let Some((_, false)) = run::known(&self.commands, &self.device) {
-            return true;
+    /// wrote (`CodeRun::IfCommands`), unless it was asked in the last minute. Says how many it's
+    /// known to have: none while its Mac hasn't answered, or is from before 2026-11-15 and doesn't
+    /// say, when such blocks have Copy alone.
+    pub fn learn_commands(&self) -> u32 {
+        if let Some((names, false)) = run::known(&self.commands, &self.device) {
+            return names.len() as u32;
         }
-        match self.client.ask(&self.device, api::SHELL_COMMANDS, serde_json::json!({}), READ_WAIT).ok().and_then(|v| serde_json::from_value::<Vec<String>>(v).ok()) {
-            Some(names) => {
-                run::keep(&self.commands, &self.device, names);
-                true
-            }
-            // What was known before stands until its Mac says again.
-            None => run::known(&self.commands, &self.device).is_some(),
-        }
+        let names = self.client.ask(&self.device, api::SHELL_COMMANDS, serde_json::json!({}), READ_WAIT).ok().and_then(|v| serde_json::from_value::<Vec<String>>(v).ok());
+        run::keep(&self.commands, &self.device, names) as u32
     }
 
     /// Whether a block with no language in what it wrote is commands its Mac's shell takes, as

@@ -170,8 +170,8 @@ fn is_folder_script(s: &str) -> bool {
 const COMMANDS_FOR: Duration = Duration::from_secs(60);
 
 /// The commands each Mac's shell takes, by the Mac as a conversation names it, and when they were
-/// asked for. Shared by every conversation, so going from one session to the next on a Mac
-/// doesn't ask again.
+/// last asked for, answered or not. Shared by every conversation, so going from one session to
+/// the next on a Mac doesn't ask again.
 pub(crate) type Commands = Arc<Mutex<HashMap<String, (Instant, Arc<HashSet<String>>)>>>;
 
 /// The commands `device` was last said to have, if it's said, and whether that's older than
@@ -181,9 +181,19 @@ pub(crate) fn known(commands: &Commands, device: &str) -> Option<(Arc<HashSet<St
     all.get(device).map(|(at, names)| (names.clone(), at.elapsed() > COMMANDS_FOR))
 }
 
-pub(crate) fn keep(commands: &Commands, device: &str, names: Vec<String>) {
+/// Notes that `device` was asked just now, with what it answered: none when it didn't, from an
+/// older build that doesn't know the request or a Mac that didn't answer in time. It isn't asked
+/// again for `COMMANDS_FOR` either way, and what it said before stands meanwhile. Says how many
+/// commands it's known to have now.
+pub(crate) fn keep(commands: &Commands, device: &str, names: Option<Vec<String>>) -> usize {
     let mut all = commands.lock().unwrap_or_else(|e| e.into_inner());
-    all.insert(device.to_string(), (Instant::now(), Arc::new(names.into_iter().collect())));
+    let names = match names {
+        Some(names) => Arc::new(names.into_iter().collect()),
+        None => all.get(device).map(|(_, before)| before.clone()).unwrap_or_default(),
+    };
+    let known = names.len();
+    all.insert(device.to_string(), (Instant::now(), names));
+    known
 }
 
 #[cfg(test)]
@@ -212,6 +222,19 @@ mod tests {
         assert!(!bang_command("!".into()));
         assert!(!bang_command("! ".into()));
         assert!(!bang_command("Run it!".into()));
+    }
+
+    #[test]
+    fn a_mac_is_asked_for_its_commands_once_a_minute_answered_or_not() {
+        let commands = Commands::default();
+        assert!(known(&commands, "mini").is_none());
+        // An older Mac that doesn't answer is noted as asked, with none.
+        assert_eq!(keep(&commands, "mini", None), 0);
+        assert_eq!(known(&commands, "mini").map(|(n, stale)| (n.len(), stale)), Some((0, false)));
+        assert_eq!(keep(&commands, "mini", Some(vec!["git".into(), "npm".into()])), 2);
+        // One that answered before and doesn't now keeps what it said.
+        assert_eq!(keep(&commands, "mini", None), 2);
+        assert!(known(&commands, "mini").is_some_and(|(n, _)| n.contains("git")));
     }
 
     // RunButton.test.ts's cases, so the phone offers Run where the Mac does.
