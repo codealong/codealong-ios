@@ -108,6 +108,12 @@ struct SessionView: View {
     /// How many commands its Mac has said its shell takes, for Run on the blocks with no language
     /// in what its agent wrote: they look again as it changes.
     @State private var commands: UInt32 = 0
+    /// How the page gone on from to this one went, until something else is said here, or for a
+    /// moment where it went as asked (`Outcome`).
+    @State private var outcomes: [Outcome] = []
+    /// What it said as you replied or answered here: going on with it still said, it goes along as
+    /// how this one went, for a moment; said after (a snooze that didn't go, say), it stays.
+    @State private var actedSaid: String?
     /// The reply it's writing, while it takes a turn Codealong runs on its Mac.
     @State private var live: Live?
     @State private var watching = false
@@ -179,7 +185,7 @@ struct SessionView: View {
             _items = State(initialValue: opening.kept.items)
             _hasOlder = State(initialValue: opening.kept.hasOlder)
             _loading = State(initialValue: opening.kept.items.isEmpty)
-            _said = State(initialValue: opening.said)
+            _outcomes = State(initialValue: opening.outcome.map { [$0] } ?? [])
             _pending = State(initialValue: opening.kept.pending)
             _way = State(initialValue: opening.kept.way)
         }
@@ -340,6 +346,7 @@ struct SessionView: View {
         .onChange(of: store.sendProblems[key]) { _, _ in sayProblem() }
         // How what a swipe did to the session gone on from went, once its Mac says.
         .onChange(of: store.lateOutcomes) { _, _ in takeLateOutcome() }
+        .lettingGo(of: $outcomes, saying: said, writing: !draft.isEmpty)
     }
 
     /// The conversation, with the reply box over its foot.
@@ -449,10 +456,11 @@ struct SessionView: View {
             // A page that went in above while it scrolled goes in once it's still.
             .onScrollPhaseChange { _, phase in
                 scroll.still = phase == .idle
-                // You took it from there yourself.
+                // You took it from there yourself, and how the page before went has had its say.
                 if phase == .interacting {
                     scroll.settling = false
                     scroll.backToEnd = false
+                    outcomes.letGo()
                 }
                 if scroll.still, let waiting = scroll.waiting { show(waiting) }
             }
@@ -687,6 +695,7 @@ struct SessionView: View {
             if let said {
                 Text(said).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
             }
+            OutcomeLines(outcomes: $outcomes)
             // Not while you write here, or your own answer to a question: the room is theirs, and
             // what's next waits.
             if let onward, draft.isEmpty && attached.isEmpty && !writingAnswer {
@@ -948,7 +957,7 @@ struct SessionView: View {
         }
         // Moved on to from another: say how that one went.
         if let outcome = store.outcome {
-            said = outcome
+            outcomes = [outcome]
             store.outcome = nil
         }
         takeLateOutcome()
@@ -1406,10 +1415,11 @@ struct SessionView: View {
             store.post(key, title: title, text: ImagePrep.prompt(images: images, text: text), how: how)
             store.dealtWith(key)
             if thenNext, let onward {
-                moveOn(to: onward, outcome: "Sending to “\(title)”…")
+                moveOn(to: onward, outcome: Outcome(.sent, "Sending to “\(title)”…"))
                 return
             }
             if after.isEmpty { said = "Nothing else waits on you." }
+            actedSaid = said
             withAnimation(.snappy) { acted = true }
             withAnimation(.snappy) { position.scrollTo(edge: .bottom) }
             return
@@ -1459,7 +1469,7 @@ struct SessionView: View {
         } else if let target = before {
             // Back is a step by hand: nothing is done to this one for it. The trail is cut back once
             // it's there, so what's beside it stays put while it slides.
-            store.outcome = acted ? said : nil
+            store.outcome = saidOn
             slide(to: target.key, back: true, speed: speed, seen: false) { store.back(to: target.key) }
         }
     }
@@ -1473,7 +1483,7 @@ struct SessionView: View {
         if seen && row?.seenable == true && !markedUnread { store.markSeen(key) }
         // A PR's page opens with what was last read of it.
         if !target.hasPrefix(PrView.prefix) {
-            store.slidIn = (target, Opening(kept: swipe.kept[target] ?? Kept(), said: store.outcome))
+            store.slidIn = (target, Opening(kept: swipe.kept[target] ?? Kept(), outcome: store.outcome))
         }
         swipe.slide(to: target, back: back, speed: speed, reduceMotion: reduceMotion, go: go, then: then)
         typing = false
@@ -1547,7 +1557,7 @@ struct SessionView: View {
             heldAt = nil
             store.dealtWith(key)
             if let onward {
-                moveOn(to: onward, outcome: outcome.message)
+                moveOn(to: onward, outcome: .done(outcome, title: title))
             } else {
                 if outcome.noted { store.notice = outcome.message }
                 dismiss()
@@ -1575,7 +1585,7 @@ struct SessionView: View {
         store.dealtWith(key)
         if let onward {
             // Left as it was: it comes back as Your turn when the snooze ends.
-            moveOn(to: onward, outcome: outcome, seen: false)
+            moveOn(to: onward, outcome: Outcome(.snoozed, outcome), seen: false)
         } else {
             store.notice = outcome
             dismiss()
@@ -1779,10 +1789,11 @@ struct SessionView: View {
     private func done(_ result: String, outcome: String, thenNext: Bool = false) {
         store.dealtWith(key)
         if thenNext, let onward {
-            moveOn(to: onward, outcome: outcome)
+            moveOn(to: onward, outcome: Outcome(.sent, outcome))
             return
         }
         said = after.isEmpty ? "\(result) Nothing else waits on you." : result
+        actedSaid = said
         withAnimation(.snappy) { acted = true }
     }
 
@@ -1828,11 +1839,11 @@ struct SessionView: View {
         case .done:
             store.dealtWith(key)
             store.doneLater(key, title: title)
-            moveOn(to: next, outcome: "Marking “\(title)” as done…", speed: speed, seen: false)
+            moveOn(to: next, outcome: Outcome(.waiting, "Marking “\(title)” as done…"), speed: speed, seen: false)
         case .archive:
             store.dealtWith(key)
             store.archiveLater(key, title: title)
-            moveOn(to: next, outcome: "Archived “\(title)”.", speed: speed)
+            moveOn(to: next, outcome: Outcome(.archived, "Archived “\(title)”."), speed: speed)
         case .snooze:
             guard let time = pick.time else { return moveOn(to: next, speed: speed) }
             snooze(until: time.picked().until, goingOn: next, speed: speed)
@@ -1847,24 +1858,31 @@ struct SessionView: View {
     private func snooze(until: Date, goingOn next: Onward, speed: CGFloat = 0) {
         guard swipe.to == nil else { return }
         store.snoozeLater(key, title: title, until: until)
-        moveOn(to: next, outcome: "Snoozed “\(title)” until \(Snooze.words(until)).", speed: speed, seen: false)
+        moveOn(to: next, outcome: Outcome(.snoozed, "Snoozed “\(title)” until \(Snooze.words(until))."), speed: speed, seen: false)
     }
 
     /// Says how what a swipe did to the sessions gone on from went, once their Macs have answered,
     /// unless this screen is sliding away: the one sliding in says it.
     private func takeLateOutcome() {
         guard !store.lateOutcomes.isEmpty, store.showing == key, swipe.to == nil else { return }
-        said = store.lateOutcomes.joined(separator: "\n")
+        outcomes = store.lateOutcomes
         store.lateOutcomes = []
+    }
+
+    /// What this one says, for the next to say once you've replied or answered here: what that
+    /// said, for a moment, or what was said after, until something else is.
+    private var saidOn: Outcome? {
+        guard acted, let said else { return nil }
+        return said == actedSaid ? Outcome(.sent, said) : Outcome(.note, said, fades: false)
     }
 
     /// Shows `next` in this one's place, saying there how this one went once you've acted here.
     /// Left without a reply while it needs you, this one comes round again after the rest.
-    private func moveOn(to next: Onward, outcome: String? = nil, speed: CGFloat = 0, seen: Bool = true) {
+    private func moveOn(to next: Onward, outcome: Outcome? = nil, speed: CGFloat = 0, seen: Bool = true) {
         guard swipe.to == nil else { return }
         if next.key != key { store.trail.append(key) }
         if next == .end { store.goingToEnd(from: key) }
-        store.outcome = outcome ?? (acted ? said : nil)
+        store.outcome = outcome ?? saidOn
         slide(to: next.key, back: false, speed: speed, seen: seen)
     }
 
@@ -3363,8 +3381,8 @@ struct SideAsk: Identifiable {
 /// What a session's screen opens with when a swipe slid it in: what the swipe drew of it.
 struct Opening {
     let kept: Kept
-    /// How the session gone on from went.
-    let said: String?
+    /// How the page gone on from went.
+    let outcome: Outcome?
 }
 
 /// A session beside the one shown, as a swipe brings it in: what the phone keeps of its
@@ -3373,8 +3391,8 @@ struct Opening {
 struct SessionGlance: View {
     let key: String
     let kept: Kept
-    /// How the session gone on from went, as this one's screen will say it.
-    let said: String?
+    /// How the page gone on from went, as this one's screen will say it.
+    let outcome: Outcome?
     /// The page a swipe goes on from to this one, and whether going on takes it out of what waits
     /// on you (marked done or archived) or sends it round after the rest (marked seen, it stays
     /// there until its Mac's feed has it seen): nil going back to one.
@@ -3507,9 +3525,7 @@ struct SessionGlance: View {
             if let commands = row?.background {
                 BackgroundLine(background: commands) {}
             }
-            if let said {
-                Text(said).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
-            }
+            OutcomeLines(outcomes: .constant(outcome.map { [$0] } ?? []), fading: false)
             if let next = onward, !open {
                 let replied = !(store.outgoing[key] ?? []).isEmpty
                 GoOnBar(next: next, left: after.count, going: Going.of(SwipeOn.swipe(row: row), row: row, pending: pending, acted: replied), offers: SwipeOn.offers(row: row, pending: pending, acted: replied)) { _ in }

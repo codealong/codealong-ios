@@ -47,11 +47,11 @@ final class Store {
     /// Something to tell you once: what's next after a start that needs you at the Mac, say.
     var notice: String?
     /// How the session you just moved on from went ("Sent to …"), for the next one to say.
-    var outcome: String?
+    var outcome: Outcome?
     /// How what a swipe did to the sessions it went on from went, once their Macs answered, oldest
     /// first: the session shown then says them all, in place of `outcome` (`doneLater`,
     /// `archiveLater`). Several can come in during one slide, and none is lost.
-    var lateOutcomes: [String] = []
+    var lateOutcomes: [Outcome] = []
     /// Sessions you replied to or answered here, with the time of the status each had then: one is
     /// left out of what's next until it waits on you anew, since the Mac's feed takes a moment to
     /// show an answer.
@@ -616,7 +616,7 @@ final class Store {
                 try await prSnooze(pr, until: until)
             } catch {
                 comeRound(PrView.prefix + pr.key)
-                tellLater("Your review of #\(pr.number) wasn’t snoozed: \(words(error))", asked: false)
+                tellLater(.problem("Your review of #\(pr.number) wasn’t snoozed: \(words(error))"))
             }
         }
     }
@@ -814,10 +814,10 @@ final class Store {
             do {
                 let outcome = try await done(key, stop: false)
                 if !outcome.done { comeRound(key) }
-                tellLater(outcome.done ? outcome.message : "\(outcome.message) It wasn’t marked done.", asked: outcome.done && !outcome.noted)
+                tellLater(.done(outcome, title: title))
             } catch {
                 comeRound(key)
-                tellLater("“\(title)” wasn’t marked done: \(words(error))", asked: false)
+                tellLater(.problem("“\(title)” wasn’t marked done: \(words(error))"))
             }
         }
     }
@@ -831,7 +831,7 @@ final class Store {
                 try await Task.detached { try core.archive(key: key, archived: true) }.value
             } catch {
                 comeRound(key)
-                tellLater("“\(title)” wasn’t archived: \(words(error))", asked: false)
+                tellLater(.problem("“\(title)” wasn’t archived: \(words(error))"))
             }
         }
     }
@@ -848,18 +848,18 @@ final class Store {
                 try await snooze(key, until: until)
             } catch {
                 comeRound(key)
-                tellLater("“\(title)” wasn’t snoozed: \(words(error))", asked: false)
+                tellLater(.problem("“\(title)” wasn’t snoozed: \(words(error))"))
             }
         }
     }
 
     /// Says how what a swipe did went: on the session shown then, or with none shown (you went back
     /// to the list meanwhile), in an alert when it didn't go as asked.
-    private func tellLater(_ said: String, asked: Bool) {
+    private func tellLater(_ outcome: Outcome) {
         if showing != nil {
-            lateOutcomes.append(said)
-        } else if !asked {
-            notice = [notice, said].compactMap { $0 }.joined(separator: "\n\n")
+            lateOutcomes.append(outcome)
+        } else if outcome.mark == .problem {
+            notice = [notice, outcome.words].compactMap { $0 }.joined(separator: "\n\n")
         }
     }
 

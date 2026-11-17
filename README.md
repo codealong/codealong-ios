@@ -81,7 +81,10 @@ seen and goes on, or marks it done where its Mac says its work is finished (a PR
 todo of its done, its own status line) and it only waits for you to read it. Opening one doesn't
 mark it seen, so one you read and go back from is still waiting. Tap the bar to do something else
 instead, and go on as you pick it: leave it as it is (to come round again after the rest), mark it
-seen or done, archive it, or snooze it for a while. Swipe
+seen or done, archive it, or snooze it for a while. The next one says in a line how the one you
+left went (done, archived, snoozed, sent) for a few seconds, or until you write or scroll; a tap on
+it shows all its Mac said, such as what Mark as done stopped and cleaned up, and one that didn't
+go as asked stays until you dismiss it. Swipe
 right to go back to the one you came from, leaving this one as it is. One you replied to, one
 still working, and one waiting on you to allow something are left as they are, and holding *Send* sends and goes straight
 on. A PR's page has the same bar over its review box: swiping on from a review you haven't given

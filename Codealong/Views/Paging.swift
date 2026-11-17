@@ -44,11 +44,11 @@ struct Paged<Page: View>: View {
         let next = nextKey, back = backKey
         ZStack {
             if let next {
-                Glance(key: next, kept: swipe.kept[next], said: swipe.to?.key == next ? store.outcome : nil, from: (key, leaves: leaves))
+                Glance(key: next, kept: swipe.kept[next], outcome: swipe.to?.key == next ? store.outcome : nil, from: (key, leaves: leaves))
                     .modifier(FollowsSwipe(swipe: swipe, next: true, back: back != nil, at: 1))
             }
             if let back {
-                Glance(key: back, kept: swipe.kept[back], said: swipe.to?.key == back ? store.outcome : nil)
+                Glance(key: back, kept: swipe.kept[back], outcome: swipe.to?.key == back ? store.outcome : nil)
                     .modifier(FollowsSwipe(swipe: swipe, next: next != nil, back: true, at: -1))
             }
         }
@@ -85,18 +85,18 @@ struct Glance: View {
     /// What the phone keeps of a session's conversation.
     let kept: Kept?
     /// How the page gone on from went, as this one will say it.
-    let said: String?
+    let outcome: Outcome?
     /// The page a swipe goes on from to this one, and whether that leaves what waits on you: nil
     /// going back to one.
     var from: (key: String, leaves: Bool)?
 
     var body: some View {
         if key == EndView.key {
-            EndGlance(said: said, from: from?.key)
+            EndGlance(outcome: outcome, from: from?.key)
         } else if key.hasPrefix(PrView.prefix) {
-            PrGlance(key: String(key.dropFirst(PrView.prefix.count)), said: said, from: from)
+            PrGlance(key: String(key.dropFirst(PrView.prefix.count)), outcome: outcome, from: from)
         } else {
-            SessionGlance(key: key, kept: kept ?? Kept(), said: said, from: from)
+            SessionGlance(key: key, kept: kept ?? Kept(), outcome: outcome, from: from)
         }
     }
 }

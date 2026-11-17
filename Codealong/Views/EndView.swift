@@ -17,8 +17,10 @@ struct EndView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The inbox's project: what's offered stays in it.
     @AppStorage("project") private var project = ""
-    /// How the page gone on from went, and what a swipe did to it once its Mac answered.
-    @State private var said: String?
+    /// How the page gone on from went, and what a swipe did to it once its Mac answered: said until
+    /// something waits again, as the Mac's queue says it at the end, since nothing else here reads
+    /// as the one it's about.
+    @State private var outcomes: [Outcome] = []
     @State private var swipe = Swipe()
     /// The check has drawn in: it draws as the page takes the swipe's place.
     @State private var drawn = false
@@ -34,7 +36,7 @@ struct EndView: View {
                 .contentShape(.rect)
                 .gesture(QueueSwipe(back: before != nil, moved: { swipe.moved($0) }, ended: swiped))
                 .safeAreaInset(edge: .bottom) {
-                    EndFoot(offer: offer, said: said) { goOn(to: $0) }
+                    EndFoot(offer: offer, outcomes: $outcomes) { goOn(to: $0) }
                 }
         }
         // What's come in is a swipe away; on a keyboard, ⌘] as on the Mac.
@@ -60,7 +62,7 @@ struct EndView: View {
         .onAppear {
             store.showing = Self.key
             if let outcome = store.outcome {
-                said = outcome
+                outcomes = [outcome]
                 store.outcome = nil
             }
             takeLateOutcome()
@@ -104,7 +106,7 @@ struct EndView: View {
     /// its place, starting as it was drawn sliding in.
     private func slide(to target: String, back: Bool, speed: CGFloat = 0, then: @escaping () -> Void = {}) {
         if !target.hasPrefix(PrView.prefix) {
-            store.slidIn = (target, Opening(kept: swipe.kept[target] ?? Kept(), said: nil))
+            store.slidIn = (target, Opening(kept: swipe.kept[target] ?? Kept(), outcome: nil))
         }
         swipe.slide(to: target, back: back, speed: speed, reduceMotion: reduceMotion, go: go, then: then)
     }
@@ -113,7 +115,7 @@ struct EndView: View {
     /// this page is sliding away: the one sliding in says it.
     private func takeLateOutcome() {
         guard !store.lateOutcomes.isEmpty, store.showing == Self.key, swipe.to == nil else { return }
-        said = store.lateOutcomes.joined(separator: "\n")
+        outcomes = store.lateOutcomes
         store.lateOutcomes = []
     }
 }
@@ -122,7 +124,7 @@ struct EndView: View {
 /// draws it, the check not yet drawn in, leaving out the page it's gone on to from as the page will.
 struct EndGlance: View {
     /// How the page gone on from went, as this one will say it.
-    let said: String?
+    let outcome: Outcome?
     /// The page a swipe goes on from to this one, which it doesn't offer.
     let from: String?
     @Environment(Store.self) private var store
@@ -132,7 +134,7 @@ struct EndGlance: View {
         let offer = store.queue(after: EndView.key, project: project).filter { $0.key != from }
         EndMessage(nothing: offer.isEmpty, drawn: false) {}
             .safeAreaInset(edge: .bottom) {
-                EndFoot(offer: offer, said: said) { _ in }
+                EndFoot(offer: offer, outcomes: .constant(outcome.map { [$0] } ?? [])) { _ in }
             }
             .allowsHitTesting(false)
             .accessibilityHidden(true)
@@ -185,14 +187,12 @@ private struct EndMessage: View {
 /// what's come to wait on you since, to go on to.
 private struct EndFoot: View {
     let offer: [Waiting]
-    let said: String?
+    @Binding var outcomes: [Outcome]
     let goOn: (Waiting) -> Void
 
     var body: some View {
         VStack(spacing: 8) {
-            if let said {
-                Text(said).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
-            }
+            OutcomeLines(outcomes: $outcomes, fading: false)
             if let next = offer.first {
                 GoOnBar<SwipeOn>(next: .to(next), left: offer.count, going: .on) { _ in goOn(next) }
                     .transition(.move(edge: .bottom).combined(with: .opacity))

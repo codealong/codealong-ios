@@ -36,6 +36,12 @@ struct PrView: View {
     @State private var snoozing: SnoozePick?
     /// How the last thing done here went.
     @State private var said: String?
+    /// How the page gone on from to this one went, until something else is said here, or for a
+    /// moment where it went as asked (`Outcome`).
+    @State private var outcomes: [Outcome] = []
+    /// What it said as you reviewed or merged it here: going on with it still said, it goes along as
+    /// how this one went, for a moment; said after (a snooze that didn't go, say), it stays.
+    @State private var actedSaid: String?
     /// You reviewed or merged it here: going on leaves it as it is.
     @State private var acted = false
     /// You're going through what waits on you here (`Store.goingThrough`), as you were once: with
@@ -103,7 +109,7 @@ struct PrView: View {
             store.showing = page
             // Gone on to from another: say how that one went.
             if let outcome = store.outcome {
-                said = outcome
+                outcomes = [outcome]
                 store.outcome = nil
             }
             takeLateOutcome()
@@ -112,6 +118,7 @@ struct PrView: View {
             if store.showing == page { store.showing = nil }
         }
         .onChange(of: store.lateOutcomes) { _, _ in takeLateOutcome() }
+        .lettingGo(of: $outcomes, saying: said, writing: drafted)
     }
 
     @ViewBuilder
@@ -128,8 +135,13 @@ struct PrView: View {
             // A bar, as the list's start bar is, with a hard edge: the page goes under it
             // rather than reading through the box's glass.
             .scrollEdgeEffectStyle(.hard, for: .bottom)
+            .onScrollPhaseChange { _, phase in
+                if phase == .interacting { outcomes.letGo() }
+            }
             .safeAreaBar(edge: .bottom) {
                 VStack(spacing: 8) {
+                    OutcomeLines(outcomes: $outcomes)
+                        .padding(.horizontal)
                     // Not while you write your review: the box needs the room, and what's next waits.
                     if let onward, !drafted {
                         GoOnBar(next: onward, left: after.count, going: going(.later), offers: ReviewSwipeOn.offers(pr: pr, acted: acted), pickTime: pickSnooze) { goOn(to: onward, doing: $0 ?? .later) }
@@ -138,6 +150,7 @@ struct PrView: View {
                     }
                     ReviewBoxView(pr: pr, draft: detail?.draft, reviews: detail?.reviews ?? [], read: detail != nil, whyNot: whyNot ?? (pr.slug.isEmpty ? "Its Mac can't review this PR: its repo has no GitHub name there." : nil), said: said) { words in
                         said = words
+                        actedSaid = words
                         // A review submitted is the one asked of you, whatever its verdict.
                         acted = true
                         store.dealtWith(page)
@@ -148,6 +161,7 @@ struct PrView: View {
             .sheet(isPresented: $merging) {
                 MergeSheet(pr: pr) { words in
                     said = words
+                    actedSaid = words
                     acted = true
                     Task { await load() }
                 }
@@ -253,7 +267,7 @@ struct PrView: View {
             goOn(to: onward, speed: speed)
         } else if let target = before {
             // Back is a step by hand: nothing is done to this one for it.
-            store.outcome = acted ? said : nil
+            store.outcome = saidOn
             slide(to: target.key, back: true, speed: speed) { store.back(to: target.key) }
         }
     }
@@ -290,16 +304,16 @@ struct PrView: View {
     private func snooze(until: Date, goingOn next: Onward, speed: CGFloat = 0) {
         guard swipe.to == nil, let pr else { return }
         store.snoozeLater(pr, until: until)
-        moveOn(to: next, outcome: "Snoozed your review of #\(pr.number) until \(Snooze.words(until)).", speed: speed)
+        moveOn(to: next, outcome: Outcome(.snoozed, "Snoozed your review of #\(pr.number) until \(Snooze.words(until))."), speed: speed)
     }
 
     /// Shows `next` in this one's place, saying there how this one went once you've acted here.
     /// Left without a review while it waits on one, this one comes round again after the rest.
-    private func moveOn(to next: Onward, outcome: String? = nil, speed: CGFloat = 0) {
+    private func moveOn(to next: Onward, outcome: Outcome? = nil, speed: CGFloat = 0) {
         guard swipe.to == nil else { return }
         if next.key != page { store.trail.append(page) }
         if next == .end { store.goingToEnd(from: page) }
-        store.outcome = outcome ?? (acted ? said : nil)
+        store.outcome = outcome ?? saidOn
         slide(to: next.key, back: false, speed: speed)
     }
 
@@ -307,7 +321,7 @@ struct PrView: View {
     /// place, starting as it was drawn sliding in.
     private func slide(to target: String, back: Bool, speed: CGFloat = 0, then: @escaping () -> Void = {}) {
         if !target.hasPrefix(Self.prefix) {
-            store.slidIn = (target, Opening(kept: swipe.kept[target] ?? Kept(), said: store.outcome))
+            store.slidIn = (target, Opening(kept: swipe.kept[target] ?? Kept(), outcome: store.outcome))
         }
         swipe.slide(to: target, back: back, speed: speed, reduceMotion: reduceMotion, go: go, then: then)
     }
@@ -316,8 +330,15 @@ struct PrView: View {
     /// this page is sliding away: the one sliding in says it.
     private func takeLateOutcome() {
         guard !store.lateOutcomes.isEmpty, store.showing == page, swipe.to == nil else { return }
-        said = store.lateOutcomes.joined(separator: "\n")
+        outcomes = store.lateOutcomes
         store.lateOutcomes = []
+    }
+
+    /// What this one says, for the next to say once you've reviewed or merged it here: what that
+    /// said, for a moment, or what was said after, until something else is.
+    private var saidOn: Outcome? {
+        guard acted, let said else { return nil }
+        return said == actedSaid ? Outcome(.sent, said) : Outcome(.note, said, fades: false)
     }
 }
 
@@ -363,7 +384,7 @@ private struct PrContent: View {
 struct PrGlance: View {
     let key: String
     /// How the page gone on from went, as this one will say it.
-    let said: String?
+    let outcome: Outcome?
     /// The page a swipe goes on from to this one, and whether that leaves what waits on you: nil
     /// going back to one.
     var from: (key: String, leaves: Bool)?
@@ -384,6 +405,8 @@ struct PrGlance: View {
             .clipped()
             .safeAreaInset(edge: .bottom) {
                 VStack(spacing: 8) {
+                    OutcomeLines(outcomes: .constant(outcome.map { [$0] } ?? []), fading: false)
+                        .padding(.horizontal)
                     let after = waitingAfter(PrView.prefix + key, from: from, store: store, project: project)
                     // As its page will have it: gone on to, it's part of what you're going through.
                     let onward = Onward.of(after, goingThrough: from != nil || store.goingThrough(PrView.prefix + key, project: project))
@@ -391,7 +414,7 @@ struct PrGlance: View {
                         GoOnBar(next: next, left: after.count, going: Going.of(.later, pr: pr, acted: false), offers: ReviewSwipeOn.offers(pr: pr, acted: false)) { _ in }
                             .padding(.horizontal)
                     }
-                    ReviewBoxView(pr: pr, draft: detail?.draft, reviews: detail?.reviews ?? [], read: detail != nil, whyNot: whyNot, said: said) { _ in }
+                    ReviewBoxView(pr: pr, draft: detail?.draft, reviews: detail?.reviews ?? [], read: detail != nil, whyNot: whyNot, said: nil) { _ in }
                 }
             }
             .allowsHitTesting(false)
