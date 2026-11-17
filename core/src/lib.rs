@@ -319,8 +319,9 @@ pub struct SessionRow {
 /// schedules/orchestrate.rs). Looking now, starting it afresh and turning it off are its Mac's.
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
 pub struct OrchestratorOf {
-    /// The project it keeps watch over, by its name on its Mac; none for All projects: every
-    /// project without an orchestrator of its own, and the sessions in none.
+    /// The project it keeps watch over, as the list lines projects up across Macs (`Projects`,
+    /// so a project its Mac names otherwise than another is the one its pill says); none for All
+    /// projects: every project without an orchestrator of its own, and the sessions in none.
     pub project: Option<String>,
     /// What it keeps watch over, said where a session's worktree would be, since it keeps watch
     /// from a chat of its own: "Keeps watch over Northwind", "Keeps watch over All projects", or
@@ -333,8 +334,10 @@ pub struct OrchestratorOf {
 /// All projects, as the Mac's project switcher and its orchestrators say it (orchestrate.rs `ALL`).
 pub(crate) const ALL_PROJECTS: &str = "All projects";
 
-pub(crate) fn orchestrator_of(o: &codealong_peer::model::Orchestrator) -> OrchestratorOf {
-    let project = o.project.clone().filter(|p| !p.trim().is_empty());
+/// An orchestrator as the list shows it, `here` naming its Mac's project as the list does
+/// (`Projects::orchestrated`).
+pub(crate) fn orchestrator_of(o: &codealong_peer::model::Orchestrator, here: impl Fn(&str) -> String) -> OrchestratorOf {
+    let project = o.project.as_deref().map(str::trim).filter(|p| !p.is_empty()).map(here);
     let over = project.clone().unwrap_or_else(|| ALL_PROJECTS.to_string());
     let words = if o.paused { format!("Paused: keeps watch over nothing in {over}") } else { format!("Keeps watch over {over}") };
     OrchestratorOf { project, words, paused: o.paused }
@@ -1435,7 +1438,7 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 background: background_commands(s),
                 input_asked: input_note(s),
                 helper_waits: start_note(s),
-                orchestrator: s.orchestrator.as_ref().map(orchestrator_of),
+                orchestrator: s.orchestrator.as_ref().map(|o| orchestrator_of(o, |p| projects.orchestrated(&replica.lanes, p))),
             };
             if listed { sessions.push(row) } else { unlisted.push(row) }
         }
@@ -1599,6 +1602,14 @@ impl Projects {
 
     fn lane(&self, lane: &Lane) -> Option<String> {
         self.of(&lane.project, &slugs(lane))
+    }
+
+    /// The project an orchestrator on a Mac whose worktrees are `lanes` keeps watch over, by
+    /// that Mac's name for it (`project`), as the list has it: where that Mac's worktrees in it
+    /// go here, since what each Mac calls a project is its own; failing that, a project of the
+    /// same name; failing that, its own name.
+    fn orchestrated(&self, lanes: &[Lane], project: &str) -> String {
+        lanes.iter().filter(|l| l.project.eq_ignore_ascii_case(project)).find_map(|l| self.lane(l)).or_else(|| self.of(project, &[])).unwrap_or_else(|| project.to_string())
     }
 }
 
@@ -4302,6 +4313,19 @@ mod project_tests {
         // In no project on any Mac.
         assert_eq!(p.of("Elsewhere", &slugs(&["someone/scratch"])), None);
         assert_eq!(p.of("Elsewhere", &[]), None);
+
+        // An orchestrator for a Mac's "App" keeps watch over what the list calls Work, where the
+        // first Mac has its repo; one for a project of no worktree there goes by its name.
+        let app = codealong_peer::model::Lane { repo_slug: Some("acme/app".into()), ..codealong_peer::model::Lane::new("/src/app", "App", "app") };
+        let lanes = [app];
+        assert_eq!(p.orchestrated(&lanes, "app"), "Work");
+        assert_eq!(p.orchestrated(&lanes, "garden"), "Garden");
+        assert_eq!(p.orchestrated(&lanes, "Kestrel"), "Kestrel");
+        use codealong_peer::model::Orchestrator;
+        let o = Orchestrator { schedule: "s-1".into(), project: Some("App".into()), paused: false };
+        let shown = orchestrator_of(&o, |n| p.orchestrated(&lanes, n));
+        assert_eq!(shown.project.as_deref(), Some("Work"));
+        assert_eq!(shown.words, "Keeps watch over Work");
     }
 
     #[test]

@@ -625,7 +625,7 @@ mod tests {
     #[test]
     fn an_orchestrator_says_what_it_keeps_watch_over() {
         use codealong_peer::model::Orchestrator;
-        let of = |project: Option<&str>, paused| crate::orchestrator_of(&Orchestrator { schedule: "s-1".into(), project: project.map(str::to_string), paused });
+        let of = |project: Option<&str>, paused| crate::orchestrator_of(&Orchestrator { schedule: "s-1".into(), project: project.map(str::to_string), paused }, str::to_string);
         assert_eq!(of(Some("Northwind"), false).words, "Keeps watch over Northwind");
         assert_eq!(of(None, false).words, "Keeps watch over All projects");
         assert_eq!(of(Some(" "), false).project, None);
