@@ -95,10 +95,11 @@ extension [Outcome] {
 
 extension View {
     /// Lets go of how the page before went (`outcomes`) as the page says something itself
-    /// (`said`), which takes its place, and of the ones that fade as you start writing there.
-    func lettingGo(of outcomes: Binding<[Outcome]>, saying said: String?, writing: Bool) -> some View {
+    /// (`said`), which takes its place, and of the ones that fade as you write there (`draft`),
+    /// in a draft kept from before too.
+    func lettingGo(of outcomes: Binding<[Outcome]>, saying said: String?, writing draft: String) -> some View {
         onChange(of: said) { _, now in if now != nil { outcomes.wrappedValue = [] } }
-            .onChange(of: writing) { _, now in if now { outcomes.wrappedValue.letGo() } }
+            .onChange(of: draft) { _, now in if !now.isEmpty { outcomes.wrappedValue.letGo() } }
     }
 }
 

@@ -118,7 +118,7 @@ struct PrView: View {
             if store.showing == page { store.showing = nil }
         }
         .onChange(of: store.lateOutcomes) { _, _ in takeLateOutcome() }
-        .lettingGo(of: $outcomes, saying: said, writing: drafted)
+        .lettingGo(of: $outcomes, saying: said, writing: store.drafts[page] ?? "")
     }
 
     @ViewBuilder
@@ -159,9 +159,11 @@ struct PrView: View {
                 }
             }
             .sheet(isPresented: $merging) {
-                MergeSheet(pr: pr) { words in
+                MergeSheet(pr: pr) { words, noted in
                     said = words
-                    actedSaid = words
+                    // What it couldn't do after (a branch that stayed) goes on to the next as
+                    // staying, as what's said after does.
+                    actedSaid = noted ? nil : words
                     acted = true
                     Task { await load() }
                 }
@@ -1249,7 +1251,8 @@ private struct ReviewBoxView: View {
 /// the branch's deletion. The core has the rules (merge.rs, the Mac's merge.ts).
 private struct MergeSheet: View {
     let pr: PrRow
-    let done: (String) -> Void
+    /// What it did, and whether that says something it couldn't do after.
+    let done: (String, Bool) -> Void
     @Environment(Store.self) private var store
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
@@ -1460,7 +1463,7 @@ private struct MergeSheet: View {
         do {
             let result = try await store.prMerge(pr, id: box.id, act: act)
             let said = mergeDoneWords(act: act, number: pr.number, branch: box.branch)
-            done(result.note.map { "\(said) \($0)" } ?? said)
+            done(result.note.map { "\(said) \($0)" } ?? said, result.note != nil)
             dismiss()
         } catch {
             // Say what went wrong, over where it stands now.

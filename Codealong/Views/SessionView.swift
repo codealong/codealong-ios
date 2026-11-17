@@ -346,7 +346,7 @@ struct SessionView: View {
         .onChange(of: store.sendProblems[key]) { _, _ in sayProblem() }
         // How what a swipe did to the session gone on from went, once its Mac says.
         .onChange(of: store.lateOutcomes) { _, _ in takeLateOutcome() }
-        .lettingGo(of: $outcomes, saying: said, writing: !draft.isEmpty)
+        .lettingGo(of: $outcomes, saying: said, writing: draft)
     }
 
     /// The conversation, with the reply box over its foot.
