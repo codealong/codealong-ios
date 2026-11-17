@@ -107,12 +107,12 @@ struct StartBar: View {
         .sheet(isPresented: $pickingRepo) {
             NavigationStack {
                 RepoPicker(
-                    repos: composer.device.map { store.startRepos($0, project: "") } ?? [],
+                    repos: composer.device.map { store.startRepos($0, project: "", isolatesIn: composer.isolatesIn) } ?? [],
                     worktrees: composer.device.map { store.worktrees($0) } ?? [],
                     chosen: worktree,
                     first: project.isEmpty ? nil : project,
                     newWorktree: composer.takesNewWorktree && composer.newWorktree,
-                    pickRepo: { composer.pick($0, store: store) },
+                    pickRepo: { composer.pick($0) },
                     pickWorktree: { composer.pick($0) }
                 )
             }
@@ -244,12 +244,12 @@ struct StartBar: View {
 
     private var worktreeName: String {
         guard let w = worktree else { return composer.device == nil ? "No Mac" : "No worktree" }
-        return w.chat ? "No project" : w.main ? "\(w.name) (main)" : w.name
+        return w.chat ? "General chat" : w.main ? "\(w.name) (main)" : w.name
     }
 
     private var repoName: String {
         guard let w = worktree else { return composer.device == nil ? "No Mac" : "No repo" }
-        return w.chat ? "No project" : w.repo
+        return w.chat ? "General chat" : w.repo
     }
 
     /// A chat has no repo to make a worktree of.

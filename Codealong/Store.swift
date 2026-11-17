@@ -755,17 +755,19 @@ final class Store {
         return read
     }
 
-    /// Where new work starts on `device` in `project` unless you pick a worktree (the core's rule).
-    func startWorktree(_ device: String, project: String) -> Worktree? {
+    /// Where new work starts on `device` in `project` unless you pick a worktree, at a place that
+    /// moves a session out of the main checkouts `isolatesIn` before it changes anything (the
+    /// core's rule).
+    func startWorktree(_ device: String, project: String, isolatesIn: [String]) -> Worktree? {
         _ = tick
-        return core?.startWorktree(device: device, project: project)
+        return core?.startWorktree(device: device, project: project, isolatesIn: isolatesIn)
     }
 
     /// The repos a new session can start in on `device`, in `project` (empty for any), with where
-    /// it starts in each (the core's rule).
-    func startRepos(_ device: String, project: String) -> [StartRepo] {
+    /// it starts in each at a place that isolates it in `isolatesIn` (the core's rule).
+    func startRepos(_ device: String, project: String, isolatesIn: [String]) -> [StartRepo] {
         _ = tick
-        return core?.startRepos(device: device, project: project) ?? []
+        return core?.startRepos(device: device, project: project, isolatesIn: isolatesIn) ?? []
     }
 
     /// A repo's worktrees on `device` as the worktree menu lists them (the core's rule).
@@ -774,10 +776,11 @@ final class Store {
         return core?.repoWorktrees(device: device, project: project, repo: repo)
     }
 
-    /// Where a session starts in a repo on `device` unless you pick its worktree; with
-    /// `newWorktree`, the checkout a new one is made from (the core's rule).
-    func startWorktreeIn(_ device: String, project: String, repo: String, newWorktree: Bool) -> Worktree? {
-        core?.startWorktreeIn(device: device, project: project, repo: repo, newWorktree: newWorktree)
+    /// Where a session starts in a repo on `device` unless you pick its worktree, at a place that
+    /// isolates it in `isolatesIn`; with `newWorktree`, the checkout a new one is made from (the
+    /// core's rule).
+    func startWorktreeIn(_ device: String, project: String, repo: String, newWorktree: Bool, isolatesIn: [String] = []) -> Worktree? {
+        core?.startWorktreeIn(device: device, project: project, repo: repo, newWorktree: newWorktree, isolatesIn: isolatesIn)
     }
 
     func startSession(device: String, worktree: String, account: String, place: String, prompt: String, model: String?, effort: String?, newWorktree: Bool) async throws -> StartedSession {
@@ -895,10 +898,11 @@ final class Store {
         refresh()
     }
 
-    /// The PRs page's groups (the core's rules). Reads `tick`, as `quick` does.
-    func prList(project: String) -> [PrSection] {
+    /// The PRs page's groups under `tab`, with how many are your move under each tab (the core's
+    /// rules). Reads `tick`, as `quick` does.
+    func prList(project: String, tab: PrTab) -> PrPage {
         _ = tick
-        return core?.prList(project: project) ?? []
+        return core?.prList(project: project, tab: tab) ?? PrPage(sections: [], moves: PrMoves(all: 0, mine: 0, others: 0))
     }
 
     /// The list's sessions by project and worktree. Reads `tick`.
@@ -919,6 +923,13 @@ final class Store {
     func listening(project: String) -> [SessionRow] {
         _ = tick
         return core?.listening(project: project) ?? []
+    }
+
+    /// The orchestrators' sessions for `project` (empty for all), which lead By project and Recent
+    /// above everything.
+    func orchestrators(project: String) -> [SessionRow] {
+        _ = tick
+        return core?.orchestrators(project: project) ?? []
     }
 
     /// The list's sessions, the last active first. Reads `tick`.

@@ -46,7 +46,10 @@ nothing is waiting), then the rest from the last day. Typing in the box finds se
 was said in them too, and PRs; *Archived* on the sessions' heading lists archived ones as well,
 after the others that match as closely, and stays on until you turn it off. The menu at the top left orders the sessions *By project* instead,
 worktree by worktree (tap a worktree to fold it away, or its ✎ to start a session in it), or
-*Recent*, the last active first. The pills under the box narrow the list to one project; a
+*Recent*, the last active first. Both lead with your orchestrators' sessions (*Orchestrator*), as
+the Mac's Sessions does: the one that keeps watch over the project picked, or under All every one,
+each saying what it keeps watch over where another session says its worktree, and never among the
+sessions it watches. The pills under the box narrow the list to one project; a
 project that lives on two Macs is one project here. Each session has the emblem its Mac gave it
 beside its title, an emoji or a small drawn picture for what it works on, so you know it at a
 glance as you do there. While the app is open, a short sound says when a session on any of your Macs starts
@@ -140,8 +143,13 @@ turn ended (*Review requested*), longest waiting first, and the *Sessions* menu 
 them. A session whose worktree has a PR ends the line that says where it is with its number, its
 icon and a mark for where it stands (checks passed or failing, approved, your move), and so does
 the line under its title, a tap on which opens the PR. The menu's *PRs* page lists every PR your
-Macs know: pinned ones, the reviews asked of you, yours, the other open ones, snoozed reviews, and
-the last week's merged and closed ones folded away. Yours are the ones opened by the GitHub account
+Macs know, under tabs for all of them, yours and others', each counting the PRs in it that are
+your move, as the Mac's PRs view does: pinned ones first, then what needs you by what it needs
+(*Review requested*, your own *Ready to merge* and *Needs work*: failing checks, changes asked for,
+conflicts or a branch behind), then the reviews Codealong's agent is still on (*Agent reviewing*),
+then the rest under the tab's own headings (yours and others' under All, *Waiting on others* and
+*Drafts* under Yours, *Not asking you* under Others), snoozed reviews, and the last week's merged
+and closed ones folded away. Yours are the ones opened by the GitHub account
 most of your Macs are signed in as; when one is signed in as another (a bot your agents open PRs
 as, or a work account), the menu's *Your GitHub accounts* picks which count as you. Open one to see where it stands (checks, whether it can merge, its size, who asked you, its labels, an approval of earlier commits, whose move it is where its review state doesn't say, as the Mac's *Author replied* or *Re-review asked* does, and Codealong's own review of it), the
 sessions that worked on it on every Mac (tap one to open it), the one its Mac tells of what happens on it first, tagged Primary, your draft review of it if you began one, its description, reviews, comments and changed files with
@@ -155,8 +163,11 @@ that Mac; reading and snoozing a review don't.
 **Start new work.** Type a prompt in the same box and start it with the capsule at the bottom,
 which says where it starts: its menu picks the Mac, the repo (a sheet of the Mac's repos under
 their projects, each saying where a session would start in it) and the worktree in it (*New
-worktree* first, then the ones ready for new work), or a chat in no project, and the account,
-model, effort and place. The + beside the box attaches
+worktree* first, then the ones ready for new work), or *General chat*, in a folder of its own and
+no repo, and the account, model, effort and place. A repo picked starts where new work goes in it,
+which follows the place picked: where the account's place moves a session out of the main checkout
+into a worktree of its own before it changes anything (a Claude Code background job, from Macs
+since 0.24), it starts in the main checkout whatever work is under way there. The + beside the box attaches
 photos, and an image pasted into it attaches too; they go with the prompt as they go with a reply. As you type, it finds sessions by what was said in them, and the Mac you pick suggests
 where the prompt belongs when it has Jev's suggestions on, over the capsule so the keyboard never
 covers them (send it to a session, open one, or start it in another worktree), and says when a

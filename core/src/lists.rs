@@ -1,5 +1,6 @@
-//! The list's other pages and orders. The PRs page lists every PR the Macs know in groups, as the
-//! Mac's PRs view leads with its pins and the reviews asked of you. Sessions by project go
+//! The list's other pages and orders. The PRs page lists every PR the Macs know in groups, under
+//! tabs for all of them, yours and others', as the Mac's PRs view leads with its pins and then what
+//! needs you, by what it needs. Sessions by project go
 //! worktree by worktree, as Codex's phone app groups its chats by folder, so a new session can
 //! start in one. Recent is every session in the list, the last active first.
 
@@ -12,20 +13,65 @@ use crate::{all_rows, all_worktrees, in_inbox, inbox_order, now_ms, project_list
 /// Merged and closed PRs stay on the page this long after their last change.
 const DONE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
+/// The PRs page's groups, as the Mac's PRs view heads them (PrsView.tsx `prSections`): the pinned
+/// ones; then what needs you, under what it needs; then what Codealong's agent is still reviewing
+/// for you; then the rest under headings of the tab's own (`PrTab`); then the ones you snoozed,
+/// and the merged and closed ones last.
 #[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PrGroup {
-    /// Pinned on their Mac, whatever their state.
+    /// Pinned on their Macs, whatever their state, in every tab.
     Pinned,
-    /// Waiting on your review, the longest wait first.
-    Reviews,
-    /// Open PRs you opened.
+    /// Waiting on your review: asked of you, open, not snoozed, and Codealong's agent isn't still
+    /// reviewing it. The longest wait first.
+    Requested,
+    /// Yours, and GitHub would merge it now (`pr_ready`).
+    Ready,
+    /// Yours, and needing work: failing checks, changes asked for (unless their reviewer was asked
+    /// to look again since), conflicts or a branch behind its base.
+    Work,
+    /// Asked of you, but Codealong's agent's review of it comes first: it waits on you once
+    /// that's done.
+    Agent,
+    /// Under All: the rest of your open PRs.
     Yours,
-    /// Every other open PR.
+    /// Under All: the rest of everyone else's open PRs.
     Others,
+    /// Under Yours: your open PRs that wait on someone else.
+    Waiting,
+    /// Under Yours: your drafts.
+    Drafts,
+    /// Under Others: everyone else's open PRs that don't ask for you.
+    Unasked,
     /// Reviews you put off, the soonest back first.
     Snoozed,
     /// Merged or closed in the last week.
     Done,
+}
+
+/// Whose PRs the PRs page lists, as the Mac's PRs view's tabs (PrsView.tsx `PR_TABS`): every one,
+/// the ones you opened, or everyone else's.
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PrTab {
+    All,
+    Mine,
+    Others,
+}
+
+/// The PRs page under a tab, with how many PRs under each tab need you, as the Mac's tabs count
+/// them (`PrMoves`).
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct PrPage {
+    pub sections: Vec<PrSection>,
+    pub moves: PrMoves,
+}
+
+/// How many PRs under each tab are your move (`your_move`): a review asked of you, or one of yours
+/// to merge or to work on.
+#[derive(uniffi::Record, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PrMoves {
+    pub all: u32,
+    pub mine: u32,
+    pub others: u32,
 }
 
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
@@ -59,25 +105,101 @@ fn is_open(p: &PrRow) -> bool {
     !matches!(p.state.as_str(), "merged" | "closed")
 }
 
-/// The PRs page for `project` (empty for all), each PR in the first group it fits.
-pub(crate) fn pr_sections(prs: &[PrRow], project: &str, now: i64) -> Vec<PrSection> {
-    let mut groups: Vec<(PrGroup, Vec<&PrRow>)> = [PrGroup::Pinned, PrGroup::Reviews, PrGroup::Yours, PrGroup::Others, PrGroup::Snoozed, PrGroup::Done].into_iter().map(|g| (g, Vec::new())).collect();
+/// GitHub would merge it now: open, not a draft, no conflicts, its checks passed and none running
+/// (prStatus.ts `prReady`). Only GitHub can say so: approved with passing checks can still
+/// conflict with its base.
+fn pr_ready(p: &PrRow) -> bool {
+    is_open(p) && p.state != "draft" && p.merge == "clean" && p.failing == 0 && p.pending == 0
+}
+
+/// What a PR needs of you, if it's your move (prStatus.ts `prFlag`): your review, asked for and
+/// not put off or held for the agent's; or, for one of yours, a merge, or work.
+fn your_move(p: &PrRow) -> Option<PrGroup> {
+    if !is_open(p) {
+        return None;
+    }
+    if p.waits {
+        return Some(PrGroup::Requested);
+    }
+    if !p.mine {
+        return None;
+    }
+    if pr_ready(p) {
+        return Some(PrGroup::Ready);
+    }
+    // Changes asked for are yours to make, unless their reviewer was asked to look again since,
+    // which GitHub's request for changes doesn't say.
+    let changes = p.state == "changes" && p.turn.as_ref().is_none_or(|t| t.kind != "rereview-asked");
+    (p.failing > 0 || changes || matches!(p.merge.as_str(), "conflicts" | "behind")).then_some(PrGroup::Work)
+}
+
+/// Your review is asked for and put off until a time still to come.
+fn review_snoozed(p: &PrRow) -> bool {
+    p.review_requested && p.snoozed_until.is_some() && is_open(p)
+}
+
+/// It's listed under `tab`.
+fn in_tab(p: &PrRow, tab: PrTab) -> bool {
+    match tab {
+        PrTab::All => true,
+        PrTab::Mine => p.mine,
+        PrTab::Others => !p.mine,
+    }
+}
+
+/// How many PRs in `project` (empty for all) under each tab are your move.
+pub(crate) fn pr_moves(prs: &[PrRow], project: &str) -> PrMoves {
+    let mut out = PrMoves::default();
+    for p in prs.iter().filter(|p| (project.is_empty() || p.project == project) && your_move(p).is_some()) {
+        out.all += 1;
+        if p.mine {
+            out.mine += 1;
+        } else {
+            out.others += 1;
+        }
+    }
+    out
+}
+
+/// The PRs page for `project` (empty for all) under `tab`, each PR in the first group it fits, as
+/// the Mac's PRs view sorted by status has them (PrsView.tsx `prSections`): the pinned ones (in
+/// every tab, as they lead every tab there); Review requested, Ready to merge, Needs work; Agent
+/// reviewing; then All's Yours and Others, Yours' Waiting on others and Drafts, or Others' Not
+/// asking you, with Snoozed after them (before Not asking you, under Others); and the ones merged
+/// or closed in the last week last.
+pub(crate) fn pr_sections(prs: &[PrRow], project: &str, tab: PrTab, now: i64) -> Vec<PrSection> {
+    use PrGroup as G;
+    let order: &[PrGroup] = match tab {
+        PrTab::All => &[G::Pinned, G::Requested, G::Ready, G::Work, G::Agent, G::Yours, G::Others, G::Snoozed, G::Done],
+        PrTab::Mine => &[G::Pinned, G::Requested, G::Ready, G::Work, G::Agent, G::Waiting, G::Drafts, G::Snoozed, G::Done],
+        PrTab::Others => &[G::Pinned, G::Requested, G::Ready, G::Work, G::Agent, G::Snoozed, G::Unasked, G::Done],
+    };
+    let mut groups: Vec<(PrGroup, Vec<&PrRow>)> = order.iter().map(|g| (*g, Vec::new())).collect();
     for p in prs.iter().filter(|p| project.is_empty() || p.project == project) {
         let group = if p.pinned {
-            PrGroup::Pinned
-        } else if p.waits {
-            PrGroup::Reviews
+            G::Pinned
+        } else if !in_tab(p, tab) {
+            continue;
         } else if !is_open(p) {
             if now - p.updated_at > DONE_MS {
                 continue;
             }
-            PrGroup::Done
-        } else if p.review_requested && p.snoozed_until.is_some() {
-            PrGroup::Snoozed
-        } else if p.mine {
-            PrGroup::Yours
+            G::Done
+        } else if review_snoozed(p) {
+            G::Snoozed
+        } else if let Some(g) = your_move(p) {
+            g
+        } else if p.review_requested {
+            // Asked of you, not snoozed, and not waiting on you: Codealong's agent holds it.
+            G::Agent
         } else {
-            PrGroup::Others
+            match tab {
+                PrTab::All if p.mine => G::Yours,
+                PrTab::All => G::Others,
+                PrTab::Mine if p.state == "draft" => G::Drafts,
+                PrTab::Mine => G::Waiting,
+                PrTab::Others => G::Unasked,
+            }
         };
         if let Some((_, rows)) = groups.iter_mut().find(|(g, _)| *g == group) {
             rows.push(p);
@@ -88,7 +210,7 @@ pub(crate) fn pr_sections(prs: &[PrRow], project: &str, now: i64) -> Vec<PrSecti
         .filter(|(_, rows)| !rows.is_empty())
         .map(|(group, mut rows)| {
             match group {
-                PrGroup::Reviews => rows.sort_by(|a, b| by_wait(a, b)),
+                PrGroup::Requested => rows.sort_by(|a, b| by_wait(a, b)),
                 PrGroup::Snoozed => rows.sort_by_key(|p| (p.snoozed_until, p.key.clone())),
                 _ => rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| a.key.cmp(&b.key))),
             }
@@ -113,7 +235,7 @@ pub(crate) fn waiting_reviews(prs: &[PrRow]) -> Vec<PrRow> {
 /// The projects of the PRs the PRs page lists, for its pills: a project with only PRs in it,
 /// none waiting on you, is on that page though the Sessions page has no pill for it.
 pub(crate) fn pr_projects(prs: &[PrRow], now: i64) -> Vec<String> {
-    let page = pr_sections(prs, "", now);
+    let page = pr_sections(prs, "", PrTab::All, now);
     project_list(page.iter().flat_map(|s| s.rows.iter()).map(|p| p.project.as_str()).filter(|p| !p.is_empty()))
 }
 
@@ -145,9 +267,25 @@ pub(crate) fn listening_of<'a>(rows: &[&'a SessionRow]) -> Vec<&'a SessionRow> {
     out
 }
 
-/// It leads the list apart from the rest: hearing a meeting (`listening_of`) or pinned (`pinned_of`).
+/// It leads the list apart from the rest: an orchestrator's (`orchestrator_sessions`), hearing a
+/// meeting (`listening_of`) or pinned (`pinned_of`).
 pub(crate) fn leads(r: &SessionRow) -> bool {
-    r.listening || r.pinned.is_some()
+    r.orchestrator.is_some() || r.listening || r.pinned.is_some()
+}
+
+/// The orchestrators' sessions By project and Recent lead with in `project` (empty for all),
+/// above everything, as the Mac's Sessions view leads with them under Orchestrator
+/// (orchestrators.ts `orchestratorsIn`): under a project, its orchestrator's, its name in any
+/// case; under all, every one, All projects' first, then by project. From any worktree, however
+/// long since it was prompted, since an orchestrator's session lives among Codealong's chats, in
+/// no project, and keeps watch for as long as it's on. Never among the rest, the pinned or the
+/// ones hearing a meeting.
+pub(crate) fn orchestrator_sessions(rows: &[SessionRow], project: &str) -> Vec<SessionRow> {
+    let scope = |r: &SessionRow| r.orchestrator.as_ref().map(|o| o.project.clone().unwrap_or_default());
+    let mut out: Vec<SessionRow> = rows.iter().filter(|r| !r.archived && scope(r).is_some_and(|p| project.is_empty() || p.eq_ignore_ascii_case(project))).cloned().collect();
+    let by = |r: &SessionRow| scope(r).map(|p| p.to_lowercase());
+    out.sort_by(|a, b| by(a).cmp(&by(b)).then_with(|| a.device_name.cmp(&b.device_name)).then_with(|| a.key.cmp(&b.key)));
+    out
 }
 
 /// The pinned ones among `rows`, in their Macs' order: by place, two Macs' firsts by Mac. One
@@ -161,14 +299,14 @@ pub(crate) fn pinned_of<'a>(rows: &[&'a SessionRow]) -> Vec<&'a SessionRow> {
 /// The list's sessions in `project` (empty for all) hearing a meeting now, which lead every order
 /// above the pinned ones (`listening_of`): helpers too, as the pinned ones.
 pub(crate) fn listening_sessions(rows: &[SessionRow], project: &str, now: i64) -> Vec<SessionRow> {
-    let these: Vec<&SessionRow> = rows.iter().filter(|r| in_inbox(r, now) && (project.is_empty() || r.project == project)).collect();
+    let these: Vec<&SessionRow> = rows.iter().filter(|r| in_inbox(r, now) && r.orchestrator.is_none() && (project.is_empty() || r.project == project)).collect();
     listening_of(&these).into_iter().cloned().collect()
 }
 
 /// The list's pinned sessions in `project` (empty for all), which lead every order: helpers too,
 /// whom the rest of the list leaves out, since a pin is yours to make.
 pub(crate) fn pinned_sessions(rows: &[SessionRow], project: &str, now: i64) -> Vec<SessionRow> {
-    let these: Vec<&SessionRow> = rows.iter().filter(|r| in_inbox(r, now) && (project.is_empty() || r.project == project)).collect();
+    let these: Vec<&SessionRow> = rows.iter().filter(|r| in_inbox(r, now) && r.orchestrator.is_none() && (project.is_empty() || r.project == project)).collect();
     pinned_of(&these).into_iter().cloned().collect()
 }
 
@@ -218,9 +356,13 @@ fn shorts<'a>(feeds: &'a Feeds) -> HashMap<&'a str, &'a str> {
 
 #[uniffi::export]
 impl Core {
-    /// The PRs page for `project` (empty for all).
-    pub fn pr_list(&self, project: String) -> Vec<PrSection> {
-        self.client.with_feeds(|feeds| pr_sections(&crate::quick::all_prs(feeds, &self.you(feeds)), &project, now_ms()))
+    /// The PRs page for `project` (empty for all) under `tab`, with how many are your move under
+    /// each tab.
+    pub fn pr_list(&self, project: String, tab: PrTab) -> PrPage {
+        self.client.with_feeds(|feeds| {
+            let prs = crate::quick::all_prs(feeds, &self.you(feeds));
+            PrPage { sections: pr_sections(&prs, &project, tab, now_ms()), moves: pr_moves(&prs, &project) }
+        })
     }
 
     /// The PRs waiting on your review in every project, pinned or not, the longest wait first: as
@@ -253,6 +395,12 @@ impl Core {
     /// and Recent above the pinned ones, as `quick` puts them first.
     pub fn listening(&self, project: String) -> Vec<SessionRow> {
         self.client.with_feeds(|feeds| listening_sessions(&all_rows(feeds), &project, now_ms()))
+    }
+
+    /// The orchestrators' sessions for `project` (empty for all), which lead By project and Recent
+    /// above everything (`orchestrator_sessions`).
+    pub fn orchestrators(&self, project: String) -> Vec<SessionRow> {
+        self.client.with_feeds(|feeds| orchestrator_sessions(&all_rows(feeds), &project))
     }
 }
 
@@ -325,16 +473,77 @@ mod tests {
         mine_merged.mine = true;
         let all = [theirs, merged, mine, long_closed, asked_lately, snoozed, pinned, asked_long_ago, mine_merged];
         assert_eq!(
-            groups(&pr_sections(&all, "", NOW)),
-            vec![(PrGroup::Pinned, vec![1]), (PrGroup::Reviews, vec![2, 3]), (PrGroup::Yours, vec![4]), (PrGroup::Others, vec![5]), (PrGroup::Snoozed, vec![6]), (PrGroup::Done, vec![9, 7])]
+            groups(&pr_sections(&all, "", PrTab::All, NOW)),
+            vec![(PrGroup::Pinned, vec![1]), (PrGroup::Requested, vec![2, 3]), (PrGroup::Ready, vec![4]), (PrGroup::Others, vec![5]), (PrGroup::Snoozed, vec![6]), (PrGroup::Done, vec![9, 7])]
         );
+    }
+
+    #[test]
+    fn what_needs_you_leads_each_tab_by_what_it_needs() {
+        use PrGroup as G;
+        let open = |number: u64, mine: bool| {
+            let mut p = pr(number, "open", NOW - number as i64 * HOUR);
+            p.mine = mine;
+            p.merge = "blocked".into();
+            p
+        };
+        let mut asked = open(1, false);
+        (asked.waits, asked.review_requested) = (true, true);
+        // Asked of you, but Codealong's agent holds it until its review is done.
+        let mut held = open(2, false);
+        held.review_requested = true;
+        let mut ready = open(3, true);
+        (ready.state, ready.merge) = ("approved".into(), "clean".into());
+        // Clean but its checks still run: not ready, nor anything to do.
+        let mut running = open(4, true);
+        (running.merge, running.pending) = ("clean".into(), 2);
+        let mut failing = open(5, true);
+        failing.failing = 1;
+        let mut changes = open(6, true);
+        changes.state = "changes".into();
+        // Changes asked for, but their reviewer was asked to look again since: theirs to do.
+        let mut rereview = open(7, true);
+        rereview.state = "changes".into();
+        rereview.turn = Some(crate::quick::PrTurn { kind: "rereview-asked".into(), words: String::new(), yours: false, says: String::new() });
+        let mut behind = open(8, true);
+        behind.merge = "behind".into();
+        let mut draft = open(9, true);
+        draft.state = "draft".into();
+        // Someone else's failing PR isn't yours to fix.
+        let mut theirs_failing = open(10, false);
+        theirs_failing.failing = 3;
+        let mut snoozed = open(11, false);
+        (snoozed.review_requested, snoozed.snoozed_until) = (true, Some(NOW + HOUR));
+        let mut merged = pr(12, "merged", NOW - HOUR);
+        merged.mine = true;
+        let all = [asked, held, ready, running, failing, changes, rereview, behind, draft, theirs_failing, snoozed, merged];
+        assert_eq!(
+            groups(&pr_sections(&all, "", PrTab::All, NOW)),
+            vec![(G::Requested, vec![1]), (G::Ready, vec![3]), (G::Work, vec![5, 6, 8]), (G::Agent, vec![2]), (G::Yours, vec![4, 7, 9]), (G::Others, vec![10]), (G::Snoozed, vec![11]), (G::Done, vec![12])]
+        );
+        assert_eq!(groups(&pr_sections(&all, "", PrTab::Mine, NOW)), vec![(G::Ready, vec![3]), (G::Work, vec![5, 6, 8]), (G::Waiting, vec![4, 7]), (G::Drafts, vec![9]), (G::Done, vec![12])]);
+        assert_eq!(groups(&pr_sections(&all, "", PrTab::Others, NOW)), vec![(G::Requested, vec![1]), (G::Agent, vec![2]), (G::Snoozed, vec![11]), (G::Unasked, vec![10])]);
+        assert_eq!(pr_moves(&all, ""), PrMoves { all: 5, mine: 4, others: 1 });
+        assert_eq!(pr_moves(&all, "Other"), PrMoves::default());
+    }
+
+    #[test]
+    fn pinned_prs_lead_every_tab() {
+        let mut theirs = pr(1, "open", NOW);
+        theirs.pinned = true;
+        let mut mine = pr(2, "open", NOW);
+        (mine.pinned, mine.mine) = (true, true);
+        let rows = [theirs, mine];
+        for tab in [PrTab::All, PrTab::Mine, PrTab::Others] {
+            assert_eq!(groups(&pr_sections(&rows, "", tab, NOW)), vec![(PrGroup::Pinned, vec![1, 2])]);
+        }
     }
 
     #[test]
     fn the_prs_page_narrows_to_a_project() {
         let mut other = pr(2, "open", NOW);
         other.project = "Other".into();
-        assert_eq!(groups(&pr_sections(&[pr(1, "open", NOW), other], "App", NOW)), vec![(PrGroup::Others, vec![1])]);
+        assert_eq!(groups(&pr_sections(&[pr(1, "open", NOW), other], "App", PrTab::All, NOW)), vec![(PrGroup::Others, vec![1])]);
     }
 
     #[test]
@@ -381,6 +590,47 @@ mod tests {
         assert_eq!(keys(recent_sessions(&rows, "", NOW)), vec!["d"]);
         let by = project_groups(&rows, &HashMap::new(), &HashMap::new(), "", NOW);
         assert_eq!(by.iter().flat_map(|p| p.worktrees.iter().flat_map(|w| w.sessions.iter().map(|s| s.key.clone()))).collect::<Vec<_>>(), vec!["d"]);
+    }
+
+    #[test]
+    fn orchestrators_lead_what_they_keep_watch_over_and_go_among_nothing() {
+        let watching = |key: &str, project: Option<&str>| {
+            let mut s = in_worktree(key, crate::ELSEWHERE, "chats", Status::Idle, NOW - HOUR);
+            s.orchestrator = Some(crate::OrchestratorOf { project: project.map(str::to_string), words: String::new(), paused: false });
+            s
+        };
+        let all = watching("all", None);
+        // Not prompted for a week, and pinned too: it still leads, and only there.
+        let mut app = watching("app", Some("app"));
+        (app.last_prompt_at, app.last_activity, app.pinned) = (NOW - 7 * 24 * HOUR, NOW - 7 * 24 * HOUR, Some(0));
+        let site = watching("site", Some("Site"));
+        let mut gone = watching("gone", Some("App"));
+        gone.archived = true;
+        let plain = in_worktree("d", "App", "app-1", Status::Idle, NOW - 3 * HOUR);
+        let chat = in_worktree("c", crate::ELSEWHERE, "chats", Status::Idle, NOW - 2 * HOUR);
+        let rows = [plain, site, app, chat, gone, all];
+        let keys = |rows: Vec<SessionRow>| rows.into_iter().map(|r| r.key).collect::<Vec<_>>();
+        // Under all, every one, All projects' first, then by project; under a project, its own,
+        // its name in any case.
+        assert_eq!(keys(orchestrator_sessions(&rows, "")), vec!["all", "app", "site"]);
+        assert_eq!(keys(orchestrator_sessions(&rows, "App")), vec!["app"]);
+        assert_eq!(keys(orchestrator_sessions(&rows, crate::ELSEWHERE)), Vec::<String>::new());
+        // Never among the rest, the pinned or the chats they're kept in.
+        assert_eq!(keys(pinned_sessions(&rows, "", NOW)), Vec::<String>::new());
+        assert_eq!(keys(recent_sessions(&rows, "", NOW)), vec!["c", "d"]);
+        let by = project_groups(&rows, &HashMap::new(), &HashMap::new(), "", NOW);
+        assert_eq!(by.iter().flat_map(|p| p.worktrees.iter().flat_map(|w| w.sessions.iter().map(|s| s.key.clone()))).collect::<Vec<_>>(), vec!["c", "d"]);
+    }
+
+    #[test]
+    fn an_orchestrator_says_what_it_keeps_watch_over() {
+        use codealong_peer::model::Orchestrator;
+        let of = |project: Option<&str>, paused| crate::orchestrator_of(&Orchestrator { schedule: "s-1".into(), project: project.map(str::to_string), paused });
+        assert_eq!(of(Some("Northwind"), false).words, "Keeps watch over Northwind");
+        assert_eq!(of(None, false).words, "Keeps watch over All projects");
+        assert_eq!(of(Some(" "), false).project, None);
+        assert!(of(None, true).paused);
+        assert_eq!(of(None, true).words, "Paused: keeps watch over nothing in All projects");
     }
 
     #[test]

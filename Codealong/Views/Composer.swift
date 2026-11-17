@@ -8,6 +8,9 @@ struct Composer {
     var device: String?
     /// The worktree picked by hand, by id on `device`; none goes by `worktree(store:project:)`'s default.
     var worktreeID: String?
+    /// A repo picked in the repo menu, while no worktree is: where new work goes in it, which
+    /// follows the place picked before or after it (`worktree(store:project:)`).
+    var repo: (project: String, repo: String)?
     var newWorktree = false
     var choices: StartChoices?
     var choicesProblem: String?
@@ -17,6 +20,12 @@ struct Composer {
     var effort: String?
 
     var chosenAccount: StartAccount? { choices?.accounts.first { $0.name == account } }
+
+    /// The main checkouts on `device` that a session started at the place picked moves out of
+    /// into a worktree of its own before it changes anything (Claude Code's background jobs), so
+    /// it starts in one of those whatever work is under way there. None from Macs before
+    /// 2026-11-16.
+    var isolatesIn: [String] { chosenAccount?.places.first { $0.id == place }?.isolatesIn ?? [] }
 
     /// The account's command line makes a worktree of its own for a session when asked: the apps
     /// have their own choice on their new-session pages.
@@ -51,26 +60,35 @@ struct Composer {
         return chosenAccount?.efforts.first { $0.id == effort }?.label ?? effort
     }
 
-    /// The worktree to start in: the one picked, else where new work goes in the project the list
-    /// shows, as the Mac's panel picks one (the core's `start_worktree`).
+    /// The worktree to start in: the one picked; else where new work goes in the repo picked, else
+    /// in the project the list shows, as the Mac's panel picks one, at the place picked (the core's
+    /// `start_worktree_in` and `start_worktree`).
     @MainActor func worktree(store: Store, project: String) -> Worktree? {
         guard let device else { return nil }
         if let id = worktreeID, let w = store.worktrees(device).first(where: { $0.id == id }) { return w }
-        return store.startWorktree(device, project: project)
+        if let repo, let w = store.startWorktreeIn(device, project: repo.project, repo: repo.repo, newWorktree: false, isolatesIn: isolatesIn) { return w }
+        return store.startWorktree(device, project: project, isolatesIn: isolatesIn)
     }
 
-    /// A repo picked: where new work starts in it (the core's `start_worktree_in`). New worktree,
-    /// while it's on, is made from the repo's checkout for it as the session starts
-    /// (`startWorktree`).
-    @MainActor mutating func pick(_ r: StartRepo, store: Store) {
-        guard let device else { return }
-        worktreeID = (store.startWorktreeIn(device, project: r.project, repo: r.repo, newWorktree: false) ?? r.startsIn).id
+    /// A repo picked: where new work starts in it, as the place picked has it now or later (the
+    /// core's `start_worktree_in`). New worktree, while it's on, is made from the repo's checkout
+    /// for it as the session starts (`startWorktree`).
+    mutating func pick(_ r: StartRepo) {
+        worktreeID = nil
+        repo = (r.project, r.repo)
     }
 
     /// A worktree picked, in its repo's menu or by its name: a session starts just there.
     mutating func pick(_ w: Worktree) {
         newWorktree = false
-        worktreeID = w.id
+        pick(worktree: w.id)
+    }
+
+    /// A worktree to start in, by its id on `device`, whatever the place; none goes back to where
+    /// new work goes.
+    mutating func pick(worktree id: String?) {
+        worktreeID = id
+        repo = nil
     }
 
     /// Where the capsule's start goes: a new worktree is made from its repo's checkout for it,

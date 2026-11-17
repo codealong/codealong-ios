@@ -137,6 +137,13 @@ struct QuickSessionRow: View {
     private var place: String {
         var parts: [String] = []
         if showDevice { parts.append(Names.short(row.deviceName)) }
+        // An orchestrator's session keeps watch from a chat of its own, so it says what it keeps
+        // watch over where another's says its project and worktree.
+        if let o = row.orchestrator {
+            parts.append(row.account)
+            parts.append(o.words)
+            return parts.joined(separator: " · ")
+        }
         if showProject { parts.append(row.project) }
         parts.append(row.account)
         parts.append(row.worktree)
@@ -406,7 +413,7 @@ struct SuggestionRow: View {
         }
         guard let w = suggestion.worktree else { return ("plus", "Start a new session", "", "") }
         if w.chat {
-            return ("plus", "Start a chat in no project", composer.happens(in: w, newWorktree: false), "No project")
+            return ("plus", "Start a general chat", composer.happens(in: w, newWorktree: false), "General chat")
         }
         let tree = composer.takesNewWorktree && suggestion.newWorktree
         let title = tree ? "Start in a new worktree of \(w.repo)" : "Start in \(w.main ? "\(w.name) (main)" : w.name)"

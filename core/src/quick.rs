@@ -1217,6 +1217,7 @@ pub(crate) mod tests {
             background: None,
             input_asked: None,
             helper_waits: None,
+            orchestrator: None,
         }
     }
 
@@ -1947,10 +1948,10 @@ pub(crate) mod tests {
 
         // With nothing typed, a start goes to the latest repo's free worktree, else its main
         // checkout; never to a chat.
-        assert_eq!(crate::start_worktree(&all, "").unwrap().id, "/app-3");
+        assert_eq!(crate::start_worktree(&all, "", &[]).unwrap().id, "/app-3");
         let plain = [worktree("/app-old", false, None, NOW), worktree("/app", true, None, NOW - 10)];
-        assert_eq!(crate::start_worktree(&plain, "").unwrap().id, "/app");
-        assert!(crate::start_worktree(&all[4..], "").is_none());
+        assert_eq!(crate::start_worktree(&plain, "", &[]).unwrap().id, "/app");
+        assert!(crate::start_worktree(&all[4..], "", &[]).is_none());
     }
 
     #[test]
@@ -1976,9 +1977,9 @@ pub(crate) mod tests {
         let ids = |ws: &[Worktree]| ws.iter().map(|w| w.id.clone()).collect::<Vec<_>>();
 
         // Each repo once, the latest first, never the chats; each starts where new work goes.
-        let repos = crate::start_repos(&all, "");
+        let repos = crate::start_repos(&all, "", &[]);
         assert_eq!(repos.iter().map(|r| (r.repo.as_str(), r.starts_in.id.as_str())).collect::<Vec<_>>(), [("app", "/free"), ("web", "/web")]);
-        assert_eq!(crate::start_worktree(&all, "").unwrap().id, "/free");
+        assert_eq!(crate::start_worktree(&all, "", &[]).unwrap().id, "/free");
 
         // The worktree menu: where new work starts first, the ones holding other work after.
         let app = crate::repo_of(&all, "App", "app");
@@ -1991,16 +1992,28 @@ pub(crate) mod tests {
 
         // A new worktree is made from the main checkout; without one ready, a start goes to the
         // main checkout though it has work under way, never to a worktree that has.
-        assert_eq!(crate::start_worktree_in(&app, &all, true).unwrap().id, "/app");
+        assert_eq!(crate::start_worktree_in(&app, &all, true, &[]).unwrap().id, "/app");
         let none_ready: Vec<Worktree> = all.iter().filter(|w| w.id != "/free" && w.id != "/landed").cloned().collect();
-        assert_eq!(crate::start_worktree_in(&crate::repo_of(&none_ready, "App", "app"), &none_ready, false).unwrap().id, "/app");
+        assert_eq!(crate::start_worktree_in(&crate::repo_of(&none_ready, "App", "app"), &none_ready, false, &[]).unwrap().id, "/app");
         // Nor without a main checkout: the latest worktree then.
         let no_main: Vec<Worktree> = none_ready.iter().filter(|w| !w.main).cloned().collect();
-        assert_eq!(crate::start_worktree_in(&crate::repo_of(&no_main, "App", "app"), &no_main, false).unwrap().id, "/task-new");
+        assert_eq!(crate::start_worktree_in(&crate::repo_of(&no_main, "App", "app"), &no_main, false, &[]).unwrap().id, "/task-new");
         // A repo of plain folders makes no worktree.
         let mut notes = worktree("/notes", false, None, NOW);
         notes.folder = true;
         assert!(crate::repo_worktrees(&[&notes]).from.is_none());
-        assert_eq!(crate::start_worktree_in(&[&notes], std::slice::from_ref(&notes), true).unwrap().id, "/notes");
+        assert_eq!(crate::start_worktree_in(&[&notes], std::slice::from_ref(&notes), true, &[]).unwrap().id, "/notes");
+
+        // Where the place picked moves a session out of the main checkout before it changes
+        // anything (a Claude Code background job), it starts there, work under way or not.
+        let isolates = ["/app".to_string()];
+        assert_eq!(crate::start_worktree_in(&app, &all, false, &isolates).unwrap().id, "/app");
+        assert_eq!(crate::start_repos(&all, "", &isolates)[0].starts_in.id, "/app");
+        assert_eq!(crate::start_worktree(&all, "", &isolates).unwrap().id, "/app");
+        // Another repo's main checkout changes nothing here, nor does a worktree that isn't one.
+        assert_eq!(crate::start_worktree_in(&app, &all, false, &["/web".to_string()]).unwrap().id, "/free");
+        assert_eq!(crate::start_worktree_in(&app, &all, false, &["/busy".to_string()]).unwrap().id, "/free");
+        // New worktree is still made from the checkout for it.
+        assert_eq!(crate::start_worktree_in(&app, &all, true, &isolates).unwrap().id, "/app");
     }
 }

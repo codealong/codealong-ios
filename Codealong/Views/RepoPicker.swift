@@ -46,7 +46,7 @@ struct RepoPicker: View {
         return worktrees.filter { !$0.chat && has("\($0.name) \($0.branch ?? "") \($0.repo) \($0.project)") }
     }
 
-    private var chats: [Worktree] { worktrees.filter { $0.chat && has("no project chat") } }
+    private var chats: [Worktree] { worktrees.filter { $0.chat && has("general chat question no project no repo") } }
 
     var body: some View {
         List {
@@ -65,9 +65,9 @@ struct RepoPicker: View {
                 }
             }
             if !chats.isEmpty {
-                Section("No project") {
+                Section("Chats") {
                     ForEach(chats, id: \.id) { w in
-                        row("A chat of its own", "In a folder of its own, for a question that belongs to none of your projects", on: chosen?.id == w.id) { pickWorktree(w) }
+                        row("General chat", "In no repo: a folder of its own", on: chosen?.id == w.id) { pickWorktree(w) }
                     }
                 }
             }

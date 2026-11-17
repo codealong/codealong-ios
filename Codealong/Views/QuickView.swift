@@ -18,6 +18,8 @@ struct QuickView: View {
     @State private var path: [String] = []
     @AppStorage("page") private var page = Page.sessions
     @AppStorage("order") private var order = Order.needs
+    /// Whose PRs the PRs page lists, as the Mac's PRs view's tabs: every one, yours or others'.
+    @AppStorage("prs.tab") private var prTab = PrTabPick.all
     /// The project the list is narrowed to, as the Macs line projects up; empty for all of them.
     @AppStorage("project") private var project = ""
     /// Worktrees folded away in the list by project, by their ids, a line each.
@@ -74,6 +76,34 @@ struct QuickView: View {
 
     enum Page: String { case sessions, prs }
     enum Order: String { case needs, project, recent }
+    /// The PRs page's tab as it's kept (the core's `PrTab`).
+    enum PrTabPick: String, CaseIterable {
+        case all, mine, others
+
+        var tab: PrTab {
+            switch self {
+            case .all: .all
+            case .mine: .mine
+            case .others: .others
+            }
+        }
+
+        var title: String {
+            switch self {
+            case .all: "All"
+            case .mine: "Yours"
+            case .others: "Others"
+            }
+        }
+
+        func moves(_ m: PrMoves) -> UInt32 {
+            switch self {
+            case .all: m.all
+            case .mine: m.mine
+            case .others: m.others
+            }
+        }
+    }
 
     private var query: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
 
@@ -148,7 +178,7 @@ struct QuickView: View {
                 }
             }
             // A worktree picked in one project isn't where the next project's work goes.
-            .onChange(of: project) { _, _ in composer.worktreeID = nil }
+            .onChange(of: project) { _, _ in composer.pick(worktree: nil) }
             .sensoryFeedback(.selection, trigger: project)
             .sensoryFeedback(.selection, trigger: page)
             .sensoryFeedback(.selection, trigger: order)
@@ -393,7 +423,7 @@ struct QuickView: View {
     /// the work.
     private func startIn(_ worktree: Worktree) {
         composer.device = worktree.device
-        composer.worktreeID = worktree.id
+        composer.pick(worktree: worktree.id)
         typing = true
     }
 
@@ -422,13 +452,11 @@ struct QuickView: View {
             switch content {
             case let .quick(quick):
                 quickSections(quick)
-            case let .projects(listening, pinned, groups):
-                listeningSection(listening)
-                pinnedSection(pinned)
+            case let .projects(leads, groups):
+                leadSections(leads)
                 projectSections(groups)
-            case let .recent(listening, pinned, rows):
-                listeningSection(listening)
-                pinnedSection(pinned)
+            case let .recent(leads, rows):
+                leadSections(leads)
                 if !rows.isEmpty {
                     Section {
                         ForEach(rows, id: \.key) { sessionRow($0) }
@@ -436,8 +464,9 @@ struct QuickView: View {
                         GroupHeading(title: "Recent", count: rows.count)
                     }
                 }
-            case let .prs(sections):
-                prSections(sections)
+            case let .prs(page):
+                prTabsRow(page.moves)
+                prSections(page.sections)
             }
         }
         .listStyle(.plain)
@@ -451,21 +480,30 @@ struct QuickView: View {
         .animation(.snappy, value: content.ids)
     }
 
+    /// The sessions By project and Recent lead with apart from the rest: the orchestrators', then
+    /// the ones hearing a meeting, then the pinned ones.
+    private struct Leads {
+        var orchestrators: [SessionRow]
+        var listening: [SessionRow]
+        var pinned: [SessionRow]
+
+        var keys: [String] { (orchestrators + listening + pinned).map(\.key) }
+    }
+
     /// What the list shows now: the core's lists for the page, the order and what's typed.
     private enum Listed {
         case quick(QuickList)
-        /// The sessions hearing a meeting and the pinned ones, which lead apart, and the rest by
-        /// project.
-        case projects([SessionRow], [SessionRow], [ProjectGroup])
-        case recent([SessionRow], [SessionRow], [SessionRow])
-        case prs([PrSection])
+        /// The sessions that lead apart, and the rest by project.
+        case projects(Leads, [ProjectGroup])
+        case recent(Leads, [SessionRow])
+        case prs(PrPage)
 
         var ids: [String] {
             switch self {
             case let .quick(q): q.sections.flatMap { $0.rows.map(\.id) }
-            case let .projects(listening, pinned, p): listening.map(\.key) + pinned.map(\.key) + p.flatMap { $0.worktrees.flatMap { [$0.id] + $0.sessions.map(\.key) } }
-            case let .recent(listening, pinned, r): listening.map(\.key) + pinned.map(\.key) + r.map(\.key)
-            case let .prs(s): s.flatMap { $0.rows.map(\.key) }
+            case let .projects(leads, p): leads.keys + p.flatMap { $0.worktrees.flatMap { [$0.id] + $0.sessions.map(\.key) } }
+            case let .recent(leads, r): leads.keys + r.map(\.key)
+            case let .prs(p): p.sections.flatMap { $0.rows.map(\.key) }
             }
         }
 
@@ -477,11 +515,11 @@ struct QuickView: View {
         if !query.isEmpty {
             return .quick(store.quick(project: project, query: query, said: said, ranked: routedFor == query ? route?.ranked ?? [] : [], archived: withArchived))
         }
-        if page == .prs { return .prs(store.prList(project: project)) }
+        if page == .prs { return .prs(store.prList(project: project, tab: prTab.tab)) }
         switch order {
         case .needs: return .quick(store.quick(project: project, query: "", said: [], ranked: []))
-        case .project: return .projects(store.listening(project: project), store.pinned(project: project), store.byProject(project: project))
-        case .recent: return .recent(store.listening(project: project), store.pinned(project: project), store.recent(project: project))
+        case .project: return .projects(leads, store.byProject(project: project))
+        case .recent: return .recent(leads, store.recent(project: project))
         }
     }
 
@@ -612,6 +650,31 @@ struct QuickView: View {
         withAnimation(.snappy) { withArchived = on }
     }
 
+    private var leads: Leads {
+        Leads(orchestrators: store.orchestrators(project: project), listening: store.listening(project: project), pinned: store.pinned(project: project))
+    }
+
+    @ViewBuilder
+    private func leadSections(_ leads: Leads) -> some View {
+        orchestratorSection(leads.orchestrators)
+        listeningSection(leads.listening)
+        pinnedSection(leads.pinned)
+    }
+
+    /// The orchestrators' sessions, leading By project and Recent above everything, as they lead
+    /// the Mac's Sessions: each keeps watch over the sessions of a project, or of every project
+    /// without one of its own, and is never listed among them.
+    @ViewBuilder
+    private func orchestratorSection(_ rows: [SessionRow]) -> some View {
+        if !rows.isEmpty {
+            Section {
+                ForEach(rows, id: \.key) { sessionRow($0) }
+            } header: {
+                GroupHeading(title: rows.count == 1 ? "Orchestrator" : "Orchestrators", count: rows.count, symbol: "safari")
+            }
+        }
+    }
+
     /// The sessions hearing a meeting now, leading By project and Recent above the pinned ones as
     /// they lead the rest.
     @ViewBuilder
@@ -731,6 +794,23 @@ struct QuickView: View {
 
     // MARK: PRs
 
+    /// The PRs page's tabs, as the Mac's PRs view has them over its list: all the PRs, yours or
+    /// others', each counting the PRs in it that are your move.
+    private func prTabsRow(_ moves: PrMoves) -> some View {
+        Picker("Whose PRs", selection: animated($prTab)) {
+            ForEach(PrTabPick.allCases, id: \.self) { t in
+                let n = t.moves(moves)
+                Text(n > 0 ? "\(t.title) \(n)" : t.title)
+                    .accessibilityLabel(n > 0 ? "\(t.title), \(n == 1 ? "1 is" : "\(n) are") your move" : t.title)
+                    .tag(t)
+            }
+        }
+        .pickerStyle(.segmented)
+        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
+    }
+
     @ViewBuilder
     private func prSections(_ sections: [PrSection]) -> some View {
         ForEach(sections, id: \.group) { s in
@@ -760,7 +840,7 @@ struct QuickView: View {
     /// How many PRs wait on your review, for the menu.
     /// The reviews that wait on you, pinned ones too, which the list puts with the pinned.
     private var reviewCount: Int {
-        store.prList(project: project).flatMap(\.rows).filter(\.waits).count
+        store.prList(project: project, tab: .all).sections.flatMap(\.rows).filter(\.waits).count
     }
 
     // MARK: Rows
@@ -1011,7 +1091,10 @@ struct QuickView: View {
         } else if content.isEmpty, query.isEmpty {
             switch content {
             case .prs:
-                ContentUnavailableView("No PRs", systemImage: "arrow.triangle.pull", description: Text(project.isEmpty ? "Your Macs know no open PRs." : "Your Macs know no open PRs in \(project)."))
+                // Under the tabs, which stay to be picked through it.
+                let whose = prTab == .mine ? " of yours" : prTab == .others ? " of others" : ""
+                ContentUnavailableView("No PRs", systemImage: "arrow.triangle.pull", description: Text(project.isEmpty ? "Your Macs know no open PRs\(whose)." : "Your Macs know no open PRs\(whose) in \(project)."))
+                    .allowsHitTesting(false)
             case .projects, .recent:
                 ContentUnavailableView("No sessions", systemImage: "bubble.left.and.text.bubble.right", description: Text(project.isEmpty ? "No session has been active in the last three days." : "No session in \(project) has been active in the last three days."))
             case .quick:
@@ -1255,7 +1338,7 @@ struct QuickView: View {
         path = []
         showingMacs = false
         composer.device = target.device
-        composer.worktreeID = target.worktree
+        composer.pick(worktree: target.worktree)
         typing = true
     }
 
@@ -1329,9 +1412,15 @@ extension PrGroup {
     var title: String {
         switch self {
         case .pinned: "Pinned"
-        case .reviews: "Review requested"
+        case .requested: "Review requested"
+        case .ready: "Ready to merge"
+        case .work: "Needs work"
+        case .agent: "Agent reviewing"
         case .yours: "Yours"
-        case .others: "Other open"
+        case .others: "Others"
+        case .waiting: "Waiting on others"
+        case .drafts: "Drafts"
+        case .unasked: "Not asking you"
         case .snoozed: "Snoozed"
         case .done: "Merged and closed"
         }

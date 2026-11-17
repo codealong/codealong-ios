@@ -307,6 +307,37 @@ pub struct SessionRow {
     /// it starts (`Need::Start`), which is answered there: what that shows, and that what's sent
     /// here goes to the session (`start_note`). None from Macs before 2026-11-16.
     pub helper_waits: Option<String>,
+    /// The orchestrator whose session it is (`Session::orchestrator`): it keeps watch over a
+    /// project's sessions, or every project's without one of its own, for you, and leads the
+    /// lists of what it keeps watch over rather than going among them (lists.rs
+    /// `orchestrator_sessions`). None for every other session, and from Macs before 2026-11-16.
+    pub orchestrator: Option<OrchestratorOf>,
+}
+
+/// An orchestrator a session is the session of: a schedule on its Mac that keeps one session
+/// going, which runs when something it keeps watch over needs a look (the main repo's
+/// schedules/orchestrate.rs). Looking now, starting it afresh and turning it off are its Mac's.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct OrchestratorOf {
+    /// The project it keeps watch over, by its name on its Mac; none for All projects: every
+    /// project without an orchestrator of its own, and the sessions in none.
+    pub project: Option<String>,
+    /// What it keeps watch over, said where a session's worktree would be, since it keeps watch
+    /// from a chat of its own: "Keeps watch over Northwind", "Keeps watch over All projects", or
+    /// that it's paused.
+    pub words: String,
+    /// It's paused: it keeps watch over nothing until it's started again on its Mac.
+    pub paused: bool,
+}
+
+/// All projects, as the Mac's project switcher and its orchestrators say it (orchestrate.rs `ALL`).
+pub(crate) const ALL_PROJECTS: &str = "All projects";
+
+pub(crate) fn orchestrator_of(o: &codealong_peer::model::Orchestrator) -> OrchestratorOf {
+    let project = o.project.clone().filter(|p| !p.trim().is_empty());
+    let over = project.clone().unwrap_or_else(|| ALL_PROJECTS.to_string());
+    let words = if o.paused { format!("Paused: keeps watch over nothing in {over}") } else { format!("Keeps watch over {over}") };
+    OrchestratorOf { project, words, paused: o.paused }
 }
 
 /// What a session's agent left running in the background (`Session::tasks`), as the Mac's session
@@ -1404,6 +1435,7 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 background: background_commands(s),
                 input_asked: input_note(s),
                 helper_waits: start_note(s),
+                orchestrator: s.orchestrator.as_ref().map(orchestrator_of),
             };
             if listed { sessions.push(row) } else { unlisted.push(row) }
         }
@@ -2938,6 +2970,11 @@ pub struct StartPlace {
     /// For `background`: its harness has no background service of its own, so it runs in a
     /// terminal opened behind the Mac's windows.
     pub behind: bool,
+    /// The main checkouts on its Mac (by their ids there) that a session started here moves out
+    /// of into a worktree of its own before it changes anything (Claude Code's background jobs),
+    /// so a start goes to the main checkout though it holds other work (`start_worktree_in`).
+    /// None from Macs before 2026-11-16.
+    pub isolates_in: Vec<String>,
 }
 
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
@@ -3258,30 +3295,36 @@ fn repo_worktrees(of: &[&Worktree]) -> RepoWorktrees {
 }
 
 /// Where a session starts in a repo unless you pick its worktree (the Mac's quick.ts
-/// `startLaneIn`): with a new worktree, the checkout it's made from; else where new work goes from
-/// the main checkout (`new_work_in`, as the Mac's suggestions go), never joining work under way;
-/// else the main checkout, else the latest worktree. `of` is the repo's, among `all`.
-fn start_worktree_in<'a>(of: &[&'a Worktree], all: &'a [Worktree], new_worktree: bool) -> Option<&'a Worktree> {
+/// `startLaneIn`): with a new worktree, the checkout it's made from; else the main checkout when
+/// the place picked moves the session out of it into a worktree of its own before it changes
+/// anything (`isolates_in`, its ids: Claude Code's background jobs), as it joins no work there
+/// whatever is under way; else where new work goes from the main checkout (`new_work_in`, as the
+/// Mac's suggestions go), never joining work under way; else the main checkout, else the latest
+/// worktree. `of` is the repo's, among `all`.
+fn start_worktree_in<'a>(of: &[&'a Worktree], all: &'a [Worktree], new_worktree: bool, isolates_in: &[String]) -> Option<&'a Worktree> {
     if new_worktree {
         if let Some(from) = made_from(of) {
             return Some(from);
         }
+    }
+    if let Some(main) = of.iter().find(|w| w.main && isolates_in.contains(&w.id)) {
+        return Some(main);
     }
     let first = of.iter().find(|w| w.main).or_else(|| of.first()).copied()?;
     Some(new_work_in(first, 0.0, all, &[]).filter(|to| to.takes_new_work() || to.main).unwrap_or(first))
 }
 
 /// The repos a new session can start in on a Mac, in `project` (empty for any), the most recently
-/// active first, with where a session starts in each. The Mac's menu puts the repos of the
-/// worktrees you pinned first; the phone has no pins. `worktrees` are one Mac's, most recently
-/// active first.
-fn start_repos(worktrees: &[Worktree], project: &str) -> Vec<StartRepo> {
+/// active first, with where a session starts in each at a place that isolates it in
+/// `isolates_in`. The Mac's menu puts the repos of the worktrees you pinned first; the phone has
+/// no pins. `worktrees` are one Mac's, most recently active first.
+fn start_repos(worktrees: &[Worktree], project: &str, isolates_in: &[String]) -> Vec<StartRepo> {
     let mut out: Vec<StartRepo> = Vec::new();
     for w in worktrees.iter().filter(|w| !w.chat && (project.is_empty() || w.project == project)) {
         if out.iter().any(|r| r.project == w.project && r.repo == w.repo) {
             continue;
         }
-        if let Some(at) = start_worktree_in(&repo_of(worktrees, &w.project, &w.repo), worktrees, false) {
+        if let Some(at) = start_worktree_in(&repo_of(worktrees, &w.project, &w.repo), worktrees, false, isolates_in) {
             out.push(StartRepo { project: w.project.clone(), repo: w.repo.clone(), starts_in: at.clone() });
         }
     }
@@ -3290,8 +3333,8 @@ fn start_repos(worktrees: &[Worktree], project: &str) -> Vec<StartRepo> {
 
 /// The worktree new work starts in on a Mac, in `project` (empty for any), unless you pick one:
 /// where it starts in the most recently active repo, as the Mac's panel picks one.
-fn start_worktree(worktrees: &[Worktree], project: &str) -> Option<Worktree> {
-    start_repos(worktrees, project).into_iter().next().map(|r| r.starts_in)
+fn start_worktree(worktrees: &[Worktree], project: &str, isolates_in: &[String]) -> Option<Worktree> {
+    start_repos(worktrees, project, isolates_in).into_iter().next().map(|r| r.starts_in)
 }
 
 #[uniffi::export]
@@ -3303,15 +3346,16 @@ impl Core {
     }
 
     /// The worktree new work starts in on `device`, in `project` (empty for any), unless you
-    /// pick another (`start_worktree`).
-    pub fn start_worktree(&self, device: String, project: String) -> Option<Worktree> {
-        start_worktree(&self.worktrees(device), &project)
+    /// pick another, at a place that isolates a session in `isolates_in` (`start_worktree`).
+    pub fn start_worktree(&self, device: String, project: String, isolates_in: Vec<String>) -> Option<Worktree> {
+        start_worktree(&self.worktrees(device), &project, &isolates_in)
     }
 
     /// The repos a new session can start in on `device`, in `project` (empty for any), with
-    /// where it starts in each (`start_repos`).
-    pub fn start_repos(&self, device: String, project: String) -> Vec<StartRepo> {
-        start_repos(&self.worktrees(device), &project)
+    /// where it starts in each at a place that isolates a session in `isolates_in`
+    /// (`start_repos`).
+    pub fn start_repos(&self, device: String, project: String, isolates_in: Vec<String>) -> Vec<StartRepo> {
+        start_repos(&self.worktrees(device), &project, &isolates_in)
     }
 
     /// A repo's worktrees on `device` as the worktree menu lists them (`repo_worktrees`).
@@ -3320,11 +3364,12 @@ impl Core {
         repo_worktrees(&repo_of(&all, &project, &repo))
     }
 
-    /// Where a session starts in a repo on `device` unless you pick its worktree; with
-    /// `new_worktree`, the checkout a new one is made from (`start_worktree_in`).
-    pub fn start_worktree_in(&self, device: String, project: String, repo: String, new_worktree: bool) -> Option<Worktree> {
+    /// Where a session starts in a repo on `device` unless you pick its worktree, at a place that
+    /// isolates a session in `isolates_in`; with `new_worktree`, the checkout a new one is made
+    /// from (`start_worktree_in`).
+    pub fn start_worktree_in(&self, device: String, project: String, repo: String, new_worktree: bool, isolates_in: Vec<String>) -> Option<Worktree> {
         let all = self.worktrees(device);
-        start_worktree_in(&repo_of(&all, &project, &repo), &all, new_worktree).cloned()
+        start_worktree_in(&repo_of(&all, &project, &repo), &all, new_worktree, &isolates_in).cloned()
     }
 
     /// Where a session that improves Codealong itself starts (`improve_target_of`): Codealong's
@@ -3474,7 +3519,7 @@ fn start_choices(o: api::StartOptions) -> StartChoices {
             // Macs before the models were listed for each account list Claude Code's alone, and
             // make a new worktree only for it.
             let older = a.models.is_empty() && a.harness == Harness::Claude;
-            let place = |p: api::Place| a.places.iter().find(|o| o.place == p).map(|o| StartPlace { id: p.word().to_string(), label: o.label.clone(), behind: o.behind });
+            let place = |p: api::Place| a.places.iter().find(|o| o.place == p).map(|o| StartPlace { id: p.word().to_string(), label: o.label.clone(), behind: o.behind, isolates_in: o.isolates_in.clone() });
             StartAccount {
                 name: a.name.clone(),
                 harness: a.harness.word().to_string(),
@@ -3632,6 +3677,7 @@ mod order_tests {
             background: None,
             input_asked: None,
             helper_waits: None,
+            orchestrator: None,
             aside: false,
             finished: None,
             waits_finished: false,
@@ -4273,7 +4319,7 @@ mod start_tests {
         api::StartAccount {
             name: "claude".into(),
             harness: codealong_peer::model::Harness::Claude,
-            places: places.iter().map(|p| api::PlaceOption { place: *p, label: p.word().into(), behind: false, service: false }).collect(),
+            places: places.iter().map(|p| api::PlaceOption { place: *p, label: p.word().into(), behind: false, service: false, isolates_in: Vec::new() }).collect(),
             chosen,
             unavailable: None,
             default_model: None,
