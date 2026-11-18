@@ -64,6 +64,9 @@ struct QuickView: View {
     /// When a row's Mark as done was held by work under way, by session: done again soon after
     /// ends that too.
     @State private var doneHeld: [String: Date] = [:]
+    /// A row's Mark as done asks what becomes of the session's helpers whose work isn't over, as
+    /// the Mac's does: the session, and what it asks.
+    @State private var helpersAsk: (row: SessionRow, ask: DoneHelpersAsk)?
     /// What a row's menu asked of a Mac and waits on its answer for, as `<what>:<key>`: asked again
     /// meanwhile, it would go twice (two approvals, two forks).
     @State private var asking: Set<String> = []
@@ -187,6 +190,7 @@ struct QuickView: View {
             .alert(store.notice ?? "", isPresented: Binding(get: { store.notice != nil }, set: { if !$0 { store.notice = nil } })) {
                 Button("OK", role: .cancel) { store.notice = nil }
             }
+            .modifier(DoneHelpersDialog(asked: $helpersAsk, ask: { $0.ask }) { asked, answer in markDone(asked.row, helpers: answer) })
             .alert("Rename", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
                 TextField("Name", text: $newName)
                 Button("Rename") {
@@ -858,7 +862,8 @@ struct QuickView: View {
             if r.archived {
                 Button("Unarchive", systemImage: "tray.and.arrow.up") { act { try await store.unarchive(r.key) } }
                     .tint(.gray)
-            } else {
+            } else if r.orchestrator == nil {
+                // An orchestrator's session isn't archived: its next look would start another.
                 Button("Archive", systemImage: "archivebox") { store.archive(r.key) }
                     .tint(.gray)
             }
@@ -917,15 +922,23 @@ struct QuickView: View {
                 Button("Mark as unread", systemImage: "envelope.badge") { act { try await store.markUnread(r.key) } }
             }
             // Pinned on its Mac, which lists it first there and here. An archived one is in no list
-            // to lead or wait in: unarchived, it can be.
-            if !r.archived {
+            // to lead or wait in: unarchived, it can be. An orchestrator's session is neither
+            // pinned, snoozed, marked done nor archived, as its Mac's menu has it: it leads the
+            // list on its own and is quiet unless it asks you something, and marked done or
+            // archived its next look would only start another. Turning it off is its Mac's.
+            let orchestrating = r.orchestrator != nil
+            if !r.archived, !orchestrating {
                 Button(r.pinned == nil ? "Pin" : "Unpin", systemImage: r.pinned == nil ? "pin" : "pin.slash") {
                     act { try await store.pin(r.key, r.pinned == nil) }
                 }
+            }
+            if !r.archived {
                 Button(r.raised == nil ? "Move to top" : "Back in line", systemImage: r.raised == nil ? "arrow.up.to.line" : "arrow.uturn.down") {
                     act { try await store.raise(r.key, r.raised == nil) }
                 }
                 .disabled(!online)
+            }
+            if !r.archived, !orchestrating {
                 Menu("Snooze", systemImage: "moon.zzz") {
                     // The time its limit lifts, or its last reply says the work goes on, first and
                     // apart, as on the Mac.
@@ -949,12 +962,14 @@ struct QuickView: View {
             Toggle(isOn: Binding(get: { r.quiet }, set: { on in act { try await store.quiet(r.key, on) } })) {
                 Label("Quiet", systemImage: "speaker.slash")
             }
-            Button("Mark as done", systemImage: "checkmark.circle") { markDone(r) }
-                .disabled(!online || asking.contains("done:" + r.key))
+            if !orchestrating {
+                Button("Mark as done", systemImage: "checkmark.circle") { markDone(r) }
+                    .disabled(!online || asking.contains("done:" + r.key))
+            }
             if r.archived {
                 Button("Unarchive", systemImage: "tray.and.arrow.up") { act { try await store.unarchive(r.key) } }
                     .disabled(!online)
-            } else {
+            } else if !orchestrating {
                 Button("Archive", systemImage: "archivebox") { store.archive(r.key) }
             }
         }
@@ -1041,15 +1056,21 @@ struct QuickView: View {
     /// Done with a session, as the Mac's Mark as done and its own: it closes where its Mac can
     /// close it, and is marked seen and archived. Work under way holds it, and done again soon
     /// after ends that too.
-    private func markDone(_ r: SessionRow) {
+    private func markDone(_ r: SessionRow, helpers: HelpersAnswer? = nil) {
         let stop = doneHeld[r.key].map { Date.now.timeIntervalSince($0) < 15 } ?? false
         if !stop && r.status == .working {
             doneHeld[r.key] = .now
             store.notice = "“\(r.title)” is still working. Mark it done again to end that too."
             return
         }
+        // Its helpers whose work isn't over are asked about first, once; cancelled, nothing is
+        // done.
+        if helpers == nil, let ask = store.doneHelpers(r.key) {
+            helpersAsk = (r, ask)
+            return
+        }
         actOnce("done:" + r.key) {
-            let outcome = try await store.done(r.key, stop: stop)
+            let outcome = try await store.done(r.key, stop: stop, helpers: helpers)
             guard outcome.done else {
                 doneHeld[r.key] = .now
                 store.notice = "\(outcome.message) Mark it done again to end that too."
@@ -1416,6 +1437,8 @@ extension PrGroup {
         case .ready: "Ready to merge"
         case .work: "Needs work"
         case .agent: "Agent reviewing"
+        case .fixing: "Fixing"
+        case .working: "Working"
         case .yours: "Yours"
         case .others: "Others"
         case .waiting: "Waiting on others"

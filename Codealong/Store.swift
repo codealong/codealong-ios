@@ -806,10 +806,18 @@ final class Store {
         return try await Task.detached { try core.fork(key: key, prompt: prompt) }.value
     }
 
-    /// Done with a session (Mark as done), with `stop` ending work under way too.
-    func done(_ key: String, stop: Bool) async throws -> DoneOutcome {
+    /// Done with a session (Mark as done), with `stop` ending work under way too, and its helpers
+    /// whose work isn't over as `helpers` says, where Mark as done asked (`doneHelpers`); without
+    /// it its Mac makes them yours.
+    func done(_ key: String, stop: Bool, helpers: HelpersAnswer? = nil) async throws -> DoneOutcome {
         let core = try running()
-        return try await Task.detached { try core.done(key: key, stop: stop) }.value
+        return try await Task.detached { try core.done(key: key, stop: stop, helpers: helpers) }.value
+    }
+
+    /// What Mark as done asks first about a session's helpers whose work isn't over, as the Mac's
+    /// windows ask it; nil when there's nothing to ask.
+    func doneHelpers(_ key: String) -> DoneHelpersAsk? {
+        core?.doneHelpers(key: key)
     }
 
     /// Marks a session done that a swipe went on from, without holding up the swipe. Once its Mac

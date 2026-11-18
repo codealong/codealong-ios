@@ -54,6 +54,36 @@ struct Outcome: Equatable, Identifiable {
     }
 }
 
+/// Mark as done's question about a session's helpers whose work isn't over, as the Mac's dialog
+/// asks it (DoneHelpers.tsx): make them your own, the answer a plain yes gives, or end them too.
+/// `asked` is what it's about while it's up; `answer` marks it done as answered.
+struct DoneHelpersDialog<Asked>: ViewModifier {
+    @Binding var asked: Asked?
+    let ask: (Asked) -> DoneHelpersAsk
+    let answer: (Asked, HelpersAnswer) -> Void
+
+    func body(content: Content) -> some View {
+        content.confirmationDialog(asked.map(ask)?.title ?? "", isPresented: Binding(get: { asked != nil }, set: { if !$0 { asked = nil } }), titleVisibility: .visible, presenting: asked) { a in
+            let q = ask(a)
+            let shown = q.helpers.map(\.key)
+            Button(q.keep) { answer(a, HelpersAnswer(shown: shown, end: false)) }
+            Button(q.end, role: .destructive) { answer(a, HelpersAnswer(shown: shown, end: true)) }
+            Button("Cancel", role: .cancel) {}
+        } message: { a in
+            Text(ask(a).message(now: .now))
+        }
+    }
+}
+
+extension DoneHelpersAsk {
+    /// What Mark as done's question says under its title: what each answer does, then each
+    /// helper, where it stands and its account, as the Mac's dialog lists them.
+    func message(now: Date) -> String {
+        let lines = helpers.map { "\($0.title): \(String(Clock.text($0.stands, now: now).characters))" }
+        return ([lede, ""] + lines).joined(separator: "\n")
+    }
+}
+
 /// How the pages gone on from went, a line each (`Outcome`). One that fades goes after its moment
 /// unless it's open, and has another once it's closed; one that stays goes when you dismiss it.
 /// With `fading` off (the end of what waits, which keeps them until something waits again, and a

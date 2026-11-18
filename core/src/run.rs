@@ -57,6 +57,24 @@ pub fn bang_command(text: String) -> bool {
     t.starts_with('!') && !t.starts_with("![") && !t[1..].trim().is_empty()
 }
 
+/// Why the box keeps `/login` rather than sending it, as the Mac's box keeps it for a session on
+/// another Mac (slash.ts `login`, SessionReply.tsx `signInHere`): typed into a background job,
+/// Claude Code's own `/login` opens its sign-in in a terminal nobody can see and holds the job
+/// there, and the account it signs in is its Mac's, which signs it in from there. None for
+/// anything else, which goes as it is.
+#[uniffi::export]
+pub fn login_kept(text: String, account: String) -> Option<String> {
+    let rest = text.trim().strip_prefix("/login")?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    Some(if rest.trim().is_empty() {
+        format!("{account} signs in on the Mac this session runs on: /login in its box there, or its chip in the usage bar.")
+    } else {
+        "/login takes nothing after it: it signs the account in.".to_string()
+    })
+}
+
 /// Whether a block that doesn't say it's shell is commands all the same (RunButton.tsx
 /// `isCommandBlock`): each of its lines, past comments and blank ones and those a line before
 /// carries on into, starts with a command in `known` (its Mac's `shell-commands`) or a script
@@ -212,6 +230,15 @@ mod tests {
         assert_eq!(code_run("bash", "npm test", false), CodeRun::No);
         assert_eq!(fence_lang("```Bash title=\"x\""), "bash");
         assert_eq!(fence_lang("  ```"), "");
+    }
+
+    #[test]
+    fn login_in_the_box_signs_in_on_its_mac_rather_than_going_to_the_session() {
+        let there = "claude2 signs in on the Mac this session runs on: /login in its box there, or its chip in the usage bar.";
+        assert_eq!(login_kept(" /login \n".into(), "claude2".into()).as_deref(), Some(there));
+        assert_eq!(login_kept("/login now please".into(), "claude2".into()).as_deref(), Some("/login takes nothing after it: it signs the account in."));
+        assert_eq!(login_kept("/loginx".into(), "claude2".into()), None);
+        assert_eq!(login_kept("Please /login".into(), "claude2".into()), None);
     }
 
     #[test]

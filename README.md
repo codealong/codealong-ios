@@ -49,7 +49,10 @@ worktree by worktree (tap a worktree to fold it away, or its ✎ to start a sess
 *Recent*, the last active first. Both lead with your orchestrators' sessions (*Orchestrator*), as
 the Mac's Sessions does: the one that keeps watch over the project picked, or under All every one,
 each saying what it keeps watch over where another session says its worktree, and never among the
-sessions it watches. The pills under the box narrow the list to one project; a
+sessions it watches. Its page says over its title when it last looked, or that it's off, and folds
+each look that found nothing into a line (*Looked 3 times: nothing new*); it isn't marked done,
+archived, pinned or snoozed, since its next look would only start another, and it's turned off on
+its Mac. The pills under the box narrow the list to one project; a
 project that lives on two Macs is one project here. Each session has the emblem its Mac gave it
 beside its title, an emoji or a small drawn picture for what it works on, so you know it at a
 glance as you do there. While the app is open, a short sound says when a session on any of your Macs starts
@@ -71,7 +74,9 @@ read again as it runs. One whose command waits at a question in a terminal on it
 the question, to answer there, and one whose helper waits in its terminal there before it starts
 (Codex's review of a repo's hooks) says what that shows, to answer from the helper's line on the
 Mac. One whose last turn ended on an API error says so under its
-conversation, in its harness's words, with *Try again* beside it.
+conversation, in its harness's words, with *Try again* beside it; one its account's sign-in was
+turned down for says so too, and whether Codealong carries it on once the account is signed in
+again on its Mac (`/login` in its box signs in nothing from the phone, and says so).
 
 **Work through what's waiting.** Sessions that need you, PRs waiting on your review and finished
 turns come one after another, in the Mac's order: the ones moved to the top first, then each kind
@@ -84,7 +89,9 @@ instead, and go on as you pick it: leave it as it is (to come round again after 
 seen or done, archive it, or snooze it for a while. The next one says in a line how the one you
 left went (done, archived, snoozed, sent) for a few seconds, or until you write or scroll; a tap on
 it shows all its Mac said, such as what Mark as done stopped and cleaned up, and one that didn't
-go as asked stays until you dismiss it. Swipe
+go as asked stays until you dismiss it. Mark as done from a session's menu first asks about its
+helpers whose work isn't over, as the Mac does: make them sessions of your own, or end them too
+(a swipe makes them yours). Swipe
 right to go back to the one you came from, leaving this one as it is. One you replied to, one
 still working, and one waiting on you to allow something are left as they are, and holding *Send* sends and goes straight
 on. A PR's page has the same bar over its review box: swiping on from a review you haven't given
@@ -151,7 +158,8 @@ Macs know, under tabs for all of them, yours and others', each counting the PRs 
 your move, as the Mac's PRs view does: pinned ones first, then what needs you by what it needs
 (*Review requested*, your own *Ready to merge* and *Needs work*: failing checks, changes asked for,
 conflicts or a branch behind), then the reviews Codealong's agent is still on (*Agent reviewing*),
-then the rest under the tab's own headings (yours and others' under All, *Waiting on others* and
+then the ones an agent of yours is at work on (*Fixing* what came of their review, or *Working* on a
+draft), whose merge or work waits on it, then the rest under the tab's own headings (yours and others' under All, *Waiting on others* and
 *Drafts* under Yours, *Not asking you* under Others), snoozed reviews, and the last week's merged
 and closed ones folded away. Yours are the ones opened by the GitHub account
 most of your Macs are signed in as; when one is signed in as another (a bot your agents open PRs
@@ -166,7 +174,8 @@ branch, ready for review and the branch's deletion. Your Mac's `gh` does it as y
 that Mac; reading and snoozing a review don't.
 
 **Start new work.** Type a prompt in the same box and start it with the capsule at the bottom,
-which says where it starts: its menu picks the Mac, the repo (a sheet of the Mac's repos under
+which says where it starts: its menu picks the Mac (each saying how busy it is, *Calm*, *Busy* or
+*Strained*, as its machine menu and the Macs sheet say it), the repo (a sheet of the Mac's repos under
 their projects, each saying where a session would start in it) and the worktree in it (*New
 worktree* first, then the ones ready for new work), or *General chat*, in a folder of its own and
 no repo, and the account, model, effort and place. A repo picked starts where new work goes in it,

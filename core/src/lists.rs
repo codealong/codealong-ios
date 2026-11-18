@@ -32,6 +32,11 @@ pub enum PrGroup {
     /// Asked of you, but Codealong's agent's review of it comes first: it waits on you once
     /// that's done.
     Agent,
+    /// Out for review, with an agent of yours at work on what came of that (`PrAgentWork`): a
+    /// merge or work of yours on it waits on that.
+    Fixing,
+    /// A draft an agent of yours is at work on.
+    Working,
     /// Under All: the rest of your open PRs.
     Yours,
     /// Under All: the rest of everyone else's open PRs.
@@ -112,8 +117,10 @@ fn pr_ready(p: &PrRow) -> bool {
     is_open(p) && p.state != "draft" && p.merge == "clean" && p.failing == 0 && p.pending == 0
 }
 
-/// What a PR needs of you, if it's your move (prStatus.ts `prFlag`): your review, asked for and
-/// not put off or held for the agent's; or, for one of yours, a merge, or work.
+/// What a PR needs of you, if it's your move (PrsView.tsx `prMove`): your review, asked for and
+/// not put off or held for the agent's, whatever else is going on; or, for one of yours, a merge,
+/// or work, but not while an agent of yours is at work on it (`PrRow::agent_work`), which that
+/// waits on.
 fn your_move(p: &PrRow) -> Option<PrGroup> {
     if !is_open(p) {
         return None;
@@ -121,7 +128,7 @@ fn your_move(p: &PrRow) -> Option<PrGroup> {
     if p.waits {
         return Some(PrGroup::Requested);
     }
-    if !p.mine {
+    if !p.mine || (p.agent_work.is_some() && !p.review_requested) {
         return None;
     }
     if pr_ready(p) {
@@ -164,15 +171,15 @@ pub(crate) fn pr_moves(prs: &[PrRow], project: &str) -> PrMoves {
 /// The PRs page for `project` (empty for all) under `tab`, each PR in the first group it fits, as
 /// the Mac's PRs view sorted by status has them (PrsView.tsx `prSections`): the pinned ones (in
 /// every tab, as they lead every tab there); Review requested, Ready to merge, Needs work; Agent
-/// reviewing; then All's Yours and Others, Yours' Waiting on others and Drafts, or Others' Not
-/// asking you, with Snoozed after them (before Not asking you, under Others); and the ones merged
-/// or closed in the last week last.
+/// reviewing; Fixing and Working, the ones an agent of yours is at work on; then All's Yours and
+/// Others, Yours' Waiting on others and Drafts, or Others' Not asking you, with Snoozed after them
+/// (before Not asking you, under Others); and the ones merged or closed in the last week last.
 pub(crate) fn pr_sections(prs: &[PrRow], project: &str, tab: PrTab, now: i64) -> Vec<PrSection> {
     use PrGroup as G;
     let order: &[PrGroup] = match tab {
-        PrTab::All => &[G::Pinned, G::Requested, G::Ready, G::Work, G::Agent, G::Yours, G::Others, G::Snoozed, G::Done],
-        PrTab::Mine => &[G::Pinned, G::Requested, G::Ready, G::Work, G::Agent, G::Waiting, G::Drafts, G::Snoozed, G::Done],
-        PrTab::Others => &[G::Pinned, G::Requested, G::Ready, G::Work, G::Agent, G::Snoozed, G::Unasked, G::Done],
+        PrTab::All => &[G::Pinned, G::Requested, G::Ready, G::Work, G::Agent, G::Fixing, G::Working, G::Yours, G::Others, G::Snoozed, G::Done],
+        PrTab::Mine => &[G::Pinned, G::Requested, G::Ready, G::Work, G::Agent, G::Fixing, G::Working, G::Waiting, G::Drafts, G::Snoozed, G::Done],
+        PrTab::Others => &[G::Pinned, G::Requested, G::Ready, G::Work, G::Agent, G::Fixing, G::Working, G::Snoozed, G::Unasked, G::Done],
     };
     let mut groups: Vec<(PrGroup, Vec<&PrRow>)> = order.iter().map(|g| (*g, Vec::new())).collect();
     for p in prs.iter().filter(|p| project.is_empty() || p.project == project) {
@@ -192,6 +199,11 @@ pub(crate) fn pr_sections(prs: &[PrRow], project: &str, tab: PrTab, now: i64) ->
         } else if p.review_requested {
             // Asked of you, not snoozed, and not waiting on you: Codealong's agent holds it.
             G::Agent
+        } else if let Some(work) = p.agent_work {
+            match work {
+                crate::quick::PrAgentWork::Fixing => G::Fixing,
+                crate::quick::PrAgentWork::Working => G::Working,
+            }
         } else {
             match tab {
                 PrTab::All if p.mine => G::Yours,
@@ -528,6 +540,41 @@ mod tests {
     }
 
     #[test]
+    fn prs_an_agent_of_yours_is_at_work_on_go_under_fixing_and_working() {
+        use crate::quick::PrAgentWork;
+        use PrGroup as G;
+        let open = |number: u64, mine: bool, work: Option<PrAgentWork>| {
+            let mut p = pr(number, "open", NOW - number as i64 * HOUR);
+            (p.mine, p.merge, p.agent_work) = (mine, "blocked".into(), work);
+            p
+        };
+        // Your own failing PR an agent is fixing isn't your work while it does.
+        let mut fixing = open(1, true, Some(PrAgentWork::Fixing));
+        fixing.failing = 2;
+        // Nor is a merge of one it's at work on.
+        let mut ready = open(2, true, Some(PrAgentWork::Fixing));
+        (ready.state, ready.merge) = ("approved".into(), "clean".into());
+        let mut draft = open(3, true, Some(PrAgentWork::Working));
+        draft.state = "draft".into();
+        // A review asked of you is yours whatever an agent does.
+        let mut asked = open(4, false, Some(PrAgentWork::Fixing));
+        (asked.waits, asked.review_requested) = (true, true);
+        // Someone else's that an agent of yours works on.
+        let theirs = open(5, false, Some(PrAgentWork::Fixing));
+        let mut failing = open(6, true, None);
+        failing.failing = 1;
+        let all = [fixing, ready, draft, asked, theirs, failing];
+        assert_eq!(
+            groups(&pr_sections(&all, "", PrTab::All, NOW)),
+            vec![(G::Requested, vec![4]), (G::Work, vec![6]), (G::Fixing, vec![1, 2, 5]), (G::Working, vec![3])]
+        );
+        assert_eq!(groups(&pr_sections(&all, "", PrTab::Mine, NOW)), vec![(G::Work, vec![6]), (G::Fixing, vec![1, 2]), (G::Working, vec![3])]);
+        assert_eq!(groups(&pr_sections(&all, "", PrTab::Others, NOW)), vec![(G::Requested, vec![4]), (G::Fixing, vec![5])]);
+        // The tabs count only what's your move.
+        assert_eq!(pr_moves(&all, ""), PrMoves { all: 2, mine: 1, others: 1 });
+    }
+
+    #[test]
     fn pinned_prs_lead_every_tab() {
         let mut theirs = pr(1, "open", NOW);
         theirs.pinned = true;
@@ -596,7 +643,7 @@ mod tests {
     fn orchestrators_lead_what_they_keep_watch_over_and_go_among_nothing() {
         let watching = |key: &str, project: Option<&str>| {
             let mut s = in_worktree(key, crate::ELSEWHERE, "chats", Status::Idle, NOW - HOUR);
-            s.orchestrator = Some(crate::OrchestratorOf { project: project.map(str::to_string), words: String::new(), paused: false });
+            s.orchestrator = Some(crate::OrchestratorOf { project: project.map(str::to_string), words: String::new(), paused: false, looked_at: None, header: String::new() });
             s
         };
         let all = watching("all", None);
@@ -625,12 +672,18 @@ mod tests {
     #[test]
     fn an_orchestrator_says_what_it_keeps_watch_over() {
         use codealong_peer::model::Orchestrator;
-        let of = |project: Option<&str>, paused| crate::orchestrator_of(&Orchestrator { schedule: "s-1".into(), project: project.map(str::to_string), paused }, str::to_string);
+        let looked = |project: Option<&str>, paused, looked_at| crate::orchestrator_of(&Orchestrator { schedule: "s-1".into(), project: project.map(str::to_string), paused, looked_at }, str::to_string);
+        let of = |project: Option<&str>, paused| looked(project, paused, None);
         assert_eq!(of(Some("Northwind"), false).words, "Keeps watch over Northwind");
         assert_eq!(of(None, false).words, "Keeps watch over All projects");
         assert_eq!(of(Some(" "), false).project, None);
         assert!(of(None, true).paused);
         assert_eq!(of(None, true).words, "Paused: keeps watch over nothing in All projects");
+        // Its page's line says when it last looked, as a live time, or that it's off; before its
+        // first look, and from Macs that don't say, only what it keeps watch over.
+        assert_eq!(looked(Some("Northwind"), false, Some(5_000)).header, "Looked {ago:5000} \u{b7} Orchestrator for Northwind");
+        assert_eq!(looked(None, true, Some(5_000)).header, "Off \u{b7} Orchestrator for All projects");
+        assert_eq!(of(None, false).header, "Orchestrator for All projects");
     }
 
     #[test]

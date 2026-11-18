@@ -111,6 +111,8 @@ private struct DeviceRowView: View {
             parts.append("Not connected")
         }
         parts.append(device.remoteControl ? "remote control on" : "remote control off")
+        // How busy it is, as its card in the Mac's Settings › Devices says it.
+        if let load = device.load { parts.append(load.word.lowercased()) }
         if !device.linkedBack { parts.append("it forgot this phone") }
         return parts.joined(separator: " · ")
     }

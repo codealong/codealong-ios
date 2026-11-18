@@ -181,7 +181,11 @@ struct TitleBlock: View {
                 }
                 Text(row.title).font(.headline).lineLimit(1)
             }
-            let place = "\(Names.short(row.deviceName)) · \(row.project)\(row.archived ? " · Archived" : "")"
+            // An orchestrator's session keeps watch from a chat of its own: it says when it last
+            // looked and what over, as the Mac's header does, its Mac only where there are several.
+            let place = row.orchestrator.map { o in
+                [String(Clock.text(o.header, now: .now).characters), store.devices.count > 1 ? Names.short(row.deviceName) : nil].compactMap { $0 }.joined(separator: " · ")
+            } ?? "\(Names.short(row.deviceName)) · \(row.project)\(row.archived ? " · Archived" : "")"
             // The PR stays whole: where it is and its labels give way to it, as on a session's row.
             HStack(spacing: 0) {
                 withLabels(Text(place), row.labels).lineLimit(1)

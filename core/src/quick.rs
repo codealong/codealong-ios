@@ -143,6 +143,54 @@ pub struct PrRow {
     /// was renamed, say, or its own in another case, any of which a session's worktree PR
     /// (`WorktreePr::key`) can have, so it's found by those whatever their case.
     pub known_as: Vec<String>,
+    /// What an agent of yours is doing on it while it's open and one of its sessions, on any Mac,
+    /// is working (`pr_agent_work`): what it would ask of you waits on that.
+    pub agent_work: Option<PrAgentWork>,
+}
+
+/// What an agent of yours is doing on an open PR (PrsView.tsx `prAgentWork`).
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrAgentWork {
+    /// It's out for review, and the agent answers what came of that: changes asked for, comments,
+    /// failing checks, a conflict or a branch behind its base.
+    Fixing,
+    /// A draft, not ready for review, that the agent works on.
+    Working,
+}
+
+/// Whether a session that worked on a PR lends it that an agent of yours is at work on it, as the
+/// Mac's PRs view counts one (PrsView.tsx `prSessionsNow`, `prAgentWork`): listed in the PR's own
+/// worktree rather than visiting it from another (one agent that made many worktrees would
+/// otherwise put all of their PRs at work), not archived, and working, or set aside until its side
+/// conversation answers, which is listed with what's working. Not a session of Codealong's own
+/// review of it while it works for that review: Agent reviewing is that one's. One you're talking
+/// to works for you.
+fn works_on_pr(s: &codealong_peer::model::Session) -> bool {
+    use codealong_peer::model::Status as S;
+    let working = s.status == S::Working || (s.aside.is_some() && s.status == S::Needs);
+    let reviewing = s.helper.as_ref().is_some_and(|h| h.pr.is_some()) && s.helps_an_agent();
+    s.visitor.is_none() && !s.archived && working && !reviewing
+}
+
+/// Whether a Mac's PR card has a session at work on it there (`works_on_pr`): each of its sessions
+/// looked up in the worktree it's listed under, or, from Macs before 2026-10-29, which don't say
+/// which, where it's listed as its own.
+fn card_at_work(p: &codealong_peer::pr::PrCard, lanes: &[codealong_peer::model::Lane]) -> bool {
+    p.sessions.iter().enumerate().any(|(i, key)| {
+        let under = p.session_lanes.get(i);
+        lanes.iter().filter(|l| under.is_none_or(|id| *id == l.id)).flat_map(|l| l.sessions.iter()).filter(|s| s.key == *key && (under.is_some() || s.visitor.is_none())).any(works_on_pr)
+    })
+}
+
+/// What an agent of yours is doing on a PR, once every Mac has said whether a session of it is at
+/// work (`at_work`): Working on a draft, Fixing one out for review; none when it isn't open.
+fn pr_agent_work(pr: &PrRow, at_work: bool) -> Option<PrAgentWork> {
+    match pr.state.as_str() {
+        _ if !at_work => None,
+        "merged" | "closed" => None,
+        "draft" => Some(PrAgentWork::Working),
+        _ => Some(PrAgentWork::Fixing),
+    }
 }
 
 /// Where a PR stands, as GitHub's merge box would lead with it and the Mac's pill puts it
@@ -739,6 +787,8 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
     // The PRs, by their place in `out`, whose row is from a Mac of your account, so that whether
     // it asks for your review is yours.
     let mut rows_yours = std::collections::HashSet::new();
+    // The PRs, by their place in `out`, that a session on any Mac is at work on (`pr_agent_work`).
+    let mut at_work = std::collections::HashSet::new();
     for (d, replica) in macs {
         // Whose move a PR is, as this Mac works it out for the account it's signed in as (a Mac
         // signed in as another, a bot your agents open PRs as, has no say): none while Codealong's
@@ -765,6 +815,9 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                 // has it open.
                 if let Some(i) = place(&mut at, &key, &p.key, None) {
                     add_sessions(&mut out[i].sessions, sessions);
+                    if card_at_work(p, &replica.lanes) {
+                        at_work.insert(i);
+                    }
                     if out[i].primary.is_none() {
                         out[i].primary = primary_of(p, d);
                     }
@@ -791,6 +844,9 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                 continue;
             }
             place(&mut at, &key, &p.key, Some(out.len()));
+            if card_at_work(p, &replica.lanes) {
+                at_work.insert(out.len());
+            }
             if ours {
                 told.insert(out.len());
                 rows_yours.insert(out.len());
@@ -842,6 +898,7 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                 standing: PrStanding::default(),
                 mark: PrMark::default(),
                 known_as: Vec::new(),
+                agent_work: None,
             });
         }
     }
@@ -860,11 +917,17 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                 let listed = replica.prs.iter().any(|p| pr_key(&p.url, &p.key).eq_ignore_ascii_case(&key) || p.key.eq_ignore_ascii_case(&theirs));
                 if let (false, Some(i)) = (listed, place(&mut at, &key, &theirs, None)) {
                     add_sessions(&mut out[i].sessions, sessions);
+                    if l.sessions.iter().any(works_on_pr) {
+                        at_work.insert(i);
+                    }
                 }
                 continue;
             }
             let Some(w) = worktrees.iter().find(|w| w.device == d.key && w.id == l.id) else { continue };
             place(&mut at, &key, &theirs, Some(out.len()));
+            if l.sessions.iter().any(works_on_pr) {
+                at_work.insert(out.len());
+            }
             out.push(PrRow {
                 key,
                 device: d.key.clone(),
@@ -905,6 +968,7 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                 standing: PrStanding::default(),
                 mark: PrMark::default(),
                 known_as: Vec::new(),
+                agent_work: None,
             });
         }
     }
@@ -914,7 +978,8 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
         out[i].known_as.push(name.clone());
     }
     // Its primary session leads its sessions, as the Mac's row names it first.
-    for pr in &mut out {
+    for (i, pr) in out.iter_mut().enumerate() {
+        pr.agent_work = pr_agent_work(pr, at_work.contains(&i));
         pr.known_as.sort();
         let first = pr.primary.as_ref().and_then(|p| pr.sessions.iter().position(|s| *s == p.key));
         if let Some(i) = first {
@@ -1193,6 +1258,7 @@ pub(crate) mod tests {
             origin: None,
             limit: None,
             api_error: None,
+            signed_out: None,
             quiet: false,
             unattended: false,
             headless: false,
@@ -1370,6 +1436,7 @@ pub(crate) mod tests {
             standing: PrStanding::default(),
             mark: PrMark::default(),
             known_as: Vec::new(),
+            agent_work: None,
         }
     }
 
@@ -1753,6 +1820,51 @@ pub(crate) mod tests {
         let prs = all_prs(&feeds, &crate::github::You::default());
         assert_eq!(prs.iter().map(|p| p.key.as_str()).collect::<Vec<_>>(), vec!["N/App#5", "O/App#9"]);
         assert_eq!(prs[0].sessions, vec!["@driving:claude:b:2", "@driving:claude:b:3", "@old:claude:c:4", "@old:claude:c:5"]);
+    }
+
+    #[test]
+    fn a_pr_an_agent_of_yours_is_at_work_on_says_what_it_does() {
+        use codealong_peer::client::Device;
+        use codealong_peer::feed::Replica;
+        use codealong_peer::model::{Harness, Helper, Lane, Session, Status as S};
+        let mac = |key: &str| Device { key: key.into(), short: key.into(), name: key.into(), online: true, since: None, last_seen: None, remote_control: true, app: String::new(), loading: false, linked_back: true };
+        let card = |number: u64, state: &str, sessions: &[&str], lanes: &[&str]| serde_json::from_value::<codealong_peer::pr::PrCard>(serde_json::json!({"key": format!("O/App#{number}"), "repo": "O/App", "project": "Apps", "number": number, "title": "T", "url": format!("https://github.com/O/App/pull/{number}"), "state": state, "author": null, "head": "b", "sessions": sessions, "sessionLanes": lanes})).unwrap();
+        let session = |id: &str, status: S| Session { status, ..Session::new(Harness::Claude, "c", id) };
+        let mut own = Lane::new("own", "Apps", "App");
+        own.sessions = vec![
+            session("fixing", S::Working),
+            session("idle", S::Idle),
+            // Codealong's own review of it works for that review, not on the PR.
+            Session { helper: Some(Helper { pr: Some("o/app#4".into()), ..Default::default() }), ..session("review", S::Working) },
+            // One you're talking to works for you.
+            Session { helper: Some(Helper { pr: Some("o/app#5".into()), yours: true, ..Default::default() }), ..session("talked", S::Working) },
+            // Archived, it lends nothing.
+            Session { archived: true, ..session("gone", S::Working) },
+        ];
+        // A session working from another worktree only visits this one: it lends nothing.
+        let mut other = Lane::new("other", "Apps", "App");
+        other.sessions = vec![Session { visitor: Some("worked here".into()), ..session("visits", S::Working) }];
+        let mini = Replica {
+            lanes: vec![own, other],
+            prs: vec![
+                card(1, "open", &["claude:c:fixing", "claude:c:idle"], &["own", "own"]),
+                card(2, "draft", &["claude:c:fixing"], &["own"]),
+                card(3, "open", &["claude:c:idle"], &["own"]),
+                card(4, "open", &["claude:c:review"], &["own"]),
+                card(5, "open", &["claude:c:talked"], &["own"]),
+                card(6, "open", &["claude:c:visits"], &["other"]),
+                card(7, "merged", &["claude:c:fixing"], &["own"]),
+                card(8, "open", &["claude:c:gone"], &["own"]),
+                // From a Mac before 2026-10-29, which doesn't say where each is listed: where it's
+                // listed as its own.
+                card(9, "open", &["claude:c:fixing"], &[]),
+            ],
+            ..Replica::default()
+        };
+        let feeds = vec![(mac("mini"), &mini)];
+        let work: Vec<(u64, Option<PrAgentWork>)> = all_prs(&feeds, &crate::github::You::default()).iter().map(|p| (p.number, p.agent_work)).collect();
+        use PrAgentWork::{Fixing, Working};
+        assert_eq!(work, vec![(1, Some(Fixing)), (2, Some(Working)), (3, None), (4, None), (5, Some(Fixing)), (6, None), (7, None), (8, None), (9, Some(Fixing))]);
     }
 
     #[test]

@@ -109,6 +109,54 @@ pub struct DeviceRow {
     /// Its first scan hasn't finished.
     pub loading: bool,
     pub sessions: u32,
+    /// How busy it is, while it's connected (`machine_load`). None from Macs before 2026-11-17,
+    /// and from one that measured nothing.
+    pub load: Option<MachineLoad>,
+}
+
+/// How busy a Mac is, as it reads itself every half a minute (the main repo's load.rs), for
+/// choosing where to start something, as the Mac's machine menu says it (machineLoad.ts, LoadTag.tsx).
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct MachineLoad {
+    pub level: LoadWord,
+    /// In a word: "Calm", "Busy" or "Strained".
+    pub word: String,
+    /// Its numbers, as the Mac's tooltip says them: "load 2.5 per CPU of 10, 40% of memory free".
+    pub numbers: String,
+}
+
+/// A Mac's load in a word, from the most room to the least (`LoadLevel`).
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoadWord {
+    /// CPUs to spare and memory enough: a session started there gets going at once.
+    Calm,
+    /// Every CPU busy, or memory getting short, but keeping up.
+    Busy,
+    /// Far more work than CPUs, or memory critical: everything there waits, a new session too.
+    Strained,
+}
+
+/// A Mac's load as the phone shows it, while it's connected (`online`), as the Mac's machine menu
+/// leaves out one that's away (machineLoad.ts `loadNumbers`).
+fn machine_load(load: Option<&codealong_peer::model::Load>, online: bool) -> Option<MachineLoad> {
+    use codealong_peer::model::LoadLevel;
+    let l = load.filter(|_| online)?;
+    let (level, word) = match l.level {
+        LoadLevel::Calm => (LoadWord::Calm, "Calm"),
+        LoadLevel::Busy => (LoadWord::Busy, "Busy"),
+        LoadLevel::Strained => (LoadWord::Strained, "Strained"),
+    };
+    let mut parts = Vec::new();
+    if let Some(per) = l.per_cpu {
+        parts.push(format!("load {per} per CPU of {}", l.cpus));
+    }
+    if let Some(free) = l.memory_free {
+        parts.push(format!("{free}% of memory free"));
+    }
+    if l.memory_short {
+        parts.push("memory getting short".to_string());
+    }
+    Some(MachineLoad { level, word: word.into(), numbers: parts.join(", ") })
 }
 
 /// The inbox's sections, in order, as the Mac's Sessions view has them. What waits on you is the
@@ -226,6 +274,11 @@ pub struct SessionRow {
     /// Its last turn ended on an error from its API, a lost connection included, and nothing has
     /// gone on since: what that comes to, and Try again (`api_error_note`).
     pub api_error: Option<ApiErrorNote>,
+    /// Its last turn ended because its account's sign-in was turned down (expired, revoked or
+    /// signed out) and nothing has been said since: what that comes to, in its harness's words,
+    /// and who carries it on (`signed_out_words`). A sign-in is its Mac's. None from Macs before
+    /// 2026-11-17, which show such a turn as finished.
+    pub signed_out: Option<String>,
     /// Quiet, from its Mac: a turn it ends doesn't wait on you, and it comes to you only when it
     /// needs you (its Mac has already left its turns out of Your turn).
     pub quiet: bool,
@@ -329,6 +382,14 @@ pub struct OrchestratorOf {
     pub words: String,
     /// It's paused: it keeps watch over nothing until it's started again on its Mac.
     pub paused: bool,
+    /// When it last looked: its latest run that went to its session. None before its first, and
+    /// from Macs before 2026-11-17.
+    pub looked_at: Option<i64>,
+    /// What its session's page says under its title, as the Mac's header says it over its title
+    /// (SessionHeader.tsx `OrchestratorOf`): when it last looked, as a live time (`{ago:<ms>}`),
+    /// or that it's off, then "Orchestrator for Northwind". The time leads, since the phone's line
+    /// is short and the title most often names what it keeps watch over already.
+    pub header: String,
 }
 
 /// All projects, as the Mac's project switcher and its orchestrators say it (orchestrate.rs `ALL`).
@@ -340,7 +401,12 @@ pub(crate) fn orchestrator_of(o: &codealong_peer::model::Orchestrator, here: imp
     let project = o.project.as_deref().map(str::trim).filter(|p| !p.is_empty()).map(here);
     let over = project.clone().unwrap_or_else(|| ALL_PROJECTS.to_string());
     let words = if o.paused { format!("Paused: keeps watch over nothing in {over}") } else { format!("Keeps watch over {over}") };
-    OrchestratorOf { project, words, paused: o.paused }
+    let when = if o.paused { Some("Off".to_string()) } else { o.looked_at.map(|t| format!("Looked {{ago:{t}}}")) };
+    let header = match when {
+        Some(when) => format!("{when} \u{b7} Orchestrator for {over}"),
+        None => format!("Orchestrator for {over}"),
+    };
+    OrchestratorOf { project, words, paused: o.paused, looked_at: o.looked_at, header }
 }
 
 /// What a session's agent left running in the background (`Session::tasks`), as the Mac's session
@@ -1193,7 +1259,7 @@ impl Core {
             let now = now_ms();
             let all = all_rows(feeds);
             let mut devices = Vec::new();
-            for (d, _) in feeds {
+            for (d, replica) in feeds {
                 devices.push(DeviceRow {
                     key: d.key.clone(),
                     short: d.short.clone(),
@@ -1204,6 +1270,7 @@ impl Core {
                     linked_back: d.linked_back,
                     loading: d.loading,
                     sessions: all.iter().filter(|s| s.device == d.key && in_inbox(s, now) && !s.unattended).count() as u32,
+                    load: machine_load(replica.device.load.as_ref(), d.online),
                 });
             }
             let mut sessions: Vec<SessionRow> = all.into_iter().filter(|s| in_inbox(s, now)).collect();
@@ -1413,6 +1480,7 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 origin: s.origin.as_ref().map(|o| SessionOrigin { key: remote_key(&d.short, &o.key), title: titles.get(o.key.as_str()).map(|t| t.to_string()), fork: o.how == OriginHow::Fork }),
                 limit: s.limit.as_ref().filter(|_| status != Status::Working).map(|l| limit_words(&s.account, l, now)),
                 api_error: api_error_note(s, status),
+                signed_out: signed_out_words(s, status),
                 quiet: s.quiet,
                 unattended: s.unattended(),
                 headless: s.headless,
@@ -1535,6 +1603,27 @@ fn api_error_note(s: &Session, status: Status) -> Option<ApiErrorNote> {
         button: (!s.archived).then(|| if continues { "Try now" } else { "Try again" }.to_string()),
         message: TRY_AGAIN.to_string(),
     })
+}
+
+/// What a turn its account's sign-in was turned down for comes to, while it isn't working, as the
+/// Mac's session header says it of a session on another Mac (lanes.ts `endedSignedOut`,
+/// `signedOutWords`): in its harness's words, and that Codealong carries it on once the account is
+/// signed in again where its Mac will, else that it signs in on its Mac. The phone signs nothing
+/// in, so there's no button.
+fn signed_out_words(s: &Session, status: Status) -> Option<String> {
+    let out = s.signed_out.as_ref().filter(|_| status != Status::Working)?;
+    let said = out.said.trim().trim_end_matches(|c: char| c.is_whitespace() || c == '.');
+    let what = if said.is_empty() {
+        format!("Its last turn ended because {}\u{2019}s sign-in was turned down.", s.account)
+    } else {
+        format!("Its last turn ended because {}\u{2019}s sign-in was turned down: {said}.", s.account)
+    };
+    let then = if out.continues {
+        " Codealong tells it to carry on once the account is signed in again, which often comes right by itself in a minute or two."
+    } else {
+        " Sign in to it on the Mac it runs on, then send it something to go on."
+    };
+    Some(format!("{what}{then}"))
 }
 
 /// What a usage limit that stopped a session comes to, as the Mac's session header says it
@@ -2190,10 +2279,103 @@ fn prompt_in(page: &api::Page) -> Option<Item> {
     })
 }
 
+/// The paragraph that ends Codealong's message for a schedule's run, saying which schedule it's
+/// from (the main repo's runner.rs `prompt_of`), whatever the schedule tells it before: a fresh
+/// session's first prompt is recorded as yours, so a run that started it is told by this.
+fn from_schedule(text: &str) -> bool {
+    text.rfind("\n\nThis comes from the schedule \u{201c}").is_some_and(|at| !text[at + 2..].contains('\n'))
+}
+
+/// A reply that says there's nothing to say: a dash, as an orchestrator (or a session hearing a
+/// meeting) is asked to answer when it has nothing for you (listening.ts `saysNothing`).
+fn says_nothing(reply: &str) -> bool {
+    let r = reply.trim().trim_matches(|c: char| matches!(c, '`' | '*' | '.')).trim();
+    matches!(r, "" | "-" | "\u{2013}" | "\u{2014}" | "--")
+}
+
+/// An orchestrator's conversation with each run that found nothing to tell you folded into a
+/// line, as the Mac's thread folds them (orchestrators.ts `foldQuietRuns`): Codealong's message
+/// that woke it, what it did, and its reply, a dash (`says_nothing`). Such runs in a row fold
+/// into one line. A run that told you something, asked you something (its questions and your
+/// answers stay in view), or that's still going stays as it is. `from_start`: the items begin
+/// with the session's first prompt, which is a run's where a schedule's run started it.
+fn fold_quiet_runs(items: Vec<Item>, from_start: bool) -> Vec<Item> {
+    let starts_run = |it: &Item, i: usize| it.kind == ItemKind::Codealong || (from_start && i == 0 && it.kind == ItemKind::You && from_schedule(&it.text));
+    let mut out: Vec<Item> = Vec::new();
+    // Where the line the last runs folded into is in `out`, and how many runs it holds, while
+    // nothing has come after it.
+    let mut fold: Option<(usize, u32)> = None;
+    let mut i = 0;
+    while i < items.len() {
+        // A run is what Codealong told it and everything up to the next message to it.
+        let mut end = i + 1;
+        if starts_run(&items[i], i) {
+            while end < items.len() && !matches!(items[end].kind, ItemKind::Codealong | ItemKind::You | ItemKind::Peer) {
+                end += 1;
+            }
+        }
+        let run = &items[i..end];
+        // Its last step: a reply that ends it, or a call it's still making.
+        let last = run.iter().rev().find(|x| matches!(x.kind, ItemKind::Agent | ItemKind::Tool));
+        let asked = run.iter().any(|x| !x.questions.is_empty());
+        let quiet = starts_run(&items[i], i) && !asked && last.is_some_and(|x| x.kind == ItemKind::Agent && says_nothing(&x.text));
+        match (quiet, fold) {
+            (false, _) => {
+                out.extend(run.iter().cloned());
+                fold = None;
+            }
+            (true, Some((at, runs))) => {
+                out[at].text = format!("Looked {} times: nothing new", runs + 1);
+                fold = Some((at, runs + 1));
+            }
+            (true, None) => {
+                let first = &items[i];
+                fold = Some((out.len(), 1));
+                out.push(Item {
+                    id: first.id.clone(),
+                    at: first.at,
+                    kind: ItemKind::Note,
+                    text: "Looked: nothing new".into(),
+                    from: None,
+                    input: None,
+                    output: None,
+                    failed: false,
+                    withdrawn: false,
+                    questions: Vec::new(),
+                    link: None,
+                    files: Vec::new(),
+                    caption: None,
+                    editable: false,
+                });
+            }
+        }
+        i = end;
+    }
+    out
+}
+
+impl Conversation {
+    /// Whether it's an orchestrator's session (`Session::orchestrator`), whose runs that found
+    /// nothing fold (`fold_quiet_runs`).
+    fn orchestrating(&self) -> bool {
+        self.client.with_feeds(|feeds| {
+            feeds.iter().filter(|(d, _)| d.short == self.device || d.key == self.device).flat_map(|(_, r)| r.lanes.iter().flat_map(|l| l.sessions.iter())).any(|s| s.key == self.key && s.orchestrator.is_some())
+        })
+    }
+
+    /// The items as the list shows them (`Thread::shown`), an orchestrator's runs that found
+    /// nothing folded (`fold`).
+    fn shown(st: &Thread, fold: bool) -> Vec<Item> {
+        let items = st.shown();
+        if fold { fold_quiet_runs(items, st.before.is_none()) } else { items }
+    }
+}
+
 #[uniffi::export]
 impl Conversation {
     /// The newest page, the first time; afterwards what came since.
     pub fn refresh(&self) -> Result<Vec<Item>, CoreError> {
+        let fold = self.orchestrating();
         let (loaded, after) = {
             let st = self.st.lock().unwrap_or_else(|e| e.into_inner());
             (st.loaded, st.after)
@@ -2206,19 +2388,21 @@ impl Conversation {
         if grew {
             self.save(&st);
         }
-        Ok(st.shown())
+        Ok(Conversation::shown(&st, fold))
     }
 
     /// What's been read so far, without asking its Mac: what was kept from before shows at once.
     pub fn kept(&self) -> Vec<Item> {
+        let fold = self.orchestrating();
         let st = self.st.lock().unwrap_or_else(|e| e.into_inner());
-        if st.loaded { st.shown() } else { Vec::new() }
+        if st.loaded { Conversation::shown(&st, fold) } else { Vec::new() }
     }
 
     /// The page before the oldest read so far.
     pub fn older(&self) -> Result<Vec<Item>, CoreError> {
+        let fold = self.orchestrating();
         let before = self.st.lock().unwrap_or_else(|e| e.into_inner()).before;
-        let Some(before) = before else { return Ok(self.st.lock().unwrap_or_else(|e| e.into_inner()).shown()) };
+        let Some(before) = before else { return Ok(Conversation::shown(&self.st.lock().unwrap_or_else(|e| e.into_inner()), fold)) };
         let kept = self.st.lock().unwrap_or_else(|e| e.into_inner()).read_back.remove(&before);
         let page = match kept {
             Some(page) => page,
@@ -2227,7 +2411,7 @@ impl Conversation {
         let mut st = self.st.lock().unwrap_or_else(|e| e.into_inner());
         st.take(page, true);
         self.save(&st);
-        Ok(st.shown())
+        Ok(Conversation::shown(&st, fold))
     }
 
     /// Your prompt behind the oldest item read so far, when what's read doesn't start with one: a
@@ -2830,6 +3014,123 @@ mod tests {
         assert_eq!(done_anyway("Fix it", false, "Mini", "anything"), DoneOutcome { done: true, message: "Done with \u{201c}Fix it\u{201d}: it\u{2019}s archived.".into(), noted: false });
     }
 
+    #[test]
+    fn mark_as_done_asks_about_helpers_whose_work_isnt_over() {
+        use codealong_peer::model::{Helper, Status as S};
+        let helper = |id: &str, parent: &str, status: S, live: bool| Session {
+            status,
+            live,
+            status_since: Some(5_000),
+            title: format!("Part {id}"),
+            helper: Some(Helper { parent: Some(format!("claude:c:{parent}")), report: true, ..Default::default() }),
+            ..Session::new(Harness::Claude, "c", id)
+        };
+        let mut lane = Lane::new("l", "Apps", "App");
+        lane.sessions = vec![
+            Session { title: "Fix the parser".into(), ..Session::new(Harness::Claude, "c", "boss") },
+            helper("working", "boss", S::Working, true),
+            // Its work is over: it ends with it, unasked.
+            helper("done", "boss", S::Idle, false),
+            // One a helper started, at any depth, whose work isn't over either.
+            helper("asks", "done", S::Needs, false),
+            // Under one that's at work: ending that one ends it too.
+            helper("under", "working", S::Idle, false),
+            Session { archived: true, ..helper("gone", "boss", S::Working, true) },
+        ];
+        let mut visiting = Lane::new("v", "Apps", "App");
+        visiting.sessions = vec![Session { visitor: Some("worked here".into()), ..helper("working", "boss", S::Working, true) }];
+        let lanes = vec![lane, visiting];
+        let found = unfinished_helpers(&lanes, "claude:c:boss");
+        assert_eq!(found.iter().map(|s| s.key.as_str()).collect::<Vec<_>>(), ["claude:c:working", "claude:c:asks"]);
+        let ask = done_helpers_ask("Fix the parser", &found, "mini").unwrap();
+        assert_eq!(ask.title, "Mark \u{201c}Fix the parser\u{201d} as done?");
+        assert_eq!(ask.lede, "\u{201c}Fix the parser\u{201d} has 2 helpers whose work isn\u{2019}t over. Make them your own to go on with them in your lists, or end them too: a turn under way stops, and a question waiting on you goes unanswered.");
+        assert_eq!((ask.keep.as_str(), ask.end.as_str()), ("Make them my own", "End them"));
+        assert_eq!(
+            ask.helpers,
+            vec![
+                UnfinishedHelper { key: "@mini:claude:c:working".into(), title: "Part working".into(), stands: "working for {for:5000} \u{b7} c".into() },
+                UnfinishedHelper { key: "@mini:claude:c:asks".into(), title: "Part asks".into(), stands: "waits on you, {ago:5000} \u{b7} c".into() },
+            ]
+        );
+        let one = done_helpers_ask("Fix the parser", &found[..1], "mini").unwrap();
+        assert_eq!((one.keep.as_str(), one.end.as_str()), ("Make it my own", "End it"));
+        assert!(one.lede.contains("has a helper whose work isn\u{2019}t over. Make it your own to go on with it"), "{}", one.lede);
+        assert_eq!(done_helpers_ask("Fix the parser", &[], "mini"), None);
+        // Ended, the ones shown go with the helpers they started; kept, only the ones shown.
+        let shown = vec!["claude:c:working".to_string(), "claude:c:asks".to_string()];
+        assert_eq!(helpers_chosen(&lanes, &shown, true), (vec!["claude:c:working".to_string(), "claude:c:asks".to_string(), "claude:c:under".to_string()], vec![]));
+        assert_eq!(helpers_chosen(&lanes, &shown, false), (vec![], shown.clone()));
+    }
+
+    #[test]
+    fn an_orchestrators_runs_that_found_nothing_fold_into_a_line() {
+        let said = |kind: ItemKind, at: i64, text: &str| Item { id: at.to_string(), at, kind, text: text.into(), from: None, input: None, output: None, failed: false, withdrawn: false, questions: vec![], link: None, files: vec![], caption: None, editable: false };
+        let first = "Look over the sessions.\n\nThis comes from the schedule \u{201c}Orchestrator\u{201d}: its 8:00 run.";
+        let items = vec![
+            // The run that started it, from the start of the conversation: nothing found.
+            said(ItemKind::You, 1, first),
+            said(ItemKind::Tool, 2, "codealong sessions"),
+            said(ItemKind::Agent, 3, "`-`"),
+            said(ItemKind::Codealong, 4, "Look again."),
+            said(ItemKind::Agent, 5, "\u{2014}"),
+            // One that told you something stays.
+            said(ItemKind::Codealong, 6, "Look again."),
+            said(ItemKind::Agent, 7, "Two sessions wait on the same PR."),
+            said(ItemKind::Codealong, 8, "Look again."),
+            said(ItemKind::Agent, 9, "-"),
+            // One still going stays, its call in view.
+            said(ItemKind::Codealong, 10, "Look again."),
+            said(ItemKind::Tool, 11, "codealong sessions"),
+        ];
+        let lines = |items: Vec<Item>| items.into_iter().map(|i| (i.id, i.kind, i.text)).collect::<Vec<_>>();
+        let folded = lines(fold_quiet_runs(items.clone(), true));
+        assert_eq!(
+            folded,
+            vec![
+                ("1".into(), ItemKind::Note, "Looked 2 times: nothing new".into()),
+                ("6".into(), ItemKind::Codealong, "Look again.".into()),
+                ("7".into(), ItemKind::Agent, "Two sessions wait on the same PR.".into()),
+                ("8".into(), ItemKind::Note, "Looked: nothing new".into()),
+                ("10".into(), ItemKind::Codealong, "Look again.".into()),
+                ("11".into(), ItemKind::Tool, "codealong sessions".into()),
+            ]
+        );
+        // Read from partway, the first prompt on the page isn't a run's.
+        assert_eq!(lines(fold_quiet_runs(items[..3].to_vec(), false)).len(), 3);
+        // A run that asked you something stays, its questions in view.
+        let mut asked = said(ItemKind::Tool, 12, "AskUserQuestion");
+        asked.questions = vec![Question { question: "Which?".into(), header: None, options: vec![], multi_select: false, answered: false, picked: vec![], own: vec![] }];
+        let run = vec![said(ItemKind::Codealong, 11, "Look again."), asked, said(ItemKind::Agent, 13, "-")];
+        assert_eq!(fold_quiet_runs(run.clone(), false), run);
+        assert!(says_nothing(" **.** ") && !says_nothing("- one thing"));
+    }
+
+    #[test]
+    fn a_macs_load_is_said_in_a_word_and_its_numbers_while_its_connected() {
+        use codealong_peer::model::{Load, LoadLevel};
+        let strained = Load { level: LoadLevel::Strained, per_cpu: Some(2.5), cpus: 10, memory_free: Some(40), memory_short: true };
+        assert_eq!(
+            machine_load(Some(&strained), true),
+            Some(MachineLoad { level: LoadWord::Strained, word: "Strained".into(), numbers: "load 2.5 per CPU of 10, 40% of memory free, memory getting short".into() })
+        );
+        // Windows keeps no load average; a Mac away says nothing of now.
+        let windows = Load { level: LoadLevel::Calm, per_cpu: None, cpus: 8, memory_free: Some(70), memory_short: false };
+        assert_eq!(machine_load(Some(&windows), true).map(|l| (l.word, l.numbers)), Some(("Calm".into(), "70% of memory free".into())));
+        assert_eq!(machine_load(Some(&strained), false), None);
+        assert_eq!(machine_load(None, true), None);
+    }
+
+    #[test]
+    fn a_macs_build_is_read_from_its_version() {
+        assert!(builds_since("0.25.0", (0, 25, 0)));
+        assert!(builds_since("0.26.1-dev+3", (0, 25, 0)));
+        assert!(builds_since("1.0", (0, 25, 0)));
+        assert!(!builds_since("0.24.9", (0, 25, 0)));
+        assert!(!builds_since("", (0, 25, 0)));
+        assert!(!builds_since("dev", (0, 25, 0)));
+    }
+
     fn sent_at(id: &str, at: i64) -> SentAt {
         SentAt { id: id.into(), at }
     }
@@ -3415,14 +3716,42 @@ impl Core {
         Ok(StartedSession { key: started.key.map(|k| remote_key(device, &k)), message: started.message })
     }
 
+    /// What Mark as done asks first about a session whose helpers' work isn't over, as the Mac's
+    /// windows ask it (menus.ts `doneHelpers`, DoneHelpers.tsx): those helpers, and what each
+    /// answer does. None where there are none, and for a Mac from before it could be told
+    /// (`DONE_HELPERS_SINCE`), which goes its own way with them.
+    pub fn done_helpers(&self, key: String) -> Option<DoneHelpersAsk> {
+        let (device, own) = split_remote(&key)?;
+        self.client.with_feeds(|feeds| {
+            let (d, replica) = feeds.iter().find(|(d, _)| d.short == device || d.key == device)?;
+            if !builds_since(&d.app, DONE_HELPERS_SINCE) {
+                return None;
+            }
+            let title = replica.lanes.iter().flat_map(|l| l.sessions.iter()).find(|s| s.key == own && s.visitor.is_none())?.title.clone();
+            done_helpers_ask(&title, &unfinished_helpers(&replica.lanes, own), &d.short)
+        })
+    }
+
     /// Done with a session (Mark as done): it ends as far as its Mac can end it (its terminal tab
     /// closes, its background job stops) and is marked seen and archived there. Work under way
-    /// holds it (`done` false) unless `stop` ends that too. A Mac that won't do it (remote control
-    /// off, or a Codealong from before it) still has it marked seen and archived, as the Mac's own
-    /// windows do (actions.rs `done_anyway`), and the message says why it's still open there.
-    pub fn done(&self, key: String, stop: bool) -> Result<DoneOutcome, CoreError> {
+    /// holds it (`done` false) unless `stop` ends that too. Its helpers go as `helpers` says, where
+    /// Mark as done asked about them (`done_helpers`); without it, as its Mac goes by itself, which
+    /// makes those whose work isn't over yours. A Mac that won't do it (remote control off, or a
+    /// Codealong from before it) still has it marked seen and archived, as the Mac's own windows
+    /// do (actions.rs `done_anyway`), and the message says why it's still open there.
+    pub fn done(&self, key: String, stop: bool, helpers: Option<HelpersAnswer>) -> Result<DoneOutcome, CoreError> {
         let (device, own) = split_remote(&key).ok_or_else(|| CoreError::Failed("That isn't a session on one of your Macs.".into()))?;
-        let why = match self.client.done(device, own, stop) {
+        let (end_helpers, keep_helpers) = match &helpers {
+            Some(a) => self.client.with_feeds(|feeds| {
+                let lanes = feeds.iter().find(|(d, _)| d.short == device || d.key == device).map(|(_, r)| r.lanes.as_slice()).unwrap_or_default();
+                let shown: Vec<String> = a.shown.iter().filter_map(|k| split_remote(k).filter(|(d, _)| *d == device).map(|(_, k)| k.to_string())).collect();
+                helpers_chosen(lanes, &shown, a.end)
+            }),
+            None => (Vec::new(), Vec::new()),
+        };
+        let asked = params::Done { key: own.into(), stop, end_helpers, keep_helpers, ..Default::default() };
+        let done = serde_json::to_value(asked).map_err(|e| e.to_string()).and_then(|p| self.client.ask(device, api::SESSION_DONE, p, DONE_WAIT)).and_then(|v| serde_json::from_value::<api::Done>(v).map_err(|e| e.to_string()));
+        let why = match done {
             Ok(d) => return Ok(DoneOutcome { done: d.done, message: d.message, noted: d.noted }),
             Err(why) => why,
         };
@@ -3494,6 +3823,134 @@ pub fn model_name(model: String, models: Vec<StartModel>) -> String {
         _ => base.to_string(),
     };
     if long { format!("{name} 1M") } else { name }
+}
+
+/// How long Mark as done is given, as codealong-peer's client gives it: removing a worktree its
+/// harness made can take most of a minute on its Mac.
+const DONE_WAIT: Duration = Duration::from_secs(75);
+
+/// The first Codealong that can be told what becomes of a session's helpers as it's marked done
+/// (`params::Done::end_helpers`, 0.25.0): an older one ignores that and goes its own way, so
+/// nothing is asked of you for it.
+const DONE_HELPERS_SINCE: (u32, u32, u32) = (0, 25, 0);
+
+/// Whether a device's Codealong (`Device::app`, "0.25.0") is `since` or newer; one that doesn't
+/// say a version isn't.
+fn builds_since(app: &str, since: (u32, u32, u32)) -> bool {
+    let mut parts = app.trim().trim_start_matches('v').split(['.', '-', '+']).map(|p| p.parse::<u32>().ok());
+    match (parts.next().flatten(), parts.next().flatten(), parts.next().flatten()) {
+        (Some(a), Some(b), c) => (a, b, c.unwrap_or(0)) >= since,
+        _ => false,
+    }
+}
+
+/// What Mark as done asks about a session's helpers whose work isn't over (DoneHelpers.tsx).
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct DoneHelpersAsk {
+    /// "Mark “Fix the parser” as done?"
+    pub title: String,
+    /// How many helpers, and what each answer does.
+    pub lede: String,
+    pub helpers: Vec<UnfinishedHelper>,
+    /// The answer that makes them sessions of your own, which go on in your lists, their turns
+    /// waiting on you: "Make it my own", "Make them my own". The one a plain yes picks.
+    pub keep: String,
+    /// The answer that ends them with it, their work stopped: "End it", "End them".
+    pub end: String,
+}
+
+/// A helper whose work isn't over, as Mark as done lists it.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct UnfinishedHelper {
+    /// `@<device>:<key>`, as `HelpersAnswer::shown` names it back.
+    pub key: String,
+    pub title: String,
+    /// Where it stands, and its account, with live times: "working for {for:<ms>} · codex".
+    pub stands: String,
+}
+
+/// What you chose for the helpers Mark as done asked about: the ones it showed (`shown`), and
+/// whether they end with it (`end`) or are made your own.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct HelpersAnswer {
+    pub shown: Vec<String>,
+    pub end: bool,
+}
+
+/// The helpers of `key` whose work isn't over (`Session::unfinished`), at any depth (the helpers
+/// those started too), each once, as the Mac lists them (menus.ts `unfinishedHelpers`): not where
+/// one visits another worktree, nor an archived one.
+fn unfinished_helpers<'a>(lanes: &'a [Lane], key: &str) -> Vec<&'a Session> {
+    let all: Vec<&Session> = lanes.iter().flat_map(|l| l.sessions.iter()).filter(|s| s.visitor.is_none() && !s.archived).collect();
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::from([key]);
+    let mut parents: std::collections::VecDeque<&str> = std::collections::VecDeque::from([key]);
+    let mut out = Vec::new();
+    while let Some(parent) = parents.pop_front() {
+        for h in &all {
+            if h.helper.as_ref().and_then(|x| x.parent.as_deref()) != Some(parent) || !seen.insert(h.key.as_str()) {
+                continue;
+            }
+            if h.unfinished() {
+                out.push(*h);
+            }
+            parents.push_back(h.key.as_str());
+        }
+    }
+    out
+}
+
+/// What you chose for the helpers shown, by their keys on their Mac, as (`end_helpers`,
+/// `keep_helpers`) (menus.ts `helpersChosen`): to end, those and the helpers they started in turn,
+/// at any depth, since their work was for those and the Mac would otherwise make the unfinished
+/// ones yours as they end; or to keep, those shown.
+fn helpers_chosen(lanes: &[Lane], shown: &[String], end: bool) -> (Vec<String>, Vec<String>) {
+    if !end {
+        return (Vec::new(), shown.to_vec());
+    }
+    let all: Vec<&Session> = lanes.iter().flat_map(|l| l.sessions.iter()).filter(|s| s.visitor.is_none() && !s.archived).collect();
+    let mut keys = shown.to_vec();
+    let mut i = 0;
+    while i < keys.len() {
+        for h in &all {
+            if h.helper.as_ref().and_then(|x| x.parent.as_deref()) == Some(keys[i].as_str()) && !keys.contains(&h.key) {
+                keys.push(h.key.clone());
+            }
+        }
+        i += 1;
+    }
+    (keys, Vec::new())
+}
+
+/// Where a helper whose work isn't over stands, as the Mac's dialog says it (DoneHelpers.tsx
+/// `standsWords`, lanes.ts `helperStands`), with live times, and its account.
+fn helper_stands(h: &Session) -> String {
+    let since = h.status_since.unwrap_or(h.last_activity);
+    let stands = match h.status {
+        PeerStatus::Working => format!("working for {{for:{since}}}"),
+        PeerStatus::Needs => format!("waits on you, {{ago:{since}}}"),
+        PeerStatus::Error => format!("stopped with an error {{ago:{since}}}"),
+        _ if h.background.is_some() => "left a command running in the background".to_string(),
+        _ => "left agents running in the background".to_string(),
+    };
+    format!("{stands} \u{b7} {}", h.account)
+}
+
+/// What Mark as done asks about `helpers` of the session titled `title` on the Mac `short`
+/// (DoneHelpers.tsx `doneHelpersWords`); none with none.
+fn done_helpers_ask(title: &str, helpers: &[&Session], short: &str) -> Option<DoneHelpersAsk> {
+    if helpers.is_empty() {
+        return None;
+    }
+    let one = helpers.len() == 1;
+    let them = if one { "it" } else { "them" };
+    let count = if one { "a helper".to_string() } else { format!("{} helpers", helpers.len()) };
+    Some(DoneHelpersAsk {
+        title: format!("Mark \u{201c}{title}\u{201d} as done?"),
+        lede: format!("\u{201c}{title}\u{201d} has {count} whose work isn\u{2019}t over. Make {them} your own to go on with {them} in your lists, or end {them} too: a turn under way stops, and a question waiting on you goes unanswered."),
+        helpers: helpers.iter().map(|h| UnfinishedHelper { key: remote_key(short, &h.key), title: h.title.clone(), stands: helper_stands(h) }).collect(),
+        keep: format!("Make {them} my own"),
+        end: format!("End {them}"),
+    })
 }
 
 /// What being done with a session came to.
@@ -3671,6 +4128,7 @@ mod order_tests {
             origin: None,
             limit: None,
             api_error: None,
+            signed_out: None,
             quiet: false,
             unattended: false,
             headless: false,
@@ -4025,6 +4483,25 @@ mod order_tests {
     }
 
     #[test]
+    fn a_turn_its_sign_in_ended_says_so_and_who_carries_it_on() {
+        use codealong_peer::model::SignedOut;
+        let base = Session::new(Harness::Claude, "claude2", "out");
+        let out = |continues: bool, said: &str| Session { signed_out: Some(SignedOut { at: 5, said: said.into(), continues }), ..base.clone() };
+        assert_eq!(
+            signed_out_words(&out(true, "OAuth token revoked · Please run /login. "), Status::Unread).as_deref(),
+            Some("Its last turn ended because claude2\u{2019}s sign-in was turned down: OAuth token revoked · Please run /login. Codealong tells it to carry on once the account is signed in again, which often comes right by itself in a minute or two.")
+        );
+        // Where its Mac won't carry it on, it's signed in there, and sent something.
+        assert_eq!(
+            signed_out_words(&out(false, " "), Status::Idle).as_deref(),
+            Some("Its last turn ended because claude2\u{2019}s sign-in was turned down. Sign in to it on the Mac it runs on, then send it something to go on.")
+        );
+        // At work again it's past it; without one, there's nothing to say.
+        assert_eq!(signed_out_words(&out(true, "Login expired"), Status::Working), None);
+        assert_eq!(signed_out_words(&base, Status::Unread), None);
+    }
+
+    #[test]
     fn a_reply_whose_work_goes_on_later_is_offered_a_snooze_until_then() {
         use codealong_peer::model::SessionInsight;
         const NOW: i64 = 1_000_000_000;
@@ -4322,7 +4799,7 @@ mod project_tests {
         assert_eq!(p.orchestrated(&lanes, "garden"), "Garden");
         assert_eq!(p.orchestrated(&lanes, "Kestrel"), "Kestrel");
         use codealong_peer::model::Orchestrator;
-        let o = Orchestrator { schedule: "s-1".into(), project: Some("App".into()), paused: false };
+        let o = Orchestrator { schedule: "s-1".into(), project: Some("App".into()), paused: false, looked_at: None };
         let shown = orchestrator_of(&o, |n| p.orchestrated(&lanes, n));
         assert_eq!(shown.project.as_deref(), Some("Work"));
         assert_eq!(shown.words, "Keeps watch over Work");

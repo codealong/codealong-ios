@@ -51,14 +51,16 @@ enum SwipeOn: GoOnPick {
     /// Finished note asks once you've read it; otherwise marks it seen. Looks finished, which only
     /// the read of its last reply says, is left to be marked done from the menu.
     static func swipe(row: SessionRow?) -> SwipeOn {
-        row?.finished?.sure == true && row?.waitsFinished == true ? .done : .seen
+        row?.finished?.sure == true && row?.waitsFinished == true && row?.orchestrator == nil ? .done : .seen
     }
 
     /// What the bar's menu offers besides what a swipe does, as it is now (`Going.offered`).
     static func offers(row: SessionRow?, pending: Pending?, acted: Bool) -> [SwipeOn] {
         // An archived one, opened from a search, is in no list to wait in: it isn't offered
         // archiving or snoozing, as its menu doesn't offer them.
-        let picks: [SwipeOn] = row?.archived == true ? [.keep, .seen, .done] : [.keep, .seen, .done, .archive] + Snooze.For.offered.map(SwipeOn.snooze)
+        // An orchestrator's session is neither marked done, archived nor snoozed, as its menu has
+        // it: its next look would only start another, and it's quiet unless it asks you something.
+        let picks: [SwipeOn] = row?.orchestrator != nil ? [.keep, .seen] : row?.archived == true ? [.keep, .seen, .done] : [.keep, .seen, .done, .archive] + Snooze.For.offered.map(SwipeOn.snooze)
         return Going.offered(picks, besides: swipe(row: row)) {
             Going.of($0, row: row, pending: pending, acted: acted)
         }

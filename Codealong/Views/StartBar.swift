@@ -167,8 +167,10 @@ struct StartBar: View {
             Section(happens) {
                 if store.devices.count > 1 {
                     Picker(selection: Binding(get: { composer.device }, set: { composer.device = $0; lastDevice = $0 ?? "" })) {
+                        // How busy each is, as the Mac's machine menu says it, for choosing where
+                        // to start: a strained one starts a session as slowly as it does everything.
                         ForEach(store.devices, id: \.key) { d in
-                            Text(d.online ? d.name : "\(d.name) (not connected)").tag(Optional(d.key))
+                            Text(!d.online ? "\(d.name) (not connected)" : d.load.map { "\(d.name) · \($0.word)" } ?? d.name).tag(Optional(d.key))
                         }
                     } label: {
                         Label("Mac", systemImage: "laptopcomputer")

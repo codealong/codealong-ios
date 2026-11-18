@@ -157,6 +157,8 @@ struct SessionView: View {
     /// When Mark as done was last held here by work under way: done again soon after ends that too.
     @State private var heldAt: Date?
     @State private var finishing = false
+    /// Mark as done asks what becomes of its helpers whose work isn't over, as the Mac's does.
+    @State private var helpersAsk: DoneHelpersAsk?
     /// You marked it unread here: it's left Your turn, and the screen goes back to the list.
     @State private var markedUnread = false
     @State private var renaming = false
@@ -579,13 +581,22 @@ struct SessionView: View {
             }
         }
         .disabled(!online)
-        Button(finishing ? "Wrapping up…" : "Mark as done", systemImage: "checkmark.circle") { Task { await markDone() } }
-            .disabled(!online || finishing)
+        // An orchestrator's session is neither marked done nor archived, pinned or snoozed, as its
+        // Mac's menu has it: marked done or archived, its next look would only start another; it
+        // leads the list on its own, and is quiet unless it asks you something. Turning it off is
+        // its Mac's.
+        let orchestrating = row?.orchestrator != nil
+        if !orchestrating {
+            Button(finishing ? "Wrapping up…" : "Mark as done", systemImage: "checkmark.circle") { Task { await markDone() } }
+                .disabled(!online || finishing)
+        }
         // An archived one is in no list to wait in or lead: unarchived, it can be.
         if row?.archived != true {
             // It joins the top of what waits on you rather than leaving it, so you stay here.
             Button(row?.raised == nil ? "Move to top" : "Back in line", systemImage: row?.raised == nil ? "arrow.up.to.line" : "arrow.uturn.down") { Task { await raise() } }
                 .disabled(!online)
+        }
+        if row?.archived != true, !orchestrating {
             Menu("Snooze", systemImage: "moon.zzz") {
                 if let suggested = row?.suggestedSnooze, Date.now.ms < suggested.offeredTill {
                     let until = Date(ms: suggested.until)
@@ -623,7 +634,7 @@ struct SessionView: View {
             // Back in the lists, here and on its Mac; a message sent to it brings it back too.
             Button("Unarchive", systemImage: "tray.and.arrow.up") { Task { await unarchive() } }
                 .disabled(!online)
-        } else {
+        } else if !orchestrating {
             // Pinned on its Mac, which lists it first there and here.
             Button(row?.pinned == nil ? "Pin" : "Unpin", systemImage: row?.pinned == nil ? "pin" : "pin.slash") { Task { await pin() } }
                 .disabled(!online)
@@ -641,6 +652,12 @@ struct SessionView: View {
 
     @ViewBuilder
     private var bottom: some View {
+        bottomNotes
+            .modifier(DoneHelpersDialog(asked: $helpersAsk, ask: { $0 }) { _, answer in Task { await markDone(helpers: answer) } })
+    }
+
+    @ViewBuilder
+    private var bottomNotes: some View {
         VStack(spacing: 8) {
             if let pending {
                 if pending.questions.isEmpty || pending.cannot != nil {
@@ -670,6 +687,10 @@ struct SessionView: View {
                 // Sent as the box sends a message, so one that isn't running goes on where the box
                 // would take it, as the Mac's goes on where Carry on would.
                 ApiErrorLine(note: error, tryAgain: canAct && pending == nil ? { Task { await send(text: error.message) } } : nil, sending: !(store.outgoing[key] ?? []).isEmpty)
+            }
+            // Its account signs in on its Mac: nothing here signs it in.
+            if let out = row?.signedOut {
+                SessionNote(words: out, symbol: "person.crop.circle.badge.exclamationmark", tint: .orange)
             }
             if let cut = row?.cutOff {
                 SessionNote(words: cut, symbol: "scissors", tint: .orange)
@@ -1377,6 +1398,12 @@ struct SessionView: View {
             await fork(String(trimmed.dropFirst("/fork".count)).trimmingCharacters(in: .whitespaces))
             return
         }
+        // `/login` would sign its account in where nobody sees it, holding the session there: it
+        // signs in on its Mac, and the box keeps it, saying so.
+        if reply == nil, let why = loginKept(text: trimmed, account: row?.account ?? "Its account") {
+            said = why
+            return
+        }
         // Claude Code's own is /btw, Codex's /side; typed here, either asks on the side from here.
         if reply == nil, row?.sides == true, let question = SideAsk.question(in: trimmed) {
             if !attached.isEmpty {
@@ -1538,17 +1565,23 @@ struct SessionView: View {
     /// Done with it, as the Mac's Mark as done: it closes where its Mac can close it, and is marked
     /// seen and archived; then what waits on you next, or back to the list. Work under way holds
     /// it, and done again soon after ends that too.
-    private func markDone() async {
+    private func markDone(helpers: HelpersAnswer? = nil) async {
         let stop = heldAt.map { Date.now.timeIntervalSince($0) < 15 } ?? false
         if !stop && row?.status == .working {
             heldAt = .now
             said = "“\(title)” is still working. Mark it done again to end that too."
             return
         }
+        // Its helpers whose work isn't over are asked about first, once; cancelled, nothing is
+        // done.
+        if helpers == nil, let ask = store.doneHelpers(key) {
+            helpersAsk = ask
+            return
+        }
         finishing = true
         defer { finishing = false }
         do {
-            let outcome = try await store.done(key, stop: stop)
+            let outcome = try await store.done(key, stop: stop, helpers: helpers)
             guard outcome.done else {
                 heldAt = .now
                 said = "\(outcome.message) Mark it done again to end that too."
@@ -3503,6 +3536,9 @@ struct SessionGlance: View {
             }
             if let error = row?.apiError {
                 ApiErrorLine(note: error, tryAgain: canAct && pending == nil ? {} : nil)
+            }
+            if let out = row?.signedOut {
+                SessionNote(words: out, symbol: "person.crop.circle.badge.exclamationmark", tint: .orange)
             }
             if let cut = row?.cutOff {
                 SessionNote(words: cut, symbol: "scissors", tint: .orange)
