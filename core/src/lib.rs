@@ -3138,6 +3138,13 @@ mod tests {
         assert_eq!(machine_load(Some(&windows), true).map(|l| (l.word, l.numbers)), Some(("Calm".into(), "70% of memory free".into())));
         assert_eq!(machine_load(Some(&strained), false), None);
         assert_eq!(machine_load(None, true), None);
+        // Current once a feed has come since the connection opened: the client moves `last_seen` on
+        // each feed and as a connection closes.
+        let mac = |online: bool, since: Option<i64>, last_seen: Option<i64>| codealong_peer::client::Device { key: "k".into(), short: "k".into(), name: "Mini".into(), online, since, last_seen, remote_control: true, app: "0.25.0".into(), loading: false, linked_back: true };
+        assert!(fed_since_connected(&mac(true, Some(10), Some(12))));
+        assert!(!fed_since_connected(&mac(true, Some(10), Some(8))), "back, but its last feed is from before");
+        assert!(!fed_since_connected(&mac(true, Some(10), None)));
+        assert!(!fed_since_connected(&mac(false, None, Some(12))));
     }
 
     #[test]
@@ -3765,12 +3772,21 @@ impl Core {
         // Its Mac's own keys for them, as they were when asked: one that came since isn't named.
         let theirs = |keys: &[String]| -> Vec<String> { keys.iter().filter_map(|k| split_remote(k).filter(|(d, _)| *d == device).map(|(_, k)| k.to_string())).collect() };
         let (end_helpers, keep_helpers) = helpers.as_ref().map(|a| (theirs(&a.end), theirs(&a.keep))).unwrap_or_default();
+        let chose = !end_helpers.is_empty() || !keep_helpers.is_empty();
+        // A Mac that came back on an older Codealong while you answered would go its own way with
+        // its helpers, a helper you chose to keep stopped with `stop`: nothing's done, and it's
+        // asked again.
+        let (older, mac) = self.client.with_feeds(|feeds| {
+            let d = feeds.iter().map(|(d, _)| d).find(|d| d.short == device || d.key == device);
+            (d.is_some_and(|d| !builds_since(&d.app, DONE_HELPERS_SINCE)), d.map_or_else(|| "its Mac".to_string(), |d| d.name.clone()))
+        });
+        if chose && older {
+            return Err(CoreError::Failed(format!("Codealong on {mac} is from before it could be told what becomes of a session\u{2019}s helpers now: mark it done again.")));
+        }
         let asked = params::Done { key: own.into(), stop, end_helpers, keep_helpers, ..Default::default() };
         let done = serde_json::to_value(asked).map_err(|e| e.to_string()).and_then(|p| self.client.ask(device, api::SESSION_DONE, p, DONE_WAIT)).and_then(|v| serde_json::from_value::<api::Done>(v).map_err(|e| e.to_string()));
         let why = match done {
             Ok(d) => return Ok(DoneOutcome { done: d.done, message: d.message, noted: d.noted }),
-            // What was chosen for its helpers didn't reach them: they're as they were.
-            Err(why) if helpers.as_ref().is_some_and(|a| !a.end.is_empty() || !a.keep.is_empty()) => format!("{why} Its helpers were left as they are."),
             Err(why) => why,
         };
         self.client.mark_seen(device, &[own.to_string()]).map_err(|_| CoreError::Failed(why.clone()))?;
@@ -3782,7 +3798,14 @@ impl Core {
                 .and_then(|(d, r)| r.lanes.iter().flat_map(|l| l.sessions.iter()).find(|s| s.key == own).map(|s| (s.title.clone(), s.live, d.name.clone())))
                 .unwrap_or_else(|| (String::new(), true, "its Mac".into()))
         });
-        Ok(done_anyway(&title, live, &mac, &why))
+        let mut out = done_anyway(&title, live, &mac, &why);
+        // Refused, or not answered in time (it may have gone through), what you chose for its
+        // helpers may not have reached them: worth saying, though it's archived.
+        if chose {
+            out.message = format!("{} It may not have heard what you chose for its helpers.", out.message);
+            out.noted = true;
+        }
+        Ok(out)
     }
 
     /// Names a session on the Mac it's on, where its harness keeps its name. Macs before

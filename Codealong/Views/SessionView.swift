@@ -655,7 +655,10 @@ struct SessionView: View {
         bottomNotes
             .modifier(DoneHelpersDialog(asked: $helpersAsk, ask: { $0.ask }) { asked, answer in
                 if let next = asked.goingOn {
-                    doneGoingOn(to: next, helpers: answer, speed: asked.speed)
+                    // What's next is read again as it's answered: not a helper it ends, nor one
+                    // answered elsewhere meanwhile.
+                    for ended in answer.end { store.dealtWith(ended) }
+                    doneGoingOn(to: onward ?? next, helpers: answer, speed: asked.speed)
                 } else {
                     Task { await markDone(helpers: answer, stop: asked.stop) }
                 }
@@ -726,7 +729,7 @@ struct SessionView: View {
             // Not while you write here, or your own answer to a question: the room is theirs, and
             // what's next waits.
             if let onward, draft.isEmpty && attached.isEmpty && !writingAnswer {
-                GoOnBar(next: onward, left: after.count, going: going(swipeDoes), offers: SwipeOn.offers(row: row, pending: pending, acted: replied), pickTime: pickSnooze) { goOn(to: onward, doing: $0) }
+                GoOnBar(next: onward, left: after.count, going: going(swipeDoes), offers: SwipeOn.offers(row: row, pending: pending, acted: replied), pickTime: pickSnooze) { goOn(to: onward, doing: $0 ?? swipeDoes) }
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
             // Snoozed from here as from its Snooze menu: it goes on to what's next, if anything. A
@@ -1406,12 +1409,17 @@ struct SessionView: View {
         }
         // `/login` would sign its account in where nobody sees it, holding the session there: it
         // signs in on its Mac, and the box keeps it, saying so.
-        if reply == nil, let why = loginKept(text: trimmed, account: row?.account ?? "Its account") {
+        if let why = loginKept(text: trimmed, account: row?.account ?? "Its account") {
             said = why
             return
         }
         // Claude Code's own is /btw, Codex's /side; typed here, either asks on the side from here.
         if reply == nil, row?.sides == true, let question = SideAsk.question(in: trimmed) {
+            // Nor asked on the side, where it would reach a background copy of it.
+            if let why = loginKept(text: question, account: row?.account ?? "Its account") {
+                said = why
+                return
+            }
             if !attached.isEmpty {
                 said = "A question on the side takes words only: take the images off to ask it, or send them in a reply."
                 return
@@ -1878,8 +1886,9 @@ struct SessionView: View {
         doing = pick
         switch going(pick) {
         case .done:
-            // Picked from the bar's menu, it asks about its helpers whose work isn't over first,
-            // as Mark as done does; a swipe asks nothing, and its Mac makes them yours.
+            // Picked from the bar's menu, its first item too, it asks about its helpers whose work
+            // isn't over first, as Mark as done does; a swipe, Go to next and ⌘] ask nothing, and
+            // its Mac makes them yours.
             if picked != nil, let ask = store.doneHelpers(key) {
                 helpersAsk = HelpersAsked(ask: ask, stop: false, goingOn: next, speed: speed)
                 return

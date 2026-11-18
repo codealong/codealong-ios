@@ -330,18 +330,19 @@ struct SideSheet: View {
     private func send() async {
         let question = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canSend else { return }
-        // `/login` signs its account in on its Mac, as the session's box says: neither the side
-        // conversation nor the session is sent it.
-        if let why = loginKept(text: question, account: row?.account ?? "Its account") {
-            problem = why
-            return
-        }
         await ask(question)
     }
 
     /// Asks the open one, or a new one, or the one being read, which is the open one then.
     private func ask(_ question: String) async {
         guard let conv = conversation else { return }
+        // `/login` signs its account in on its Mac, as the session's box says: neither the side
+        // conversation nor the session is sent it, whether it's typed here or came from the box.
+        if let why = loginKept(text: question, account: row?.account ?? "Its account") {
+            problem = why
+            if text.isEmpty { text = question }
+            return
+        }
         let from: String? = if case .past(let id) = showing { id } else { nil }
         asking = true
         defer { asking = false }
