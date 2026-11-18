@@ -25,6 +25,11 @@ pub struct ReviewBox {
     /// asked for where Codealong's agent approves it. None when you haven't reviewed it and no
     /// sign-off is asked, or its Mac doesn't say which review is yours.
     pub yours: Option<String>,
+    /// Your approval stands and nothing asks for your review again: Approve reads Approved and
+    /// steps back, another press another approval, as the Mac's does where you approved the commit
+    /// it's at (PrBox.tsx `approvedNow`). The phone isn't told which commit yours was of, so a
+    /// review asked for again, or the agent asking your sign-off, is what says it no longer stands.
+    pub approved: bool,
 }
 
 fn is_open(state: &str) -> bool {
@@ -36,16 +41,48 @@ fn comments(n: u64) -> String {
     format!("{n} {}", if n == 1 { "comment" } else { "comments" })
 }
 
-/// Your standing review among `reviews` (each reviewer's last approval or change request, else
-/// comment), in words. Where `pr` asks for your review again, that comes first, as the Mac's
-/// Re-review says (prStatus.ts `reReviewPill`): it's why a PR you reviewed waits on you. GitHub
-/// takes a review as the one asked of you, so one asked for while yours stands came after it.
-/// Where Codealong's agent approves the commit it's at, what's asked is your sign-off, as the Mac's
-/// mark says it (prStatus.ts `reviewMark`), whether or not you reviewed it before.
+/// Your standing review among `reviews`: each reviewer's last approval or change request, else
+/// comment.
+fn mine(reviews: &[PrReview]) -> Option<&PrReview> {
+    reviews.iter().find(|r| r.mine)
+}
+
+/// Your review was given after your review was last asked for, so it's the one asked: GitHub drops
+/// the ask as you review, but the PR's Mac lists it until it next reads the PR, as it does for a
+/// while after you review it here. Where either time isn't known, the ask stands.
+fn answers(pr: &PrRow, review: Option<&PrReview>) -> bool {
+    let Some(r) = review.filter(|r| r.state != "DISMISSED") else { return false };
+    matches!((r.at, pr.requested_at), (Some(at), Some(asked)) if at > asked)
+}
+
+/// What asks for your review of `pr` again, unless yours answers it: Codealong's agent asking your
+/// sign-off on the commit it approves (that commit), or your review asked for again on an open PR
+/// that isn't a draft (no commit).
+enum Asked<'a> {
+    SignOff(&'a str),
+    Again,
+}
+
+fn asked<'a>(pr: &'a PrRow, reviews: &[PrReview]) -> Option<Asked<'a>> {
+    if answers(pr, mine(reviews)) {
+        return None;
+    }
+    if let Some(approves) = pr.agent.as_ref().filter(|a| a.kind == "approves").and_then(|a| a.approves.as_deref()) {
+        return Some(Asked::SignOff(approves));
+    }
+    (pr.review_requested && is_open(&pr.state) && pr.state != "draft").then_some(Asked::Again)
+}
+
+/// Your standing review among `reviews`, in words. Where `pr` asks for your review again, that
+/// comes first, as the Mac's Re-review says (prStatus.ts `reReviewPill`): it's why a PR you
+/// reviewed waits on you. GitHub takes a review as the one asked of you, so one asked for while
+/// yours stands came after it. Where Codealong's agent approves the commit it's at, what's asked is
+/// your sign-off, as the Mac's mark says it (prStatus.ts `reviewMark`), whether or not you reviewed
+/// it before. A review of yours since the ask answers it (`answers`).
 fn yours(pr: &PrRow, reviews: &[PrReview]) -> Option<String> {
     // What your review did ("approved it {ago:<ms>}"): none without one, and no words for one
     // that was dismissed.
-    let did = reviews.iter().find(|r| r.mine).and_then(|r| {
+    let did = mine(reviews).and_then(|r| {
         let did = match r.state.as_str() {
             "APPROVED" => "approved it",
             "CHANGES_REQUESTED" => "asked for changes",
@@ -59,7 +96,8 @@ fn yours(pr: &PrRow, reviews: &[PrReview]) -> Option<String> {
             None => did.to_string(),
         }))
     });
-    if let Some(approves) = pr.agent.as_ref().filter(|a| a.kind == "approves").and_then(|a| a.approves.as_deref()) {
+    let asked = asked(pr, reviews);
+    if let Some(Asked::SignOff(approves)) = asked {
         let asked = format!("Your sign-off is asked for{}: Codealong\u{2019}s agent approves {approves}", if did.is_some() { " again" } else { "" });
         return Some(match did {
             Some(Some(did)) => format!("{asked}. You {did}"),
@@ -67,7 +105,7 @@ fn yours(pr: &PrRow, reviews: &[PrReview]) -> Option<String> {
             None => asked,
         });
     }
-    let again = pr.review_requested && is_open(&pr.state) && pr.state != "draft";
+    let again = matches!(asked, Some(Asked::Again));
     Some(match (did?, again) {
         (Some(did), true) => format!("Your review is asked for again: you {did}"),
         (Some(did), false) => format!("You {did}"),
@@ -107,7 +145,8 @@ pub fn review_box(pr: PrRow, draft: Option<PrDraft>, reviews: Vec<PrReview>) -> 
         (Some(why), Some(with)) => Some(format!("{why} {with}")),
         (why, with) => why.or(with),
     };
-    ReviewBox { reviewable, hint, note, yours: yours(&pr, &reviews) }
+    let approved = reviewable && mine(&reviews).is_some_and(|r| r.state == "APPROVED") && asked(&pr, &reviews).is_none();
+    ReviewBox { reviewable, hint, note, yours: yours(&pr, &reviews), approved }
 }
 
 /// Whether `verdict` has something to say (`saysSomething`): what's written, or a draft with text
@@ -253,6 +292,51 @@ mod tests {
         // While it re-reviews or reviews, it's your review that's asked, as before.
         assert_eq!(yours(agent("re-reviewing", Some("1a2b3c4")), changes()).as_deref(), Some("Your review is asked for again: you asked for changes {ago:9}"));
         assert_eq!(yours(agent("reviewing", None), vec![]), None);
+    }
+
+    #[test]
+    fn your_approval_stands_until_your_review_is_asked_again() {
+        use crate::quick::PrAgent;
+        let approved = |f: &dyn Fn(&mut PrRow), reviews: Vec<PrReview>| {
+            let mut p = pr("approved", false);
+            f(&mut p);
+            review_box(p, None, reviews).approved
+        };
+        let mine = || vec![review("me", "APPROVED", Some(9), true)];
+        assert!(approved(&|_| {}, mine()));
+        // Someone else's approval, or another verdict of yours, isn't.
+        assert!(!approved(&|_| {}, vec![review("ann", "APPROVED", Some(9), false)]));
+        assert!(!approved(&|_| {}, vec![review("me", "CHANGES_REQUESTED", Some(9), true)]));
+        // Asked again, or the agent asking your sign-off, is a review still to give.
+        assert!(!approved(&|p| p.review_requested = true, mine()));
+        let signs = PrAgent { kind: "approves".into(), words: String::new(), says: String::new(), approves: Some("309811a".into()) };
+        assert!(!approved(&|p| p.agent = Some(signs.clone()), mine()));
+        // A PR that takes only a comment has no Approve to step back.
+        assert!(!approved(&|p| p.opened_by_its_mac = true, mine()));
+        assert!(!approved(&|p| p.state = "merged".into(), mine()));
+    }
+
+    #[test]
+    fn a_review_since_the_ask_answers_it() {
+        use crate::quick::PrAgent;
+        // Approved here a moment ago: its Mac still lists the ask, and the agent's sign-off with it.
+        let mut p = pr("approved", false);
+        p.review_requested = true;
+        p.requested_at = Some(5);
+        p.agent = Some(PrAgent { kind: "approves".into(), words: String::new(), says: String::new(), approves: Some("309811a".into()) });
+        let b = review_box(p.clone(), None, vec![review("me", "APPROVED", Some(9), true)]);
+        assert_eq!(b.yours.as_deref(), Some("You approved it {ago:9}"));
+        assert!(b.approved);
+        // One given before the ask, or dismissed since, doesn't answer it; nor one whose time isn't known.
+        let before = review_box(p.clone(), None, vec![review("me", "APPROVED", Some(3), true)]);
+        assert!(before.yours.unwrap().starts_with("Your sign-off is asked for again"));
+        assert!(!before.approved);
+        assert!(review_box(p.clone(), None, vec![review("me", "DISMISSED", Some(9), true)]).yours.unwrap().starts_with("Your sign-off is asked for again"));
+        assert!(!review_box(p.clone(), None, vec![review("me", "APPROVED", None, true)]).approved);
+        p.agent = None;
+        assert_eq!(review_box(p.clone(), None, vec![review("me", "COMMENTED", Some(9), true)]).yours.as_deref(), Some("You commented {ago:9}"));
+        p.requested_at = None;
+        assert!(!review_box(p, None, vec![review("me", "APPROVED", Some(9), true)]).approved);
     }
 
     #[test]

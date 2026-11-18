@@ -88,7 +88,8 @@ go as asked stays until you dismiss it. Swipe
 right to go back to the one you came from, leaving this one as it is. One you replied to, one
 still working, and one waiting on you to allow something are left as they are, and holding *Send* sends and goes straight
 on. A PR's page has the same bar over its review box: swiping on from a review you haven't given
-brings it round again later, and a tap on the bar snoozes it instead. The next one is read ahead,
+brings it round again later, a tap on the bar snoozes it instead, and a review you give goes on by
+itself once GitHub has it (swipe right to come back to it). The next one is read ahead,
 so it shows at once. On the last one the bar says nothing else waits, and going on goes to a page that says so,
 with how many sessions are working; whatever comes to wait on you while it's open shows up there,
 a swipe away. Replies an
@@ -158,7 +159,8 @@ as, or a work account), the menu's *Your GitHub accounts* picks which count as y
 sessions that worked on it on every Mac (tap one to open it), the one its Mac tells of what happens on it first, tagged Primary, your draft review of it if you began one, its description, reviews, comments and changed files with
 their diffs. The box at its foot reviews it, as the Mac's does: write what to say, then *Request
 changes*, *Comment* or *Approve* (only *Comment* on your own PR or a closed one), submitting your
-draft with it as GitHub's *Finish your review* does. *Merge…*, beside its state, is its merge box
+draft with it as GitHub's *Finish your review* does. Once your approval stands, *Approve* reads
+*Approved*. *Merge…*, beside its state, is its merge box
 as on the Mac: the way to merge and the commit's words, auto-merge, the merge queue, updating the
 branch, ready for review and the branch's deletion. Your Mac's `gh` does it as you, so reviewing and merging need remote control on
 that Mac; reading and snoozing a review don't.

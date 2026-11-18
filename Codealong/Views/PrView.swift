@@ -148,13 +148,20 @@ struct PrView: View {
                             .padding(.horizontal)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
-                    ReviewBoxView(pr: pr, draft: detail?.draft, reviews: detail?.reviews ?? [], read: detail != nil, whyNot: whyNot ?? (pr.slug.isEmpty ? "Its Mac can't review this PR: its repo has no GitHub name there." : nil), said: said) { words in
+                    ReviewBoxView(pr: pr, draft: detail?.draft, reviews: detail?.reviews ?? [], read: detail != nil, whyNot: whyNot ?? (pr.slug.isEmpty ? "Its Mac can't review this PR: its repo has no GitHub name there." : nil), said: said, goesOn: goingThrough && onward != nil) { words in
                         said = words
                         actedSaid = words
                         // A review submitted is the one asked of you, whatever its verdict.
                         acted = true
                         store.dealtWith(page)
-                        Task { await load() }
+                        // Going through what waits, it goes on to the next once GitHub has it, as
+                        // the Mac's PR card does, and says there how it went; swiping back comes
+                        // back to it. Not if you've gone elsewhere while it went.
+                        if goingThrough, store.showing == page, let onward {
+                            moveOn(to: onward, outcome: Outcome(.sent, words))
+                        } else {
+                            Task { await load() }
+                        }
                     }
                 }
             }
@@ -1074,7 +1081,10 @@ private struct DiffView: View {
 /// when there's one, which the page shows first, so they wait until the page has read the PR. It
 /// floats over the page in glass, as a session's reply box does, and what's written is kept with
 /// the PR while you look at others. Over it, where the PR stands and how you last reviewed it, as
-/// the top of the page says, so a verdict isn't given twice or with failing checks unseen.
+/// the top of the page says, so a verdict isn't given twice or with failing checks unseen. Once
+/// your approval stands, Approve reads Approved and steps back, as the Mac's does. Request changes
+/// and Comment read as buttons with nothing written too: a tap then opens the keyboard to write
+/// it, rather than their being dimmed past reading on the glass.
 private struct ReviewBoxView: View {
     let pr: PrRow
     let draft: PrDraft?
@@ -1085,12 +1095,16 @@ private struct ReviewBoxView: View {
     let whyNot: String?
     /// How the last thing done on the page went.
     let said: String?
+    /// A verdict goes on to what waits next once it's gone (`PrView`), for VoiceOver to say.
+    var goesOn = false
     let done: (String) -> Void
     @Environment(Store.self) private var store
     @FocusState private var typing: Bool
     @State private var sending: PrVerdict?
     /// Why the last review didn't go, what was written still in the box.
     @State private var failed: String?
+    /// Request changes or Comment tapped with nothing to say: the line says what to write.
+    @State private var wanting: PrVerdict?
     @State private var sent = 0
 
     private var text: String {
@@ -1114,7 +1128,7 @@ private struct ReviewBoxView: View {
                 }
             }
             .padding(.horizontal, 10)
-            if let line = failed ?? (sending == nil ? nil : "Sending to GitHub…") ?? whyNot ?? said ?? box.note {
+            if let line = failed ?? (sending == nil ? nil : "Sending to GitHub…") ?? whyNot ?? wanting.map(Self.write) ?? said ?? box.note {
                 Text(line)
                     .font(.footnote)
                     .foregroundStyle(failed == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.red))
@@ -1171,15 +1185,15 @@ private struct ReviewBoxView: View {
         }
     }
 
-    /// Request changes and Comment, then Approve at the far end, filled. Where only a comment goes,
-    /// Comment is at the end, filled.
+    /// Request changes and Comment, then Approve at the far end, filled until your approval stands,
+    /// when it reads Approved. Where only a comment goes, Comment is at the end, filled.
     private func verdicts(_ box: ReviewBox, short: Bool) -> some View {
         HStack(spacing: 8) {
             if box.reviewable {
                 button(.requestChanges, short: short, filled: false)
                 button(.comment, short: short, filled: false)
                 Spacer(minLength: 0)
-                button(.approve, short: false, filled: true)
+                button(.approve, short: false, filled: !box.approved, approved: box.approved)
             } else {
                 Spacer(minLength: 0)
                 button(.comment, short: false, filled: true)
@@ -1189,22 +1203,23 @@ private struct ReviewBoxView: View {
         .buttonBorderShape(.capsule)
     }
 
-    /// A verdict's button: the filled one says what it is with its icon too, and with little room
-    /// the others are only their icons.
+    /// A verdict's button: the filled one says what it is with its icon too, as Approved does, and
+    /// with little room the others are only their icons. One with nothing to say yet still reads as
+    /// a button, its tap asking for the words (`tapped`).
     @ViewBuilder
-    private func button(_ verdict: PrVerdict, short: Bool, filled: Bool) -> some View {
+    private func button(_ verdict: PrVerdict, short: Bool, filled: Bool, approved: Bool = false) -> some View {
         let (label, icon): (String, String) = switch verdict {
-        case .approve: ("Approve", "checkmark")
+        case .approve: (approved && sending != .approve ? "Approved" : "Approve", "checkmark")
         case .comment: ("Comment", "text.bubble")
         case .requestChanges: ("Request changes", "exclamationmark.bubble")
         }
         let button = Button {
-            Task { await send(verdict) }
+            tapped(verdict)
         } label: {
             Group {
                 if short {
                     Image(systemName: icon)
-                } else if filled {
+                } else if filled || verdict == .approve {
                     Label(label, systemImage: icon)
                 } else {
                     Text(label)
@@ -1212,12 +1227,39 @@ private struct ReviewBoxView: View {
             }
             .font(.footnote.weight(filled ? .semibold : .medium))
         }
-        .disabled(!can(verdict))
+        .disabled(!read || whyNot != nil || sending != nil)
         .accessibilityLabel(label)
+        .accessibilityHint(hint(verdict, approved: approved))
         if filled {
             button.buttonStyle(.borderedProminent)
         } else {
             button.buttonStyle(.bordered)
+        }
+    }
+
+    /// What a verdict's button does, beyond its name, for VoiceOver.
+    private func hint(_ verdict: PrVerdict, approved: Bool) -> String {
+        if !reviewSaysSomething(verdict: verdict, written: text, draft: draft) {
+            return verdict == .requestChanges ? "Write what should change first" : "Write your comment first"
+        }
+        let again = verdict == .approve && approved ? "Approves it again" : ""
+        let on = goesOn ? "Goes on to the next once it's sent" : ""
+        return [again, on].filter { !$0.isEmpty }.joined(separator: ". ")
+    }
+
+    /// What the line says to write, for a verdict tapped with nothing to say.
+    private static func write(_ verdict: PrVerdict) -> String {
+        verdict == .requestChanges ? "Write what should change, then tap Request changes." : "Write your comment, then tap Comment."
+    }
+
+    /// A verdict tapped: sent, or where it needs words and has none, the keyboard opens to write
+    /// them and the line says so.
+    private func tapped(_ verdict: PrVerdict) {
+        if reviewSaysSomething(verdict: verdict, written: text, draft: draft) {
+            Task { await send(verdict) }
+        } else {
+            wanting = verdict
+            typing = true
         }
     }
 
@@ -1229,6 +1271,7 @@ private struct ReviewBoxView: View {
         guard can(verdict) else { return }
         sending = verdict
         failed = nil
+        wanting = nil
         defer { sending = nil }
         let written = text
         do {
