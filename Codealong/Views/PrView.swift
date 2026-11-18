@@ -154,13 +154,14 @@ struct PrView: View {
                         // A review submitted is the one asked of you, whatever its verdict.
                         acted = true
                         store.dealtWith(page)
+                        // What was read of it before goes, so coming back doesn't draw it as it
+                        // was, Approve ready for another, while it's read again.
+                        store.forgetPrDetail(pr.key)
                         // Going through what waits, it goes on to the next once GitHub has it, as
                         // the Mac's PR card does, and says there how it went; swiping back comes
                         // back to it while its Mac still lists it. Not if you've gone elsewhere
-                        // while it went. What was read of it before goes, so coming back doesn't
-                        // draw it as it was, Approve ready for another, while it's read again.
+                        // while it went.
                         if goingThrough, store.showing == page, let onward {
-                            store.forgetPrDetail(pr.key)
                             moveOn(to: onward, outcome: Outcome(.sent, words))
                         }
                         Task { await load() }
@@ -1260,6 +1261,7 @@ private struct ReviewBoxView: View {
         if reviewSaysSomething(verdict: verdict, written: text, draft: draft) {
             Task { await send(verdict) }
         } else {
+            failed = nil
             wanting = verdict
             typing = true
         }

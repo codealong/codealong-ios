@@ -606,6 +606,8 @@ final class Store {
     func forgetPrDetail(_ key: String) {
         prDetails[key] = nil
         prReadAt[key] = nil
+        // A read asked for before it, answering after, isn't kept either.
+        prReads[key] = (prReads[key] ?? 0) + 1
     }
 
     /// Reads a PR's page ahead of its being opened, unless it was read lately: the next that waits

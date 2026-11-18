@@ -28,8 +28,8 @@ pub struct ReviewBox {
     /// Your approval stands and nothing asks for your review again: Approve reads Approved and
     /// steps back, another press another approval, as the Mac's does where you approved the commit
     /// it's at (PrBox.tsx `approvedNow`). The phone isn't told which commit yours was of, so a
-    /// review asked for again, the agent asking your sign-off, or its approvals all being of
-    /// earlier commits (`stale`) is what says it no longer stands.
+    /// review asked for again (a draft's too), the agent asking your sign-off, or its approvals
+    /// all being of earlier commits (`stale`) is what says it no longer stands.
     pub approved: bool,
 }
 
@@ -137,8 +137,9 @@ pub fn review_box(pr: PrRow, draft: Option<PrDraft>, reviews: Vec<PrReview>) -> 
         (why, with) => why.or(with),
     };
     // An approval of earlier commits than the one it's at (`stale`, which says so when every
-    // approval is) doesn't stand for it, as the Mac's goes by your approval's commit.
-    let approved = reviewable && mine(&reviews).is_some_and(|r| r.state == "APPROVED") && asked(&pr).is_none() && pr.stale.is_none();
+    // approval is) doesn't stand for it, as the Mac's goes by your approval's commit. A draft
+    // asking your review is one to give too, though its words leave the ask out.
+    let approved = reviewable && mine(&reviews).is_some_and(|r| r.state == "APPROVED") && asked(&pr).is_none() && !pr.review_requested && pr.stale.is_none();
     ReviewBox { reviewable, hint, note, yours: yours(&pr, &reviews), approved }
 }
 
@@ -302,6 +303,7 @@ mod tests {
         assert!(!approved(&|_| {}, vec![review("me", "CHANGES_REQUESTED", Some(9), true)]));
         // Asked again, or the agent asking your sign-off, is a review still to give.
         assert!(!approved(&|p| p.review_requested = true, mine()));
+        assert!(!approved(&|p| { p.state = "draft".into(); p.review_requested = true }, mine()));
         let signs = PrAgent { kind: "approves".into(), words: String::new(), says: String::new(), approves: Some("309811a".into()) };
         assert!(!approved(&|p| p.agent = Some(signs.clone()), mine()));
         // Approved only before the commits since, which GitHub still counts.
