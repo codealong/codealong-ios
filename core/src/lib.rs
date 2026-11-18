@@ -3781,7 +3781,7 @@ impl Core {
             (d.is_some_and(|d| !builds_since(&d.app, DONE_HELPERS_SINCE)), d.map_or_else(|| "its Mac".to_string(), |d| d.name.clone()))
         });
         if chose && older {
-            return Err(CoreError::Failed(format!("Codealong on {mac} is from before it could be told what becomes of a session\u{2019}s helpers now: mark it done again.")));
+            return Err(CoreError::Failed(format!("Codealong on {mac} is from before it could be told what becomes of a session\u{2019}s helpers now, so nothing was done: update it there to choose, as marked done from an older one its helpers go its own way.")));
         }
         let asked = params::Done { key: own.into(), stop, end_helpers, keep_helpers, ..Default::default() };
         let done = serde_json::to_value(asked).map_err(|e| e.to_string()).and_then(|p| self.client.ask(device, api::SESSION_DONE, p, DONE_WAIT)).and_then(|v| serde_json::from_value::<api::Done>(v).map_err(|e| e.to_string()));
@@ -3789,8 +3789,11 @@ impl Core {
             Ok(d) => return Ok(DoneOutcome { done: d.done, message: d.message, noted: d.noted }),
             Err(why) => why,
         };
-        self.client.mark_seen(device, &[own.to_string()]).map_err(|_| CoreError::Failed(why.clone()))?;
-        self.client.archive(device, own, true).map_err(|_| CoreError::Failed(why.clone()))?;
+        // Not reached at all, it may still have heard Done before it went: what was chosen for its
+        // helpers is said to be unknown either way.
+        let unheard = |why: &str| CoreError::Failed(if chose { format!("{why} It may not have heard what you chose for its helpers.") } else { why.to_string() });
+        self.client.mark_seen(device, &[own.to_string()]).map_err(|_| unheard(&why))?;
+        self.client.archive(device, own, true).map_err(|_| unheard(&why))?;
         let (title, live, mac) = self.client.with_feeds(|feeds| {
             feeds
                 .iter()

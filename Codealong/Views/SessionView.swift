@@ -654,11 +654,12 @@ struct SessionView: View {
     private var bottom: some View {
         bottomNotes
             .modifier(DoneHelpersDialog(asked: $helpersAsk, ask: { $0.ask }) { asked, answer in
-                if let next = asked.goingOn {
-                    // What's next is read again as it's answered: not a helper it ends, nor one
-                    // answered elsewhere meanwhile.
-                    for ended in answer.end { store.dealtWith(ended) }
-                    doneGoingOn(to: onward ?? next, helpers: answer, speed: asked.speed)
+                if asked.goingOn != nil {
+                    // What's next is read again as it's answered, leaving out the helpers it ends
+                    // (for this choice alone: one its Mac doesn't end still waits), and one
+                    // answered elsewhere meanwhile; with none, the end of what waits.
+                    let ended = Set(answer.end)
+                    doneGoingOn(to: Onward.of(after.filter { !ended.contains($0.key) }, goingThrough: true) ?? .end, helpers: answer, speed: asked.speed)
                 } else {
                     Task { await markDone(helpers: answer, stop: asked.stop) }
                 }
@@ -1251,6 +1252,8 @@ struct SessionView: View {
                 if scroll.hold != .none {
                     scroll.hold = .none
                     repin()
+                    // Nothing moved to say it's near the top still: the page before, if it is.
+                    readOlderIfNear()
                 }
             }
         }
@@ -1314,9 +1317,11 @@ struct SessionView: View {
             if loadingOlder || scroll.waiting != nil || scroll.hold != .none {
                 try? await Task.sleep(for: .milliseconds(50))
             } else {
-                let had = items.count
+                // A page can grow nothing but the first line (an orchestrator's looks that found
+                // nothing, folded into the one shown), which takes the page's first id.
+                let had = (items.count, items.first?.id)
                 await older()
-                if items.count == had && scroll.waiting == nil { return }
+                if items.count == had.0 && items.first?.id == had.1 && scroll.waiting == nil { return }
             }
             // Gone down to the newest meanwhile, or to another prompt: that's where it stays.
             guard scroll.trip == trip else { return }
@@ -1398,6 +1403,11 @@ struct SessionView: View {
         let images = reply == nil ? attached.compactMap(\.reference) : []
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if reply == nil && (trimmed == "/fork" || trimmed.hasPrefix("/fork ")) {
+            // A copy started on `/login` would wait on a sign-in nobody sees, as the session would.
+            if let why = loginKept(text: String(trimmed.dropFirst("/fork".count)), account: row?.account ?? "Its account") {
+                said = why
+                return
+            }
             // A fork starts on words alone: the images would be left for the next reply here.
             if !attached.isEmpty {
                 said = "A fork starts with words only: take the images off to fork, or send them in a reply."
