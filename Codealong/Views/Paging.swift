@@ -183,28 +183,38 @@ struct TitleBlock: View {
             }
             // An orchestrator's session keeps watch from a chat of its own: it says when it last
             // looked and what over, as the Mac's header does, its Mac only where there are several.
-            let place = row.orchestrator.map { o in
-                [String(Clock.text(o.header, now: .now).characters), store.devices.count > 1 ? Names.short(row.deviceName) : nil].compactMap { $0 }.joined(separator: " · ")
-            } ?? "\(Names.short(row.deviceName)) · \(row.project)\(row.archived ? " · Archived" : "")"
-            // The PR stays whole: where it is and its labels give way to it, as on a session's row.
-            HStack(spacing: 0) {
-                withLabels(Text(place), row.labels).lineLimit(1)
-                if let pr {
-                    Text("\(Text(verbatim: " · "))\(prText(pr))").fixedSize()
-                    if opens {
-                        Image(systemName: "chevron.right")
-                            .imageScale(.small)
-                            .fontWeight(.semibold)
-                            .foregroundStyle(.tertiary)
-                            .padding(.leading, 3)
-                    }
+            // The time is read again every half a minute, so it doesn't stand still between feeds.
+            if let o = row.orchestrator {
+                TimelineView(.periodic(from: .now, by: 30)) { context in
+                    placeLine([String(Clock.text(o.header, now: context.date).characters), store.devices.count > 1 ? Names.short(row.deviceName) : nil].compactMap { $0 }.joined(separator: " · "), row: row, pr: pr, opens: opens)
+                }
+            } else {
+                placeLine("\(Names.short(row.deviceName)) · \(row.project)\(row.archived ? " · Archived" : "")", row: row, pr: pr, opens: opens)
+            }
+        }
+    }
+
+    /// The line under a session's title: where it is, then its labels and its PR (`opens`: with a
+    /// chevron, as a tap opens it).
+    private func placeLine(_ place: String, row: SessionRow, pr: PrRow?, opens: Bool) -> some View {
+        // The PR stays whole: where it is and its labels give way to it, as on a session's row.
+        HStack(spacing: 0) {
+            withLabels(Text(place), row.labels).lineLimit(1)
+            if let pr {
+                Text("\(Text(verbatim: " · "))\(prText(pr))").fixedSize()
+                if opens {
+                    Image(systemName: "chevron.right")
+                        .imageScale(.small)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.tertiary)
+                        .padding(.leading, 3)
                 }
             }
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel([place, pr.map { "PR \($0.number), \($0.standing.words)" }, row.labels.isEmpty ? nil : labelsSaid(row.labels)].compactMap { $0 }.joined(separator: ", "))
         }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel([place, pr.map { "PR \($0.number), \($0.standing.words)" }, row.labels.isEmpty ? nil : labelsSaid(row.labels)].compactMap { $0 }.joined(separator: ", "))
     }
 
     /// A PR as the line under a session's title names it: its icon, number and where it stands, as

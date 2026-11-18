@@ -823,13 +823,15 @@ final class Store {
     /// Marks a session done that a swipe went on from, without holding up the swipe. Once its Mac
     /// answers, the session shown then says how it went (`tellLater`). Work under way holds it, as
     /// it holds Mark as done, and one held or not reached comes round again.
-    func doneLater(_ key: String, title: String) {
+    /// `helpers` is what Mark as done in the bar's menu was answered for its helpers; a swipe asks
+    /// nothing, and its Mac makes those whose work isn't over yours.
+    func doneLater(_ key: String, title: String, helpers: HelpersAnswer? = nil) {
         // A swipe marks a finished turn done, so a check going through real sessions would end
         // them: there it comes round again, as one left unseen does.
         guard !lookOnly else { return comeRound(key) }
         Task {
             do {
-                let outcome = try await done(key, stop: false)
+                let outcome = try await done(key, stop: false, helpers: helpers)
                 if !outcome.done { comeRound(key) }
                 tellLater(.done(outcome, title: title))
             } catch {

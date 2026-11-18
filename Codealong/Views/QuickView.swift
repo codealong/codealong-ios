@@ -66,7 +66,7 @@ struct QuickView: View {
     @State private var doneHeld: [String: Date] = [:]
     /// A row's Mark as done asks what becomes of the session's helpers whose work isn't over, as
     /// the Mac's does: the session, and what it asks.
-    @State private var helpersAsk: (row: SessionRow, ask: DoneHelpersAsk)?
+    @State private var helpersAsk: (row: SessionRow, ask: DoneHelpersAsk, stop: Bool)?
     /// What a row's menu asked of a Mac and waits on its answer for, as `<what>:<key>`: asked again
     /// meanwhile, it would go twice (two approvals, two forks).
     @State private var asking: Set<String> = []
@@ -190,7 +190,7 @@ struct QuickView: View {
             .alert(store.notice ?? "", isPresented: Binding(get: { store.notice != nil }, set: { if !$0 { store.notice = nil } })) {
                 Button("OK", role: .cancel) { store.notice = nil }
             }
-            .modifier(DoneHelpersDialog(asked: $helpersAsk, ask: { $0.ask }) { asked, answer in markDone(asked.row, helpers: answer) })
+            .modifier(DoneHelpersDialog(asked: $helpersAsk, ask: { $0.ask }) { asked, answer in markDone(asked.row, helpers: answer, stop: asked.stop) })
             .alert("Rename", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
                 TextField("Name", text: $newName)
                 Button("Rename") {
@@ -1056,8 +1056,10 @@ struct QuickView: View {
     /// Done with a session, as the Mac's Mark as done and its own: it closes where its Mac can
     /// close it, and is marked seen and archived. Work under way holds it, and done again soon
     /// after ends that too.
-    private func markDone(_ r: SessionRow, helpers: HelpersAnswer? = nil) {
-        let stop = doneHeld[r.key].map { Date.now.timeIntervalSince($0) < 15 } ?? false
+    /// `helpers` and `stop`: how its question about helpers was answered, and whether the Mark as
+    /// done that asked it ends work under way too, decided before it was read.
+    private func markDone(_ r: SessionRow, helpers: HelpersAnswer? = nil, stop decided: Bool? = nil) {
+        let stop = decided ?? doneHeld[r.key].map { Date.now.timeIntervalSince($0) < 15 } ?? false
         if !stop && r.status == .working {
             doneHeld[r.key] = .now
             store.notice = "“\(r.title)” is still working. Mark it done again to end that too."
@@ -1066,7 +1068,7 @@ struct QuickView: View {
         // Its helpers whose work isn't over are asked about first, once; cancelled, nothing is
         // done.
         if helpers == nil, let ask = store.doneHelpers(r.key) {
-            helpersAsk = (r, ask)
+            helpersAsk = (r, ask, stop)
             return
         }
         actOnce("done:" + r.key) {

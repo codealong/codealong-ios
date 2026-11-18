@@ -65,14 +65,23 @@ struct DoneHelpersDialog<Asked>: ViewModifier {
     func body(content: Content) -> some View {
         content.confirmationDialog(asked.map(ask)?.title ?? "", isPresented: Binding(get: { asked != nil }, set: { if !$0 { asked = nil } }), titleVisibility: .visible, presenting: asked) { a in
             let q = ask(a)
-            let shown = q.helpers.map(\.key)
-            Button(q.keep) { answer(a, HelpersAnswer(shown: shown, end: false)) }
-            Button(q.end, role: .destructive) { answer(a, HelpersAnswer(shown: shown, end: true)) }
+            Button(q.keep) { answer(a, q.keeping) }
+            Button(q.end, role: .destructive) { answer(a, q.ending) }
             Button("Cancel", role: .cancel) {}
         } message: { a in
             Text(ask(a).message(now: .now))
         }
     }
+}
+
+/// A session page's Mark as done waiting on its question about helpers: whether it ends work under
+/// way too, decided before the question was read, and, from the bar's menu, the page it goes on
+/// to once answered.
+struct HelpersAsked {
+    let ask: DoneHelpersAsk
+    let stop: Bool
+    var goingOn: Onward?
+    var speed: CGFloat = 0
 }
 
 extension DoneHelpersAsk {

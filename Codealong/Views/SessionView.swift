@@ -158,7 +158,7 @@ struct SessionView: View {
     @State private var heldAt: Date?
     @State private var finishing = false
     /// Mark as done asks what becomes of its helpers whose work isn't over, as the Mac's does.
-    @State private var helpersAsk: DoneHelpersAsk?
+    @State private var helpersAsk: HelpersAsked?
     /// You marked it unread here: it's left Your turn, and the screen goes back to the list.
     @State private var markedUnread = false
     @State private var renaming = false
@@ -653,7 +653,13 @@ struct SessionView: View {
     @ViewBuilder
     private var bottom: some View {
         bottomNotes
-            .modifier(DoneHelpersDialog(asked: $helpersAsk, ask: { $0 }) { _, answer in Task { await markDone(helpers: answer) } })
+            .modifier(DoneHelpersDialog(asked: $helpersAsk, ask: { $0.ask }) { asked, answer in
+                if let next = asked.goingOn {
+                    doneGoingOn(to: next, helpers: answer, speed: asked.speed)
+                } else {
+                    Task { await markDone(helpers: answer, stop: asked.stop) }
+                }
+            })
     }
 
     @ViewBuilder
@@ -1565,8 +1571,10 @@ struct SessionView: View {
     /// Done with it, as the Mac's Mark as done: it closes where its Mac can close it, and is marked
     /// seen and archived; then what waits on you next, or back to the list. Work under way holds
     /// it, and done again soon after ends that too.
-    private func markDone(helpers: HelpersAnswer? = nil) async {
-        let stop = heldAt.map { Date.now.timeIntervalSince($0) < 15 } ?? false
+    /// `helpers` and `stop` are how its question about helpers was answered, and whether the
+    /// Mark as done that asked it ends work under way too, decided before it was read.
+    private func markDone(helpers: HelpersAnswer? = nil, stop decided: Bool? = nil) async {
+        let stop = decided ?? heldAt.map { Date.now.timeIntervalSince($0) < 15 } ?? false
         if !stop && row?.status == .working {
             heldAt = .now
             said = "“\(title)” is still working. Mark it done again to end that too."
@@ -1575,7 +1583,7 @@ struct SessionView: View {
         // Its helpers whose work isn't over are asked about first, once; cancelled, nothing is
         // done.
         if helpers == nil, let ask = store.doneHelpers(key) {
-            helpersAsk = ask
+            helpersAsk = HelpersAsked(ask: ask, stop: stop)
             return
         }
         finishing = true
@@ -1870,9 +1878,13 @@ struct SessionView: View {
         doing = pick
         switch going(pick) {
         case .done:
-            store.dealtWith(key)
-            store.doneLater(key, title: title)
-            moveOn(to: next, outcome: Outcome(.waiting, "Marking “\(title)” as done…"), speed: speed, seen: false)
+            // Picked from the bar's menu, it asks about its helpers whose work isn't over first,
+            // as Mark as done does; a swipe asks nothing, and its Mac makes them yours.
+            if picked != nil, let ask = store.doneHelpers(key) {
+                helpersAsk = HelpersAsked(ask: ask, stop: false, goingOn: next, speed: speed)
+                return
+            }
+            doneGoingOn(to: next, speed: speed)
         case .archive:
             store.dealtWith(key)
             store.archiveLater(key, title: title)
@@ -1884,6 +1896,14 @@ struct SessionView: View {
             // Left as it is, it isn't marked seen as it slides either.
             moveOn(to: next, speed: speed, seen: pick != .keep)
         }
+    }
+
+    /// Marks it done as it goes on to `next`, without waiting on its Mac (`Store.doneLater`), its
+    /// helpers as `helpers` says where the bar's Mark as done asked.
+    private func doneGoingOn(to next: Onward, helpers: HelpersAnswer? = nil, speed: CGFloat = 0) {
+        store.dealtWith(key)
+        store.doneLater(key, title: title, helpers: helpers)
+        moveOn(to: next, outcome: Outcome(.waiting, "Marking “\(title)” as done…"), speed: speed, seen: false)
     }
 
     /// Snoozes it until `until` as it goes on to `next`, leaving it as it was: it comes back as Your

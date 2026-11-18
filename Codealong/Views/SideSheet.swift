@@ -330,6 +330,12 @@ struct SideSheet: View {
     private func send() async {
         let question = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canSend else { return }
+        // `/login` signs its account in on its Mac, as the session's box says: neither the side
+        // conversation nor the session is sent it.
+        if let why = loginKept(text: question, account: row?.account ?? "Its account") {
+            problem = why
+            return
+        }
         await ask(question)
     }
 

@@ -136,11 +136,19 @@ pub enum LoadWord {
     Strained,
 }
 
-/// A Mac's load as the phone shows it, while it's connected (`online`), as the Mac's machine menu
-/// leaves out one that's away (machineLoad.ts `loadNumbers`).
-fn machine_load(load: Option<&codealong_peer::model::Load>, online: bool) -> Option<MachineLoad> {
+/// Whether a Mac is connected and a feed has come since the connection opened (its first always
+/// comes, with its own state): until then what it said is from before, as the Mac's peers.rs
+/// `caught_up` has it. The client moves `last_seen` on each feed and as a connection closes.
+fn fed_since_connected(d: &codealong_peer::client::Device) -> bool {
+    d.online && d.since.is_some_and(|since| d.last_seen.is_some_and(|seen| seen >= since))
+}
+
+/// A Mac's load as the phone shows it, while it's connected and has said it on this connection
+/// (`current`, `fed_since_connected`), as the Mac's machine menu leaves out one that's away or
+/// just back (machineLoad.ts `loadNumbers`, peers.rs `caught_up`).
+fn machine_load(load: Option<&codealong_peer::model::Load>, current: bool) -> Option<MachineLoad> {
     use codealong_peer::model::LoadLevel;
-    let l = load.filter(|_| online)?;
+    let l = load.filter(|_| current)?;
     let (level, word) = match l.level {
         LoadLevel::Calm => (LoadWord::Calm, "Calm"),
         LoadLevel::Busy => (LoadWord::Busy, "Busy"),
@@ -581,7 +589,9 @@ const SNOOZE_WORTH_MS: i64 = 5 * 60 * 1000;
 /// its turn lifts, while it isn't working, where its harness said when; else until its read's
 /// `waits_until`.
 fn suggested_snooze(s: &Session, working: bool, snoozed: bool, now: i64) -> Option<SuggestedSnooze> {
-    if snoozed || s.archived {
+    // An orchestrator's session isn't snoozed: it's quiet unless it asks you something, and its
+    // Mac's menu offers no Snooze for it.
+    if snoozed || s.archived || s.orchestrator.is_some() {
         return None;
     }
     let lifts = s.limit.as_ref().and_then(|l| l.resets_at).filter(|_| !working);
@@ -1270,7 +1280,7 @@ impl Core {
                     linked_back: d.linked_back,
                     loading: d.loading,
                     sessions: all.iter().filter(|s| s.device == d.key && in_inbox(s, now) && !s.unattended).count() as u32,
-                    load: machine_load(replica.device.load.as_ref(), d.online),
+                    load: machine_load(replica.device.load.as_ref(), fed_since_connected(d)),
                 });
             }
             let mut sessions: Vec<SessionRow> = all.into_iter().filter(|s| in_inbox(s, now)).collect();
@@ -3042,7 +3052,7 @@ mod tests {
         let lanes = vec![lane, visiting];
         let found = unfinished_helpers(&lanes, "claude:c:boss");
         assert_eq!(found.iter().map(|s| s.key.as_str()).collect::<Vec<_>>(), ["claude:c:working", "claude:c:asks"]);
-        let ask = done_helpers_ask("Fix the parser", &found, "mini").unwrap();
+        let ask = done_helpers_ask("Fix the parser", &found, &lanes, "mini").unwrap();
         assert_eq!(ask.title, "Mark \u{201c}Fix the parser\u{201d} as done?");
         assert_eq!(ask.lede, "\u{201c}Fix the parser\u{201d} has 2 helpers whose work isn\u{2019}t over. Make them your own to go on with them in your lists, or end them too: a turn under way stops, and a question waiting on you goes unanswered.");
         assert_eq!((ask.keep.as_str(), ask.end.as_str()), ("Make them my own", "End them"));
@@ -3053,10 +3063,18 @@ mod tests {
                 UnfinishedHelper { key: "@mini:claude:c:asks".into(), title: "Part asks".into(), stands: "waits on you, {ago:5000} \u{b7} c".into() },
             ]
         );
-        let one = done_helpers_ask("Fix the parser", &found[..1], "mini").unwrap();
+        // Each answer is worked out as it's asked: ended, the ones shown go with the helpers they
+        // started; kept, only the ones shown.
+        let here = |keys: &[&str]| keys.iter().map(|k| format!("@mini:claude:c:{k}")).collect::<Vec<_>>();
+        assert_eq!(ask.ending, HelpersAnswer { end: here(&["working", "asks", "under"]), keep: vec![] });
+        assert_eq!(ask.keeping, HelpersAnswer { end: vec![], keep: here(&["working", "asks"]) });
+        let one = done_helpers_ask("Fix the parser", &found[..1], &lanes, "mini").unwrap();
         assert_eq!((one.keep.as_str(), one.end.as_str()), ("Make it my own", "End it"));
         assert!(one.lede.contains("has a helper whose work isn\u{2019}t over. Make it your own to go on with it"), "{}", one.lede);
-        assert_eq!(done_helpers_ask("Fix the parser", &[], "mini"), None);
+        assert_eq!(done_helpers_ask("Fix the parser", &[], &lanes, "mini"), None);
+        // An idle helper a command you ran for still runs says so.
+        let ran = Session { running: Some(codealong_peer::model::RunningIn { terminal: "Codealong".into(), command: "make".into(), yours: true }), ..helper("ran", "boss", S::Idle, false) };
+        assert_eq!(helper_stands(&ran), "a command you ran for it still runs \u{b7} c");
         // Ended, the ones shown go with the helpers they started; kept, only the ones shown.
         let shown = vec!["claude:c:working".to_string(), "claude:c:asks".to_string()];
         assert_eq!(helpers_chosen(&lanes, &shown, true), (vec!["claude:c:working".to_string(), "claude:c:asks".to_string(), "claude:c:under".to_string()], vec![]));
@@ -3114,7 +3132,8 @@ mod tests {
             machine_load(Some(&strained), true),
             Some(MachineLoad { level: LoadWord::Strained, word: "Strained".into(), numbers: "load 2.5 per CPU of 10, 40% of memory free, memory getting short".into() })
         );
-        // Windows keeps no load average; a Mac away says nothing of now.
+        // Windows keeps no load average; a Mac away, or back but not yet heard from, says nothing
+        // of now.
         let windows = Load { level: LoadLevel::Calm, per_cpu: None, cpus: 8, memory_free: Some(70), memory_short: false };
         assert_eq!(machine_load(Some(&windows), true).map(|l| (l.word, l.numbers)), Some(("Calm".into(), "70% of memory free".into())));
         assert_eq!(machine_load(Some(&strained), false), None);
@@ -3718,17 +3737,19 @@ impl Core {
 
     /// What Mark as done asks first about a session whose helpers' work isn't over, as the Mac's
     /// windows ask it (menus.ts `doneHelpers`, DoneHelpers.tsx): those helpers, and what each
-    /// answer does. None where there are none, and for a Mac from before it could be told
-    /// (`DONE_HELPERS_SINCE`), which goes its own way with them.
+    /// answer does, its answers worked out as they're shown. None where there are none; for a Mac
+    /// from before it could be told (`DONE_HELPERS_SINCE`), which goes its own way with them; and
+    /// for one with remote control off, which marks nothing done for the phone (it's archived
+    /// instead, its helpers left as they are).
     pub fn done_helpers(&self, key: String) -> Option<DoneHelpersAsk> {
         let (device, own) = split_remote(&key)?;
         self.client.with_feeds(|feeds| {
             let (d, replica) = feeds.iter().find(|(d, _)| d.short == device || d.key == device)?;
-            if !builds_since(&d.app, DONE_HELPERS_SINCE) {
+            if !d.remote_control || !builds_since(&d.app, DONE_HELPERS_SINCE) {
                 return None;
             }
             let title = replica.lanes.iter().flat_map(|l| l.sessions.iter()).find(|s| s.key == own && s.visitor.is_none())?.title.clone();
-            done_helpers_ask(&title, &unfinished_helpers(&replica.lanes, own), &d.short)
+            done_helpers_ask(&title, &unfinished_helpers(&replica.lanes, own), &replica.lanes, &d.short)
         })
     }
 
@@ -3741,18 +3762,15 @@ impl Core {
     /// do (actions.rs `done_anyway`), and the message says why it's still open there.
     pub fn done(&self, key: String, stop: bool, helpers: Option<HelpersAnswer>) -> Result<DoneOutcome, CoreError> {
         let (device, own) = split_remote(&key).ok_or_else(|| CoreError::Failed("That isn't a session on one of your Macs.".into()))?;
-        let (end_helpers, keep_helpers) = match &helpers {
-            Some(a) => self.client.with_feeds(|feeds| {
-                let lanes = feeds.iter().find(|(d, _)| d.short == device || d.key == device).map(|(_, r)| r.lanes.as_slice()).unwrap_or_default();
-                let shown: Vec<String> = a.shown.iter().filter_map(|k| split_remote(k).filter(|(d, _)| *d == device).map(|(_, k)| k.to_string())).collect();
-                helpers_chosen(lanes, &shown, a.end)
-            }),
-            None => (Vec::new(), Vec::new()),
-        };
+        // Its Mac's own keys for them, as they were when asked: one that came since isn't named.
+        let theirs = |keys: &[String]| -> Vec<String> { keys.iter().filter_map(|k| split_remote(k).filter(|(d, _)| *d == device).map(|(_, k)| k.to_string())).collect() };
+        let (end_helpers, keep_helpers) = helpers.as_ref().map(|a| (theirs(&a.end), theirs(&a.keep))).unwrap_or_default();
         let asked = params::Done { key: own.into(), stop, end_helpers, keep_helpers, ..Default::default() };
         let done = serde_json::to_value(asked).map_err(|e| e.to_string()).and_then(|p| self.client.ask(device, api::SESSION_DONE, p, DONE_WAIT)).and_then(|v| serde_json::from_value::<api::Done>(v).map_err(|e| e.to_string()));
         let why = match done {
             Ok(d) => return Ok(DoneOutcome { done: d.done, message: d.message, noted: d.noted }),
+            // What was chosen for its helpers didn't reach them: they're as they were.
+            Err(why) if helpers.as_ref().is_some_and(|a| !a.end.is_empty() || !a.keep.is_empty()) => format!("{why} Its helpers were left as they are."),
             Err(why) => why,
         };
         self.client.mark_seen(device, &[own.to_string()]).map_err(|_| CoreError::Failed(why.clone()))?;
@@ -3857,6 +3875,10 @@ pub struct DoneHelpersAsk {
     pub keep: String,
     /// The answer that ends them with it, their work stopped: "End it", "End them".
     pub end: String,
+    /// What each answer sends, worked out as it's asked (menus.ts `helpersChosen`), so a helper
+    /// that comes while it's up is left to its Mac, which makes it yours.
+    pub keeping: HelpersAnswer,
+    pub ending: HelpersAnswer,
 }
 
 /// A helper whose work isn't over, as Mark as done lists it.
@@ -3869,12 +3891,13 @@ pub struct UnfinishedHelper {
     pub stands: String,
 }
 
-/// What you chose for the helpers Mark as done asked about: the ones it showed (`shown`), and
-/// whether they end with it (`end`) or are made your own.
-#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+/// What Mark as done sends for a session's helpers, by their keys here (`@<device>:<key>`): those
+/// to end with it, their work stopped, and those to make your own (`params::Done::end_helpers`,
+/// `keep_helpers`).
+#[derive(uniffi::Record, Clone, Debug, Default, PartialEq)]
 pub struct HelpersAnswer {
-    pub shown: Vec<String>,
-    pub end: bool,
+    pub end: Vec<String>,
+    pub keep: Vec<String>,
 }
 
 /// The helpers of `key` whose work isn't over (`Session::unfinished`), at any depth (the helpers
@@ -3930,17 +3953,26 @@ fn helper_stands(h: &Session) -> String {
         PeerStatus::Needs => format!("waits on you, {{ago:{since}}}"),
         PeerStatus::Error => format!("stopped with an error {{ago:{since}}}"),
         _ if h.background.is_some() => "left a command running in the background".to_string(),
+        _ if !h.agents.is_empty() => "left agents running in the background".to_string(),
+        // A command you ran for it, which the Mac's dialog says as agents.
+        _ if h.running.as_ref().is_some_and(|r| r.yours) => "a command you ran for it still runs".to_string(),
         _ => "left agents running in the background".to_string(),
     };
     format!("{stands} \u{b7} {}", h.account)
 }
 
-/// What Mark as done asks about `helpers` of the session titled `title` on the Mac `short`
-/// (DoneHelpers.tsx `doneHelpersWords`); none with none.
-fn done_helpers_ask(title: &str, helpers: &[&Session], short: &str) -> Option<DoneHelpersAsk> {
+/// What Mark as done asks about `helpers` of the session titled `title` on the Mac `short`, whose
+/// worktrees are `lanes` (DoneHelpers.tsx `doneHelpersWords`); none with none.
+fn done_helpers_ask(title: &str, helpers: &[&Session], lanes: &[Lane], short: &str) -> Option<DoneHelpersAsk> {
     if helpers.is_empty() {
         return None;
     }
+    let shown: Vec<String> = helpers.iter().map(|h| h.key.clone()).collect();
+    let here = |keys: Vec<String>| -> Vec<String> { keys.iter().map(|k| remote_key(short, k)).collect() };
+    let answer = |end: bool| {
+        let (end, keep) = helpers_chosen(lanes, &shown, end);
+        HelpersAnswer { end: here(end), keep: here(keep) }
+    };
     let one = helpers.len() == 1;
     let them = if one { "it" } else { "them" };
     let count = if one { "a helper".to_string() } else { format!("{} helpers", helpers.len()) };
@@ -3950,6 +3982,8 @@ fn done_helpers_ask(title: &str, helpers: &[&Session], short: &str) -> Option<Do
         helpers: helpers.iter().map(|h| UnfinishedHelper { key: remote_key(short, &h.key), title: h.title.clone(), stands: helper_stands(h) }).collect(),
         keep: format!("Make {them} my own"),
         end: format!("End {them}"),
+        keeping: answer(false),
+        ending: answer(true),
     })
 }
 
@@ -4521,6 +4555,9 @@ mod order_tests {
         assert_eq!(suggested_snooze(&jev, false, true, NOW), None);
         assert_eq!(suggested_snooze(&Session { archived: true, ..jev.clone() }, false, false, NOW), None);
         assert_eq!(suggested_snooze(&read(SessionInsight::default()), false, false, NOW), None);
+        // Nor for an orchestrator's session, which isn't snoozed.
+        let orchestrator = codealong_peer::model::Orchestrator { schedule: "s-1".into(), project: None, paused: false, looked_at: None };
+        assert_eq!(suggested_snooze(&Session { orchestrator: Some(orchestrator), ..jev.clone() }, false, false, NOW), None);
         // A reply's time is offered while it works too.
         assert_eq!(suggested_snooze(&jev, true, false, NOW).map(|s| s.why), Some(SnoozeWhy::Reply));
     }
