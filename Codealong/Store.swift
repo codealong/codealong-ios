@@ -601,6 +601,13 @@ final class Store {
         return read
     }
 
+    /// Lets go of what was read of a PR, which a review given here has overtaken: its page opens
+    /// reading it again rather than as it was.
+    func forgetPrDetail(_ key: String) {
+        prDetails[key] = nil
+        prReadAt[key] = nil
+    }
+
     /// Reads a PR's page ahead of its being opened, unless it was read lately: the next that waits
     /// on you slides in as it is. Its page reads it again as it opens.
     func readAhead(_ pr: PrRow) async {

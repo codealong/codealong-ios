@@ -89,7 +89,7 @@ right to go back to the one you came from, leaving this one as it is. One you re
 still working, and one waiting on you to allow something are left as they are, and holding *Send* sends and goes straight
 on. A PR's page has the same bar over its review box: swiping on from a review you haven't given
 brings it round again later, a tap on the bar snoozes it instead, and a review you give goes on by
-itself once GitHub has it (swipe right to come back to it). The next one is read ahead,
+itself once GitHub has it. The next one is read ahead,
 so it shows at once. On the last one the bar says nothing else waits, and going on goes to a page that says so,
 with how many sessions are working; whatever comes to wait on you while it's open shows up there,
 a swipe away. Replies an

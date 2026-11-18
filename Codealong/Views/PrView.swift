@@ -12,8 +12,8 @@ import SwiftUI
 /// does to this PR and how many more wait, and a swipe across the page goes on; a swipe the other
 /// way goes back to what you came from. Going on from one waiting on your review skips it, so it
 /// comes round again after the rest, as the Mac's ⌘E does; a tap on the bar offers snoozing your
-/// review of it instead, and goes on as it does it (`ReviewSwipeOn`). One you reviewed here goes on
-/// as it is.
+/// review of it instead, and goes on as it does it (`ReviewSwipeOn`). A review given here goes on
+/// by itself once GitHub has it, as the Mac's PR card does; one you merged here goes on as it is.
 struct PrView: View {
     /// What a PR's place in the list's path starts with, before its key.
     nonisolated static let prefix = "pr:"
@@ -156,12 +156,14 @@ struct PrView: View {
                         store.dealtWith(page)
                         // Going through what waits, it goes on to the next once GitHub has it, as
                         // the Mac's PR card does, and says there how it went; swiping back comes
-                        // back to it. Not if you've gone elsewhere while it went.
+                        // back to it while its Mac still lists it. Not if you've gone elsewhere
+                        // while it went. What was read of it before goes, so coming back doesn't
+                        // draw it as it was, Approve ready for another, while it's read again.
                         if goingThrough, store.showing == page, let onward {
+                            store.forgetPrDetail(pr.key)
                             moveOn(to: onward, outcome: Outcome(.sent, words))
-                        } else {
-                            Task { await load() }
                         }
+                        Task { await load() }
                     }
                 }
             }
