@@ -1972,8 +1972,10 @@ struct SessionView: View {
     }
 }
 
-/// A tool call the session waits on you to allow, or a plan to approve. A call its agent offers no
-/// way to allow just this once has no Allow, only Always where it can be allowed from now on.
+/// A tool call the session waits on you to allow, a plan to approve, or another session's message
+/// it holds for you to deliver, which names its sender as a link to that session (the core's
+/// `pending_label`) and reads as prose. A call its agent offers no way to allow just this once has
+/// no Allow, only Always where it can be allowed from now on.
 private struct ApprovalCard: View {
     let pending: Pending
     /// Codealong runs it on its Mac.
@@ -1989,14 +1991,14 @@ private struct ApprovalCard: View {
             Label {
                 Text(Clock.text(pending.label, now: .now)).font(.subheadline.weight(.medium))
             } icon: {
-                Image(systemName: "hand.raised.fill").foregroundStyle(.orange)
+                Image(systemName: pending.message ? "bubble.left.fill" : "hand.raised.fill").foregroundStyle(.orange)
             }
             if let input = pending.input, !input.isEmpty {
-                // A plan is prose to read; anything else is a command or a change, shown as is. As
-                // tall as it is, up to a point, and it scrolls past that.
-                UpTo(most: pending.plan ? 320 : 120) {
+                // A plan or a message is prose to read; anything else is a command or a change,
+                // shown as is. As tall as it is, up to a point, and it scrolls past that.
+                UpTo(most: pending.plan || pending.message ? 320 : 120) {
                     ScrollView {
-                        if pending.plan {
+                        if pending.plan || pending.message {
                             MarkdownText(text: input).font(.subheadline)
                         } else {
                             Text(input).font(.caption.monospaced()).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
@@ -2037,6 +2039,7 @@ private struct ApprovalCard: View {
     /// What its answers do, as the Mac's card says it.
     private var says: String {
         if pending.plan { return "Approve lets it go on with the plan. Deny keeps it planning, or write below what to change." }
+        if pending.message { return "Deliver gives it to the session as that session’s message. Deny drops it, and its sender is told it was declined." }
         if pending.noOnce {
             let how = pending.always ? "allows calls like this only from now on, not just this once" : "offers no way to allow this"
             return "Its agent \(how). Deny tells it no, and it carries on."
@@ -2045,12 +2048,10 @@ private struct ApprovalCard: View {
     }
 
     private var allowLabel: String {
-        switch (pending.plan, answering == .allow) {
-        case (true, true): "Approving…"
-        case (true, false): "Approve"
-        case (false, true): "Allowing…"
-        case (false, false): "Allow"
-        }
+        let busy = answering == .allow
+        if pending.message { return busy ? "Delivering…" : "Deliver" }
+        if pending.plan { return busy ? "Approving…" : "Approve" }
+        return busy ? "Allowing…" : "Allow"
     }
 }
 
@@ -2895,52 +2896,125 @@ private struct ItemView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity)
-        case .peer:
-            PeerMessage(item: item)
-        case .codealong:
-            // What Codealong sent by itself, under its name, quieter than the agent's words.
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Codealong")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                MarkdownText(text: item.text)
-                    .foregroundStyle(.secondary)
+        case .peer, .codealong:
+            if let card = item.card {
+                MessageCard(item: item, card: card)
+            } else {
+                MarkdownText(text: item.text).foregroundStyle(.secondary)
             }
         }
     }
 }
 
-/// Another session's message, whole, under who sent it: a long one cut to its first lines until
-/// it's opened, as the Mac's thread shows one (SessionThread.tsx `PeerText`).
-private struct PeerMessage: View {
+/// A message that's neither yours nor the agent's (Codealong's own, or another session's) as a
+/// quiet card, as the Mac's conversation draws one (MessageCard.tsx). Its head is one line: its
+/// icon, what it is and who it's from (the core's `Card`, whose links open as the conversation's
+/// do), when, and a chevron where there's more to show. Under it the message: Codealong's with its
+/// line hidden until it's opened, the rest by their first ten lines, a long one fading out until
+/// it's opened. A tap on the head opens and closes it, as the chevron does; one on a link goes
+/// where the link goes. One the session took back shows whole, saying so.
+private struct MessageCard: View {
     let item: Item
+    let card: Card
     @State private var opened = false
+    /// Its message is longer than its first lines.
     @State private var long = false
-    @ScaledMetric(relativeTo: .body) private var cut: CGFloat = 220
+    /// A line of the message's text, which it's cut to ten of.
+    @ScaledMetric(relativeTo: .body) private var lineHeight: CGFloat = 22
+
+    private var cut: CGFloat { lineHeight * 10 }
+    private var taken: Bool { item.withdrawn }
+    /// There's more to show than it does closed.
+    private var opens: Bool { !taken && (card.headOnly || long) }
+    private var open: Bool { opened || taken }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(item.from.map { "From “\($0)”" } ?? "From another session")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            MarkdownText(text: item.text)
-                .fixedSize(horizontal: false, vertical: true)
-                // The size is read off the main actor, so it gets the cut as a value.
-                .onGeometryChange(for: Bool.self) { [cut = cut] in $0.size.height > cut + 1 } action: { long = $0 }
-                .frame(maxHeight: opened ? nil : cut, alignment: .top)
-                .clipped()
-                // The cut fades out, so it reads as more to come.
-                .mask {
-                    LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: long && !opened ? 0.8 : 1), .init(color: .black.opacity(long && !opened ? 0 : 1), location: 1)], startPoint: .top, endPoint: .bottom)
-                }
-            if long {
-                Button(opened ? "Show less" : "Show all") { opened.toggle() }
+        VStack(alignment: .leading, spacing: 0) {
+            head
+            if open || !card.headOnly {
+                message
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 10)
+            }
+            if taken {
+                Text("Taken back: the turn was stopped before a reply, so the agent never saw this.")
                     .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 10)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background.secondary, in: .rect(cornerRadius: 12))
+    }
+
+    private var head: some View {
+        HStack(spacing: 8) {
+            Image(systemName: card.icon.symbol)
+                .foregroundStyle(.tertiary)
+                .accessibilityLabel(card.icon == .peer ? "Another session sent this" : "Codealong sent this by itself")
+            Text(MarkdownText.inline(card.title))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            // How long ago, briefly, as the list's rows say it: the head is narrow on a phone, and
+            // what the message says needs the room.
+            if item.at > 0 {
+                let at = Date(ms: item.at)
+                TimelineView(.periodic(from: .now, by: 30)) { context in
+                    Text(Clock.ago(item.at, now: context.date))
+                        .monospacedDigit()
+                }
+                .accessibilityLabel(at.formatted(date: .abbreviated, time: .shortened))
+                .help(at.formatted(date: .abbreviated, time: .shortened))
+            }
+            if opens {
+                Button(opened ? "Show less" : "Show the whole message", systemImage: opened ? "chevron.up" : "chevron.down", action: toggle)
+                    .labelStyle(.iconOnly)
+                    .frame(minWidth: 28, minHeight: 28)
+                    .contentShape(.rect)
+            }
+        }
+        .font(.footnote)
+        .foregroundStyle(.secondary)
         .padding(.leading, 10)
-        .overlay(alignment: .leading) {
-            Capsule().fill(.quaternary).frame(width: 3)
+        .padding(.trailing, opens ? 4 : 10)
+        .frame(minHeight: 36)
+        .contentShape(.rect)
+        .onTapGesture { if opens { toggle() } }
+    }
+
+    /// The message, whole, or cut to its first lines and fading out while it's closed.
+    private var message: some View {
+        MarkdownText(text: item.text)
+            .fixedSize(horizontal: false, vertical: true)
+            // The size is read off the main actor, so it gets the cut as a value.
+            .onGeometryChange(for: Bool.self) { [cut = cut] in $0.size.height > cut + 1 } action: { long = $0 }
+            .frame(maxHeight: open || card.headOnly ? nil : cut, alignment: .top)
+            .clipped()
+            .mask {
+                let fades = long && !open && !card.headOnly
+                LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: fades ? 0.8 : 1), .init(color: .black.opacity(fades ? 0 : 1), location: 1)], startPoint: .top, endPoint: .bottom)
+            }
+    }
+
+    private func toggle() {
+        withAnimation(.snappy) { opened.toggle() }
+    }
+}
+
+private extension CardIcon {
+    /// What it shows, as the Mac's card shows a PR, a helper, a schedule, a review, carrying on, and
+    /// a message.
+    var symbol: String {
+        switch self {
+        case .pr: "arrow.triangle.pull"
+        case .helper: "person.2"
+        case .schedule: "calendar"
+        case .review: "eye"
+        case .carryOn: "play"
+        case .codealong: "message"
+        case .peer: "bubble.left"
         }
     }
 }

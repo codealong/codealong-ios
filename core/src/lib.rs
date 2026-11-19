@@ -1807,6 +1807,114 @@ pub struct Item {
     /// ran nor one the session took back, with something of the agent's before it, which there
     /// may be above a page that doesn't begin at the session's start.
     pub editable: bool,
+    /// The card a message that's neither yours nor the agent's shows as (`Card`): Codealong's own
+    /// and another session's. One the session took back (`withdrawn`) shows whole, saying so.
+    pub card: Option<Card>,
+}
+
+/// A message that's neither yours nor the agent's, as the Mac's conversation draws it
+/// (MessageCard.tsx): a quiet card whose head is one line, an icon, `title` and when, and under
+/// it the message. Codealong's own with the line its Mac wrote for it (`api::Item::glance`) is
+/// its head alone until it's opened, the message being written for the agent; one from a Mac
+/// before that line, and another session's, show the message's first lines under the head, a
+/// long one cut until it's opened.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct Card {
+    pub icon: CardIcon,
+    /// What it is and who it's from, as one line of inline Markdown, with what it names as links:
+    /// the PR (its page on GitHub), and each session it names and the one it's from
+    /// (`codealong://session/<key>`, the key as the session's Mac writes it).
+    pub title: String,
+    /// It shows its head alone until it's opened, not the message's first lines under it.
+    pub head_only: bool,
+}
+
+/// What a card's icon shows: what Codealong's message is about, or that another session sent it.
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardIcon {
+    /// What happened on a PR.
+    Pr,
+    /// A helper's news.
+    Helper,
+    /// A schedule's run.
+    Schedule,
+    /// A review handed back.
+    Review,
+    /// Carrying on after what stopped its last turn.
+    CarryOn,
+    /// Anything else Codealong sent.
+    Codealong,
+    /// Another session's message.
+    Peer,
+}
+
+impl Card {
+    /// The card `i` shows as, if it's one.
+    fn of(i: &api::Item) -> Option<Card> {
+        match i.kind.as_str() {
+            // A line that says nothing (a Mac's build that wrote it otherwise, for a while) is
+            // none: the card shows the message's first lines.
+            "codealong" => Some(match i.glance.as_ref().filter(|g| g.pr.is_some() || !g.parts.is_empty()) {
+                Some(g) => Card { icon: CardIcon::of(g.about), title: glance_title(g), head_only: true },
+                None => Card { icon: CardIcon::Codealong, title: "Codealong".into(), head_only: false },
+            }),
+            "peer" => Some(Card { icon: CardIcon::Peer, title: peer_title(i), head_only: false }),
+            _ => None,
+        }
+    }
+}
+
+impl CardIcon {
+    fn of(about: codealong_peer::glance::About) -> CardIcon {
+        use codealong_peer::glance::About;
+        match about {
+            About::Pr => CardIcon::Pr,
+            About::Helper => CardIcon::Helper,
+            About::Schedule => CardIcon::Schedule,
+            About::Review => CardIcon::Review,
+            About::CarryOn => CardIcon::CarryOn,
+            About::Other => CardIcon::Codealong,
+        }
+    }
+}
+
+/// A link to the session `key` names on its Mac, as an agent writes one, which the conversation
+/// opens as it opens those (`Core::session_named`).
+fn session_link(key: &str) -> String {
+    format!("{}{key}", md::SESSION_LINK)
+}
+
+/// What Codealong's message comes to, as its card's head reads (the Mac's MessageCard.tsx
+/// `GlanceLine`): the PR, a link to it where its address is a PR's, then each part, the session
+/// it's about a link before its words, the parts apart by " · ".
+fn glance_title(g: &codealong_peer::glance::Glance) -> String {
+    let mut out = String::new();
+    if let Some(pr) = &g.pr {
+        let named = md::escaped(&format!("#{} {}", pr.number, pr.title));
+        match pr.url.as_deref().filter(|u| md::pr_label(u).is_some()) {
+            Some(url) => out.push_str(&format!("[{named}]({url})")),
+            None => out.push_str(&named),
+        }
+        if !g.parts.is_empty() {
+            out.push(' ');
+        }
+    }
+    let part = |p: &codealong_peer::glance::Part| match &p.session {
+        Some(n) => format!("[“{}”]({}) {}", md::escaped(&n.title), session_link(&n.key), md::escaped(&p.line)),
+        None => md::escaped(&p.line),
+    };
+    out.push_str(&g.parts.iter().map(part).collect::<Vec<_>>().join(" · "));
+    out
+}
+
+/// Who another session's message is from, as its card's head reads (the Mac's MessageCard.tsx
+/// `PeerLabel`): the sender a link to its session where the message said which one sent it.
+fn peer_title(i: &api::Item) -> String {
+    let name = i.from.as_deref().map_or_else(|| "another session".to_string(), |f| format!("“{}”", md::escaped(f)));
+    match &i.from_key {
+        Some(key) => format!("From [{name}]({})", session_link(key)),
+        None => format!("From {name}"),
+    }
 }
 
 /// A question an agent asks you (Claude Code's `AskUserQuestion`), with its choices, and, once
@@ -1878,6 +1986,8 @@ pub struct WebLink {
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
 pub struct Pending {
     pub id: String,
+    /// What it asks, as inline Markdown: a held message's says who it's from, the sender a link to
+    /// its session where its Mac knows which (`pending_label`).
     pub label: String,
     pub input: Option<String>,
     /// Why it can't be answered from here, when it can't.
@@ -1889,6 +1999,9 @@ pub struct Pending {
     pub no_once: bool,
     /// It's a plan to approve: `input` is the plan, in Markdown, to read as prose.
     pub plan: bool,
+    /// It's another session's message the session holds for you (Claude Code): `input` is the
+    /// message, to read as prose. Allow delivers it; Deny drops it, and its sender is told.
+    pub message: bool,
     /// Questions it asks you: answered with your picks (`answer_questions`), or declined.
     pub questions: Vec<Question>,
     /// What the session wrote with this isn't in its conversation yet, only where it runs: its
@@ -1899,6 +2012,16 @@ pub struct Pending {
     /// declining calls the exit off, leaving it at its prompt. False from Macs before 2026-11-10,
     /// which don't offer it.
     pub exiting: bool,
+}
+
+/// What a request asks, as its card says it: a held message's label with the session it's from
+/// (what's from its first quote on, “its title”) a link to that session, where its Mac named it
+/// (`api::Pending::from_key`), as the Mac's SessionReply.tsx `PendingLabel` does.
+fn pending_label(p: &api::Pending) -> String {
+    match (&p.from_key, p.label.find('“')) {
+        (Some(key), Some(at)) => format!("{}[{}]({})", &p.label[..at], md::escaped(&p.label[at..]), session_link(key)),
+        _ => p.label.clone(),
+    }
 }
 
 /// A question as the session asks it, with what was answered (`answers`, from the call's result)
@@ -2185,6 +2308,7 @@ impl Thread {
                     files: i.sent.as_ref().map(|s| s.files.iter().map(|f| SentFile::of(f)).collect()).unwrap_or_default(),
                     caption: i.sent.as_ref().and_then(|s| s.caption.clone()),
                     editable,
+                    card: Card::of(i),
                 })
             })
             .collect()
@@ -2286,6 +2410,7 @@ fn prompt_in(page: &api::Page) -> Option<Item> {
         files: Vec::new(),
         caption: None,
         editable: false,
+        card: None,
     })
 }
 
@@ -2356,6 +2481,7 @@ fn fold_quiet_runs(items: Vec<Item>, from_start: bool) -> Vec<Item> {
                     files: Vec::new(),
                     caption: None,
                     editable: false,
+                    card: None,
                 });
             }
         }
@@ -2456,13 +2582,14 @@ impl Conversation {
     pub fn pending(&self) -> Result<Option<Pending>, CoreError> {
         Ok(self.client.pending(&self.device, &self.key)?.map(|p| Pending {
             questions: p.questions.iter().map(|q| question_of(q, None)).collect(),
+            label: pending_label(&p),
             id: p.id,
-            label: p.label,
             input: p.input,
             cannot: p.cannot,
             always: p.always,
             no_once: p.no_once,
             plan: p.plan,
+            message: p.message,
             unwritten: p.unwritten,
             exiting: p.exiting,
         }))
@@ -2834,7 +2961,65 @@ mod tests {
     }
 
     fn item(kind: &str, cursor: u64, id: Option<&str>, output: Option<&str>) -> api::Item {
-        api::Item { at: cursor as i64, kind: kind.into(), text: format!("{kind} {cursor}"), from: None, id: id.map(String::from), input: None, output: output.map(String::from), failed: false, withdrawn: false, stop: false, questions: vec![], answers: Default::default(), link: None, sent: None, cursor, n: 0 }
+        api::Item { at: cursor as i64, kind: kind.into(), text: format!("{kind} {cursor}"), from: None, from_key: None, glance: None, id: id.map(String::from), input: None, output: output.map(String::from), failed: false, withdrawn: false, stop: false, questions: vec![], answers: Default::default(), link: None, sent: None, cursor, n: 0 }
+    }
+
+    /// What's neither yours nor the agent's is a card, as the Mac's MessageCard.tsx draws it:
+    /// Codealong's with its line its head alone, the PR and each helper it names a link; another
+    /// session's by who it's from, the sender a link to its session.
+    #[test]
+    fn codealongs_messages_and_other_sessions_are_cards() {
+        use codealong_peer::glance::{About, Glance, Named, Part, Pr};
+        let shown = |i: api::Item| {
+            let mut t = Thread::default();
+            t.take(api::Page { items: vec![i], before: None, after: 10 }, false);
+            t.shown().pop().unwrap().card
+        };
+        let news = Glance {
+            about: About::Pr,
+            pr: Some(Pr { number: 397, title: "Cursor *file* tools".into(), url: Some("https://github.com/acme/web/pull/397".into()) }),
+            parts: vec![
+                Part { session: None, line: "ana asked for changes".into() },
+                Part { session: Some(Named { key: "claude:work:k1".into(), title: "Check staging".into() }), line: "ended its turn".into() },
+            ],
+        };
+        let card = shown(api::Item { glance: Some(news.clone()), ..item("codealong", 1, None, None) }).unwrap();
+        assert_eq!(card.icon, CardIcon::Pr);
+        assert_eq!(card.title, "[#397 Cursor \\*file\\* tools](https://github.com/acme/web/pull/397) ana asked for changes · [“Check staging”](codealong://session/claude:work:k1) ended its turn");
+        assert!(card.head_only);
+        // A PR whose address isn't a PR's is named without a link; one with no parts is its name.
+        let unlinked = Glance { pr: Some(Pr { number: 4, title: "Fix it".into(), url: None }), parts: vec![], ..news.clone() };
+        assert_eq!(shown(api::Item { glance: Some(unlinked), ..item("codealong", 1, None, None) }).unwrap().title, "#4 Fix it");
+        let helper = Glance { about: About::Helper, pr: None, parts: news.parts[1..].to_vec() };
+        assert_eq!(shown(api::Item { glance: Some(helper), ..item("codealong", 1, None, None) }).unwrap().icon, CardIcon::Helper);
+        // One from a Mac before the line is Codealong's by its first lines, as is one whose line
+        // says nothing.
+        let first_lines = Some(Card { icon: CardIcon::Codealong, title: "Codealong".into(), head_only: false });
+        assert_eq!(shown(item("codealong", 1, None, None)), first_lines);
+        let empty: Glance = serde_json::from_value(serde_json::json!({ "about": "helper", "line": "ended its turn" })).unwrap();
+        assert_eq!(shown(api::Item { glance: Some(empty), ..item("codealong", 1, None, None) }), first_lines);
+        // Another session's names its sender, as a link where the message said which session.
+        let from = |from: Option<&str>, key: Option<&str>| shown(api::Item { from: from.map(String::from), from_key: key.map(String::from), ..item("peer", 1, None, None) }).unwrap();
+        assert_eq!(from(Some("Review the parser"), Some("@4f2a:claude:work:k2")), Card { icon: CardIcon::Peer, title: "From [“Review the parser”](codealong://session/@4f2a:claude:work:k2)".into(), head_only: false });
+        assert_eq!(from(Some("Review the parser"), None).title, "From “Review the parser”");
+        assert_eq!(from(None, Some("claude:work:k2")).title, "From [another session](codealong://session/claude:work:k2)");
+        assert_eq!(from(None, None).title, "From another session");
+        // One the session took back is still its card, which shows it whole, saying so.
+        assert_eq!(shown(api::Item { withdrawn: true, ..item("peer", 1, None, None) }).map(|c| c.icon), Some(CardIcon::Peer));
+        // What else the conversation has isn't a card.
+        assert_eq!(shown(item("note", 1, None, None)), None);
+        assert_eq!(shown(item("you", 1, None, None)), None);
+    }
+
+    /// A held message names who it's from as a link to that session, where its Mac said which.
+    #[test]
+    fn a_held_message_names_its_sender_as_a_link() {
+        let held = |label: &str, key: Option<&str>| api::Pending { id: "held-1".into(), label: label.into(), message: true, from_key: key.map(String::from), ..Default::default() };
+        assert_eq!(pending_label(&held("From “Review the [parser]”", Some("claude:work:k2"))), "From [“Review the \\[parser\\]”](codealong://session/claude:work:k2)");
+        assert_eq!(pending_label(&held("3 messages, the latest from “Fix”", Some("claude:work:k3"))), "3 messages, the latest from [“Fix”](codealong://session/claude:work:k3)");
+        // Without a key, or a name, it's as its Mac wrote it.
+        assert_eq!(pending_label(&held("From “Fix”", None)), "From “Fix”");
+        assert_eq!(pending_label(&held("From another session", Some("claude:work:k3"))), "From another session");
     }
 
     #[test]
@@ -2924,6 +3109,7 @@ mod tests {
             always: false,
             no_once: false,
             plan: false,
+            message: false,
             questions: qs.iter().map(|q| question_of(q, None)).collect(),
             unwritten: false,
             exiting: false,
@@ -2963,6 +3149,7 @@ mod tests {
             always: true,
             no_once: false,
             plan: false,
+            message: false,
             questions: vec![],
             unwritten: false,
             exiting: false,
@@ -3083,7 +3270,7 @@ mod tests {
 
     #[test]
     fn an_orchestrators_runs_that_found_nothing_fold_into_a_line() {
-        let said = |kind: ItemKind, at: i64, text: &str| Item { id: at.to_string(), at, kind, text: text.into(), from: None, input: None, output: None, failed: false, withdrawn: false, questions: vec![], link: None, files: vec![], caption: None, editable: false };
+        let said = |kind: ItemKind, at: i64, text: &str| Item { id: at.to_string(), at, kind, text: text.into(), from: None, input: None, output: None, failed: false, withdrawn: false, questions: vec![], link: None, files: vec![], caption: None, editable: false, card: None };
         let first = "Look over the sessions.\n\nThis comes from the schedule \u{201c}Orchestrator\u{201d}: its 8:00 run.";
         let items = vec![
             // The run that started it, from the start of the conversation: nothing found.
@@ -3163,7 +3350,7 @@ mod tests {
 
     #[test]
     fn a_message_sent_shows_once_the_record_has_a_prompt_after_it() {
-        let said = |kind: ItemKind, at: i64, text: &str| Item { id: at.to_string(), at, kind, text: text.into(), from: None, input: None, output: None, failed: false, withdrawn: false, questions: vec![], link: None, files: vec![], caption: None, editable: false };
+        let said = |kind: ItemKind, at: i64, text: &str| Item { id: at.to_string(), at, kind, text: text.into(), from: None, input: None, output: None, failed: false, withdrawn: false, questions: vec![], link: None, files: vec![], caption: None, editable: false, card: None };
         let items = vec![said(ItemKind::You, 1_000, "old"), said(ItemKind::Agent, 9_000, "reply"), said(ItemKind::You, 10_000, "first"), said(ItemKind::Note, 12_000, "From another session: second")];
         // A message from Codealong comes as another session's: whole from Macs since 2026-10-14,
         // as a note of its first line from those before.
@@ -4924,7 +5111,7 @@ mod start_tests {
         codex.name = "codex".into();
         codex.harness = Harness::Codex;
         codex.models = vec![api::ModelOption { id: "gpt-5.5".into(), label: "GPT-5.5".into() }];
-        let o = api::StartOptions { accounts: vec![claude, codex], codex_projects: vec![], claude_models: vec![api::ModelOption { id: "opus".into(), label: "Opus".into() }], claude_efforts: vec![], groups: vec![], auto_group: String::new() };
+        let o = api::StartOptions { accounts: vec![claude, codex], codex_projects: vec![], claude_models: vec![api::ModelOption { id: "opus".into(), label: "Opus".into() }], claude_efforts: vec![], groups: vec![], auto_group: String::new(), project_defaults: Default::default() };
         let c = start_choices(o);
         // A Mac that lists no models for Claude Code's account lists them for all of Claude Code.
         assert_eq!((c.accounts[0].models[0].id.as_str(), c.accounts[0].worktree), ("opus", true));

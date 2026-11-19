@@ -62,7 +62,11 @@ either off in the Macs sheet; neither plays with the phone silenced).
 **Read any conversation.** Each session's conversation shows as it does on the Mac: replies as
 formatted text with tables, nested lists and code you can copy, your prompts with their images
 and their Markdown drawn too (kept as you typed them), the commands that ran and
-what they printed, and the questions an agent asked with what you picked. Scroll up to read
+what they printed, and the questions an agent asked with what you picked. What Codealong sent a
+session by itself (a PR's news, a helper's, a schedule's run, a review handed back) is a card that
+says it in a line, the PR and each helper it names a link, and a tap opens it to the whole message;
+another session's message is a card that names who sent it, as a link to that session, over its
+first lines. Scroll up to read
 further back, with the prompt you're reading the answer to pinned at the top and a button at the
 foot that goes back down to the newest. A session running
 inside Codealong on your Mac streams its reply as it's written, and one that only waits on a command
@@ -112,7 +116,8 @@ need you, as on the Mac.
   message its harness holds until the turn ends shows at the end of the conversation, with *Send
   now* to put it in the turn at once, *Edit* to take it out into the box, and *Remove* so it's never
   sent;
-- allow or deny what it wants to run (or deny it and say what to do instead), and answer its
+- allow or deny what it wants to run (or deny it and say what to do instead), deliver or drop
+  another session's message it holds for you, and answer its
   questions, folded to a line over the box while you read and brought up from that line: the card
   over the box stands in for the call's line in the conversation until it's answered;
 - stop its turn, with the square that takes send's place while it runs, or a command its agent

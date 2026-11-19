@@ -38,7 +38,16 @@ pub(crate) struct Saved {
     /// again, so one saved under other words is read afresh. Missing from builds before.
     #[serde(default)]
     pub knows: Vec<String>,
+    /// What of a conversation this build reads (`READS`) when it was saved: one saved by a build
+    /// that read less is read afresh, so what it left out comes. Missing from builds before.
+    #[serde(default)]
+    pub reads: u32,
 }
+
+/// What of a conversation's items this build reads, as a number that goes up with what it adds:
+/// 1, the line a Codealong message's card shows and the key of the session another session's
+/// message came from (`api::Item::glance`, `from_key`).
+const READS: u32 = 1;
 
 impl Saved {
     /// What's saved of a conversation: its newest items, from where a record's line starts, so
@@ -51,7 +60,7 @@ impl Saved {
         let kept = items[from.min(items.len())..].to_vec();
         // Cut short, the page before is the one before the first item kept.
         let before = if from > 0 { kept.first().map(|i| i.cursor).or(before) } else { before };
-        Saved { key: key.to_string(), continues: continues.map(String::from), items: kept, before, after, knows: knows() }
+        Saved { key: key.to_string(), continues: continues.map(String::from), items: kept, before, after, knows: knows(), reads: READS }
     }
 }
 
@@ -75,7 +84,7 @@ fn knows() -> Vec<String> {
 /// on in now, read as the phone reads one now.
 pub(crate) fn load(path: &Path, key: &str, continues: Option<&str>) -> Option<Saved> {
     let saved: Saved = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
-    (saved.key == key && saved.continues.as_deref() == continues && saved.knows == knows()).then_some(saved)
+    (saved.key == key && saved.continues.as_deref() == continues && saved.knows == knows() && saved.reads == READS).then_some(saved)
 }
 
 /// Saves a conversation, and lets go of the oldest saved past `SAVED`. A save that fails costs
@@ -143,7 +152,7 @@ mod tests {
     use super::*;
 
     fn item(cursor: u64, n: u32) -> api::Item {
-        api::Item { at: cursor as i64, kind: "agent".into(), text: format!("{cursor}.{n}"), from: None, id: None, input: None, output: None, failed: false, withdrawn: false, stop: false, questions: vec![], answers: Default::default(), link: None, sent: None, cursor, n }
+        api::Item { at: cursor as i64, kind: "agent".into(), text: format!("{cursor}.{n}"), from: None, from_key: None, glance: None, id: None, input: None, output: None, failed: false, withdrawn: false, stop: false, questions: vec![], answers: Default::default(), link: None, sent: None, cursor, n }
     }
 
     #[test]
@@ -180,6 +189,12 @@ mod tests {
         let mut unsaid = serde_json::to_value(&older).unwrap();
         unsaid.as_object_mut().unwrap().remove("knows");
         std::fs::write(&path, serde_json::to_vec(&unsaid).unwrap()).unwrap();
+        assert!(load(&path, "@abc:claude:claude:1", Some("r1")).is_none());
+        // And one a build saved that read less of each item: its Codealong messages have no line
+        // for their cards.
+        let mut before_cards = serde_json::to_value(Saved::of("@abc:claude:claude:1", Some("r1"), &[item(1, 0)], None, 2)).unwrap();
+        before_cards.as_object_mut().unwrap().remove("reads");
+        std::fs::write(&path, serde_json::to_vec(&before_cards).unwrap()).unwrap();
         assert!(load(&path, "@abc:claude:claude:1", Some("r1")).is_none());
         // The oldest go past the limit.
         for i in 0..5 {

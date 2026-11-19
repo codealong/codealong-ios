@@ -637,7 +637,7 @@ pub(crate) fn pr_label(url: &str) -> Option<String> {
 }
 
 /// Text written into a link's words, with what Markdown would read as marks escaped.
-fn escaped(s: &str) -> String {
+pub(crate) fn escaped(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         if "\\`*_[]<>".contains(c) {
