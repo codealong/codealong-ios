@@ -270,10 +270,21 @@ pub(crate) fn pr_standing(pr: &PrRow) -> PrStanding {
         _ if pr.state == "changes" => said(K::Changes, "Changes asked for"),
         _ if pr.merge == "conflicts" => said(K::Conflicts, "Conflicts"),
         _ if pr.pending > 0 => said(K::ChecksRunning, "Checks running"),
-        _ if pr.state == "approved" && pr.stale.is_some() => said(K::StaleApproval, if ready { "Stale approval \u{b7} ready to merge" } else { "Stale approval" }),
-        _ if pr.state == "approved" => said(K::Approved, if ready { "Approved \u{b7} ready to merge" } else { "Approved" }),
+        _ if pr.state == "approved" && pr.stale.is_some() => said(K::StaleApproval, &format!("Stale approval{}", if ready { READY_TOO } else { "" })),
+        _ if pr.state == "approved" => said(K::Approved, &format!("Approved{}", if ready { READY_TOO } else { "" })),
         _ if pr.passed > 0 => said(K::ChecksPassed, "Checks passed"),
         _ => said(K::Open, "Open"),
+    }
+}
+
+/// What an approval's standing adds when its PR is ready to merge.
+const READY_TOO: &str = " \u{b7} ready to merge";
+
+/// A standing as a row under the Ready to merge heading says it: without "ready to merge", which
+/// the heading says (the Mac's PrsView.tsx leaves the row's Ready to merge pill out there).
+pub(crate) fn under_ready_heading(s: &mut PrStanding) {
+    if let Some(words) = s.words.strip_suffix(READY_TOO) {
+        s.words = words.to_string();
     }
 }
 

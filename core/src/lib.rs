@@ -563,8 +563,9 @@ pub struct SuggestedSnooze {
     pub offered_till: i64,
     /// Why then.
     pub why: SnoozeWhy,
-    /// What ends its line in a Snooze menu, after the time: "as its reply says", "when its limit
-    /// lifts" (snooze.ts `SUGGESTED_WHY`).
+    /// What ends its line in a Snooze menu, after the time (snooze.ts `suggestedWhy`): who read
+    /// the reply that way, "as Jev read its reply" or "as Orchestrator read its reply", or "when
+    /// its limit lifts".
     pub because: String,
     /// Who read the reply that way: "Jev’s read", or "Tagged by" the agent's session, with what it
     /// noted (insights.ts `readBy`). None for a limit, which its harness said.
@@ -599,17 +600,34 @@ fn suggested_snooze(s: &Session, working: bool, snoozed: bool, now: i64) -> Opti
         return Some(SuggestedSnooze { until, offered_till: until - SNOOZE_WORTH_MS, why: SnoozeWhy::Limit, because: "when its limit lifts".into(), by: None });
     }
     let insight = s.insight.as_ref()?;
-    let until = insight.waits_until?;
+    let until = put_off_to(insight)?;
     let offered_till = until - SNOOZE_WORTH_MS;
     if offered_till <= now {
         return None;
     }
-    let read = match &insight.by {
-        None => "Jev\u{2019}s read".to_string(),
-        Some(_) => format!("Tagged by {}", insight.by_title.as_deref().filter(|t| !t.is_empty()).unwrap_or("an agent")),
+    // Who read it so (insights.ts `readerOf`, `readBy`): Jev's day under an agent's tag that read
+    // something else is Jev's, said without the agent's note (`waits_by_jev`).
+    let tag = insight.by.as_ref().filter(|_| !insight.waits_by_jev);
+    let reader = match tag {
+        None => "Jev",
+        Some(_) => insight.by_title.as_deref().filter(|t| !t.is_empty()).unwrap_or("an agent"),
     };
-    let note = insight.note.as_deref().filter(|n| insight.by.is_some() && !n.is_empty()).map(|n| format!(": {n}")).unwrap_or_default();
-    Some(SuggestedSnooze { until, offered_till, why: SnoozeWhy::Reply, because: "as its reply says".into(), by: Some(format!("{read}{note}")) })
+    let read = if tag.is_some() { format!("Tagged by {reader}") } else { "Jev\u{2019}s read".to_string() };
+    let note = insight.note.as_deref().filter(|n| tag.is_some() && !n.is_empty()).map(|n| format!(": {n}")).unwrap_or_default();
+    Some(SuggestedSnooze { until, offered_till, why: SnoozeWhy::Reply, because: format!("as {reader} read its reply"), by: Some(format!("{read}{note}")) })
+}
+
+/// How sure a read has to be that a reply asks you something for it to wait on you now (the Mac's
+/// board.rs `ASKS_YOU`).
+const ASKS_YOU: f64 = 0.7;
+
+/// The time a read puts its reply's work off to, unless it reads the reply as asking you
+/// something: that waits on you now, whatever day it names, so no snooze is offered beside its
+/// question (insights.rs `put_off_to`). A Mac since 2026-11-18 holds its reads to it; one before
+/// may send both, as the Mac's windows hold another device's reads to it (peerfeed.rs
+/// `for_windows`).
+fn put_off_to(i: &codealong_peer::model::SessionInsight) -> Option<i64> {
+    i.waits_until.filter(|_| i.asks_you.is_none_or(|p| p < ASKS_YOU))
 }
 
 /// What a session's status mark draws, as the Mac's SessionGlyph (ui/primitives.tsx) does,
@@ -2044,6 +2062,12 @@ pub struct Pending {
     /// declining calls the exit off, leaving it at its prompt. False from Macs before 2026-11-10,
     /// which don't offer it.
     pub exiting: bool,
+    /// It's a dialog of its harness's own, read off the terminal it runs in (Claude Code's offer to
+    /// make auto mode the default, a command's list of choices: `Pending::dialog`): its one
+    /// question's choices are all it takes, picked there as you'd pick one, and declining presses
+    /// Escape, which closes it as its own cancel does. False from Macs before 2026-11-18, which
+    /// send such a dialog as questions and refuse words of your own for it.
+    pub dialog: bool,
 }
 
 /// What a request asks, as its card says it: a held message's label with the session it's from
@@ -2197,37 +2221,33 @@ impl From<api::SideTurn> for SideTurn {
 /// command reads as working rather than stalled; one asked after it waits its turn.
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
 pub struct SideTurnLine {
-    /// It waits for the turn before it: said plainly, with no mark or clock.
+    /// It waits for the turn before it: said plainly ("Queued"), with no mark or clock.
     pub waits: bool,
-    pub words: String,
+    /// What it says before the clock: "Reading the conversation" until the copy has done or said
+    /// anything, and nothing once it has, the mark and the clock saying it works (side.ts
+    /// `turnState`).
+    pub words: Option<String>,
     /// When it was asked, for the clock beside a turn at work: none for one kept from before its
     /// Mac noted the time.
     pub since: Option<i64>,
 }
 
 /// What the line under `turn` says while its side conversation's copy answers. `current` is the
-/// turn the copy is on, the first not answered. The Mac's line says it reads the conversation until
-/// the copy has done or said anything, then words of its own; the phone, which has no working
-/// words, says what it's at: working while it runs a tool (which has its own line above) or thinks
-/// after one, writing while the answer comes.
+/// turn the copy is on, the first not answered. As the Mac's side.ts `turnState` says it, since
+/// 2026-11-18 (82313c24, 18718361): that it reads the conversation until the copy has done or said
+/// anything, then only the mark and how long since it was asked, the tool it runs and the answer
+/// as it comes showing above; one asked after it is Queued.
 #[uniffi::export]
 pub fn side_turn_line(turn: SideTurn, current: bool) -> Option<SideTurnLine> {
     if turn.done {
         return None;
     }
     if !current {
-        return Some(SideTurnLine { waits: true, words: "Waits for the answer above".into(), since: None });
+        return Some(SideTurnLine { waits: true, words: Some("Queued".into()), since: None });
     }
-    let words = if turn.tool.is_some() {
-        "Working…"
-    } else if !turn.answer.is_empty() {
-        "Writing…"
-    } else if !turn.tools.is_empty() {
-        "Working…"
-    } else {
-        "Reading the conversation…"
-    };
-    Some(SideTurnLine { waits: false, words: words.into(), since: (turn.at > 0).then_some(turn.at) })
+    let begun = !turn.answer.is_empty() || turn.tool.is_some() || !turn.tools.is_empty();
+    let words = (!begun).then(|| "Reading the conversation".to_string());
+    Some(SideTurnLine { waits: false, words, since: (turn.at > 0).then_some(turn.at) })
 }
 
 /// A side conversation as its Mac keeps it, to read once it's closed: the latest first in the list
@@ -2650,6 +2670,7 @@ impl Conversation {
             message: p.message,
             unwritten: p.unwritten,
             exiting: p.exiting,
+            dialog: p.dialog,
         }))
     }
 
@@ -3207,6 +3228,7 @@ mod tests {
             questions: qs.iter().map(|q| question_of(q, None)).collect(),
             unwritten: false,
             exiting: false,
+            dialog: false,
         };
         let line = |qs: &[api::Question], result: Option<api::Item>| {
             let mut call = item("tool", 20, Some("call-2"), None);
@@ -3248,6 +3270,7 @@ mod tests {
             questions: vec![],
             unwritten: false,
             exiting: false,
+            dialog: false,
         };
         let line = |label: &str, input: Option<&str>, result: Option<api::Item>| {
             let mut call = item("tool", 20, Some("call-2"), None);
@@ -4618,19 +4641,19 @@ mod order_tests {
             error: None,
             at,
         };
-        let working = |words: &str, since: Option<i64>| Some(SideTurnLine { waits: false, words: words.into(), since });
+        let working = |words: Option<&str>, since: Option<i64>| Some(SideTurnLine { waits: false, words: words.map(String::from), since });
         // Before the copy has done or said anything.
-        assert_eq!(side_turn_line(turn("", &[], None, false, 5), true), working("Reading the conversation…", Some(5)));
-        // A tool it runs, and thought after one, are still work: the line stays under them.
-        assert_eq!(side_turn_line(turn("", &[], Some("Bash · `gcloud logging read`"), false, 5), true), working("Working…", Some(5)));
-        assert_eq!(side_turn_line(turn("", &["Bash · `gcloud logging read`"], None, false, 5), true), working("Working…", Some(5)));
-        assert_eq!(side_turn_line(turn("Because", &["Read"], None, false, 5), true), working("Writing…", Some(5)));
-        // A tool it runs after saying something is work, not writing.
-        assert_eq!(side_turn_line(turn("I'll wait on it.", &["Bash · `sleep 150`"], Some("Bash · `sleep 150`"), false, 5), true), working("Working…", Some(5)));
+        assert_eq!(side_turn_line(turn("", &[], None, false, 5), true), working(Some("Reading the conversation"), Some(5)));
+        // Once it has, a tool it runs, thought after one, the answer as it comes: the mark and the
+        // clock alone, under them.
+        assert_eq!(side_turn_line(turn("", &[], Some("Bash · `gcloud logging read`"), false, 5), true), working(None, Some(5)));
+        assert_eq!(side_turn_line(turn("", &["Bash · `gcloud logging read`"], None, false, 5), true), working(None, Some(5)));
+        assert_eq!(side_turn_line(turn("Because", &["Read"], None, false, 5), true), working(None, Some(5)));
+        assert_eq!(side_turn_line(turn("I'll wait on it.", &["Bash · `sleep 150`"], Some("Bash · `sleep 150`"), false, 5), true), working(None, Some(5)));
         // A turn kept from before its Mac noted when it was asked has no clock.
-        assert_eq!(side_turn_line(turn("", &[], None, false, 0), true), working("Reading the conversation…", None));
-        // One asked after the turn the copy is on waits for it.
-        assert_eq!(side_turn_line(turn("", &[], None, false, 9), false), Some(SideTurnLine { waits: true, words: "Waits for the answer above".into(), since: None }));
+        assert_eq!(side_turn_line(turn("", &[], None, false, 0), true), working(Some("Reading the conversation"), None));
+        // One asked after the turn the copy is on is queued behind it.
+        assert_eq!(side_turn_line(turn("", &[], None, false, 9), false), Some(SideTurnLine { waits: true, words: Some("Queued".into()), since: None }));
         // Answered, or ended without one: nothing.
         assert_eq!(side_turn_line(turn("Because.", &[], None, true, 5), true), None);
         assert_eq!(side_turn_line(turn("", &[], None, true, 5), false), None);
@@ -4859,12 +4882,20 @@ mod order_tests {
         const DAY: i64 = 24 * 60 * 60 * 1000;
         let read = |insight: SessionInsight| Session { insight: Some(insight), ..Session::new(Harness::Claude, "claude", "later") };
         let jev = read(SessionInsight { waits_until: Some(NOW + DAY), ..Default::default() });
-        assert_eq!(suggested_snooze(&jev, false, false, NOW), Some(SuggestedSnooze { until: NOW + DAY, offered_till: NOW + DAY - SNOOZE_WORTH_MS, why: SnoozeWhy::Reply, because: "as its reply says".into(), by: Some("Jev\u{2019}s read".into()) }));
+        assert_eq!(suggested_snooze(&jev, false, false, NOW), Some(SuggestedSnooze { until: NOW + DAY, offered_till: NOW + DAY - SNOOZE_WORTH_MS, why: SnoozeWhy::Reply, because: "as Jev read its reply".into(), by: Some("Jev\u{2019}s read".into()) }));
         // An agent's tag says who, and what it noted.
         let tagged = read(SessionInsight { waits_until: Some(NOW + DAY), by: Some("k".into()), by_title: Some("Orchestrator".into()), note: Some("The freeze lifts Monday.".into()), ..Default::default() });
-        assert_eq!(suggested_snooze(&tagged, false, false, NOW).and_then(|s| s.by), Some("Tagged by Orchestrator: The freeze lifts Monday.".into()));
+        assert_eq!(suggested_snooze(&tagged, false, false, NOW).map(|s| (s.because, s.by)), Some(("as Orchestrator read its reply".into(), Some("Tagged by Orchestrator: The freeze lifts Monday.".into()))));
         let unnamed = read(SessionInsight { waits_until: Some(NOW + DAY), by: Some("k".into()), ..Default::default() });
-        assert_eq!(suggested_snooze(&unnamed, false, false, NOW).and_then(|s| s.by), Some("Tagged by an agent".into()));
+        assert_eq!(suggested_snooze(&unnamed, false, false, NOW).map(|s| (s.because, s.by)), Some(("as an agent read its reply".into(), Some("Tagged by an agent".into()))));
+        // Jev's day under a tag that read something else is Jev's, without the agent's note.
+        let jevs_under_tag = read(SessionInsight { waits_by_jev: true, ..tagged.insight.clone().unwrap() });
+        assert_eq!(suggested_snooze(&jevs_under_tag, false, false, NOW).map(|s| (s.because, s.by)), Some(("as Jev read its reply".into(), Some("Jev\u{2019}s read".into()))));
+        // None beside a reply read as asking you something, which waits on you now, as a Mac
+        // before the rule could send; one less sure it asks still offers it.
+        assert_eq!(suggested_snooze(&read(SessionInsight { asks_you: Some(0.7), ..jev.insight.clone().unwrap() }), false, false, NOW), None);
+        assert_eq!(suggested_snooze(&read(SessionInsight { asks_you: Some(0.9), ..tagged.insight.clone().unwrap() }), false, false, NOW), None);
+        assert_eq!(suggested_snooze(&read(SessionInsight { asks_you: Some(0.2), ..jev.insight.clone().unwrap() }), false, false, NOW).map(|s| s.until), Some(NOW + DAY));
         // None once it's all but here or gone by, while it's snoozed or archived, and for a
         // reply that names no time.
         assert_eq!(suggested_snooze(&read(SessionInsight { waits_until: Some(NOW + SNOOZE_WORTH_MS), ..Default::default() }), false, false, NOW), None);

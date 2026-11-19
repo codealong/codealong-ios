@@ -2219,6 +2219,11 @@ private struct QuestionsCard: View {
         return kept
     }
 
+    /// Its choices are all it takes: what an exit asks, or a dialog of its harness's own read off
+    /// its terminal, whose Mac refuses words of your own (the Mac's QuestionList.tsx
+    /// `choicesOnly`).
+    private var choicesOnly: Bool { pending.exiting || pending.dialog }
+
     /// What it asks, on the line it folds to: the question, or with several, how many and their
     /// headers when they all have one (as its line in the conversation names them).
     private var gist: AttributedString {
@@ -2243,8 +2248,8 @@ private struct QuestionsCard: View {
                 }
                 .scrollBounceBehavior(.basedOnSize)
             }
-            // What an exit asks takes nothing but its choices.
-            if !pending.exiting {
+            // What an exit asks, and a dialog of its harness's own, take nothing but their choices.
+            if !choicesOnly {
                 TextField(q.options.isEmpty ? "Your answer" : "Or write your own answer", text: Binding(get: { own[q.question] ?? "" }, set: { type(q, $0) }), axis: .vertical)
                     .lineLimit(1...4)
                     .textFieldStyle(.roundedBorder)
@@ -2260,6 +2265,11 @@ private struct QuestionsCard: View {
                     Button(answering == .deny ? "Cancelling…" : "Cancel", action: decline)
                         .buttonStyle(.bordered)
                         .accessibilityHint("Calls the exit off: it stays open at its prompt")
+                } else if pending.dialog {
+                    // Closes the dialog, as Escape in its terminal does: no turn is stopped.
+                    Button(answering == .deny ? "Cancelling…" : "Cancel", action: decline)
+                        .buttonStyle(.bordered)
+                        .accessibilityHint("Presses Escape in its terminal, which closes it. Or pick one, as you would there")
                 } else {
                     Button(answering == .deny ? "Declining…" : "Decline", role: .destructive, action: decline)
                         .buttonStyle(.bordered)
@@ -2542,11 +2552,14 @@ private struct ApiErrorLine: View {
 /// A snooze offered for a session whose last reply says its work goes on at a later time, with
 /// nothing for you or it to do before then, on a line above its box as the Mac offers it
 /// (SnoozeSuggestion.tsx; the core's `SuggestedSnooze`): a tap snoozes it until then, as the first
-/// time in its Snooze menu does. Who read the reply that way is in its hint. It goes once the
+/// time in its Snooze menu does. Its sparkle says who read the reply that way once it's tapped, as
+/// a suggested reply's does (Jev, or the agent that tagged it, with its note). It goes once the
 /// offer does (`offeredTill`), whether or not anything else changes. Nothing snoozes by itself.
 private struct SnoozeSuggestionLine: View {
     let suggested: SuggestedSnooze
     let snooze: () -> Void
+    /// Who read the reply that way shows, under the line.
+    @State private var why = false
 
     var body: some View {
         TimelineView(.explicit([Date(ms: suggested.offeredTill)])) { _ in
@@ -2559,24 +2572,51 @@ private struct SnoozeSuggestionLine: View {
 
     private var line: some View {
         let when = Snooze.words(Date(ms: suggested.until))
-        // Checked again as it's tapped: a line drawn just before the offer ended is still there.
-        return Button { if offered { snooze() } } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "moon.zzz").font(.caption).foregroundStyle(.teal)
-                Text("Snooze until \(when)")
-                    .font(.footnote.weight(.medium))
-                Spacer(minLength: 0)
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 0) {
+                if let by = suggested.by {
+                    Button {
+                        withAnimation(.snappy) { why.toggle() }
+                    } label: {
+                        Image(systemName: "sparkles").font(.caption)
+                            .frame(minWidth: 34, minHeight: 38)
+                            .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.teal)
+                    .accessibilityLabel(by)
+                    .accessibilityHint(why ? "Hides who read its reply so" : "Says who read its reply so")
+                }
+                // Checked again as it's tapped: a line drawn just before the offer ended is still
+                // there.
+                Button { if offered { snooze() } } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "moon.zzz").font(.caption).foregroundStyle(.teal)
+                        Text("Snooze until \(when)")
+                            .font(.footnote.weight(.medium))
+                        Spacer(minLength: 0)
+                    }
+                    .lineLimit(1)
+                    .padding(.leading, suggested.by == nil ? 14 : 0)
+                    .padding(.trailing, 14)
+                    .padding(.vertical, 10)
+                    .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Snooze until \(when), \(suggested.because)")
+                .accessibilityHint("It leaves what waits on you until then")
             }
-            .lineLimit(1)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .contentShape(.rect)
+            if why, let by = suggested.by {
+                Text(by)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
-        .buttonStyle(.plain)
         // In suggestions' color, as the Mac's: a suggestion doesn't wait on you.
         .modifier(WaitingCard(tint: .teal, padding: 0))
-        .accessibilityLabel("Snooze until \(when), as its reply says")
-        .accessibilityHint("It leaves what waits on you until then. \(suggested.by ?? "")")
     }
 }
 

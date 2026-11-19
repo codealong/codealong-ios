@@ -226,7 +226,15 @@ pub(crate) fn pr_sections(prs: &[PrRow], project: &str, tab: PrTab, now: i64) ->
                 PrGroup::Snoozed => rows.sort_by_key(|p| (p.snoozed_until, p.key.clone())),
                 _ => rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| a.key.cmp(&b.key))),
             }
-            PrSection { group, rows: rows.into_iter().cloned().collect() }
+            let mut rows: Vec<PrRow> = rows.into_iter().cloned().collect();
+            // Under Ready to merge, a row's standing doesn't say it again (the Mac's PrsView.tsx
+            // leaves its Ready to merge pill out there, since 18718361).
+            if group == PrGroup::Ready {
+                for r in &mut rows {
+                    crate::quick::under_ready_heading(&mut r.standing);
+                }
+            }
+            PrSection { group, rows }
         })
         .collect()
 }
@@ -488,6 +496,22 @@ mod tests {
             groups(&pr_sections(&all, "", PrTab::All, NOW)),
             vec![(PrGroup::Pinned, vec![1]), (PrGroup::Requested, vec![2, 3]), (PrGroup::Ready, vec![4]), (PrGroup::Others, vec![5]), (PrGroup::Snoozed, vec![6]), (PrGroup::Done, vec![9, 7])]
         );
+    }
+
+    #[test]
+    fn a_pr_under_ready_to_merge_doesnt_say_so_again() {
+        let mut ready = pr(1, "approved", NOW - HOUR);
+        (ready.mine, ready.merge) = (true, "clean".into());
+        ready.standing = crate::quick::pr_standing(&ready);
+        assert_eq!(ready.standing.words, "Approved \u{b7} ready to merge");
+        // Pinned, it's under Pinned, which doesn't say it.
+        let mut pinned = pr(2, "approved", NOW - HOUR);
+        (pinned.mine, pinned.merge, pinned.pinned) = (true, "clean".into(), true);
+        pinned.standing = crate::quick::pr_standing(&pinned);
+        let sections = pr_sections(&[ready, pinned], "", PrTab::All, NOW);
+        let said = |g: PrGroup| sections.iter().find(|s| s.group == g).map(|s| s.rows[0].standing.words.clone());
+        assert_eq!(said(PrGroup::Ready).as_deref(), Some("Approved"));
+        assert_eq!(said(PrGroup::Pinned).as_deref(), Some("Approved \u{b7} ready to merge"));
     }
 
     #[test]

@@ -271,6 +271,7 @@ struct GoOnBar<Pick: GoOnPick>: View {
                 Text(count)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
             .multilineTextAlignment(.leading)
             Spacer(minLength: 8)
@@ -285,9 +286,11 @@ struct GoOnBar<Pick: GoOnPick>: View {
         .contentShape(.rect(cornerRadius: 22))
     }
 
-    /// How many wait on you after this one.
+    /// How many wait on you after this one, and which goes next, so where a swipe goes reads
+    /// before it's made, as the Mac's strip says it (SessionPanel.tsx `queueWords`, since
+    /// e9dab5c2).
     private var count: String {
-        if next == .end { return "Nothing else waits on you" }
-        return left == 1 ? "1 more waits on you" : "\(left) more wait on you"
+        guard let after = next.waiting else { return "Nothing else waits on you" }
+        return "\(left == 1 ? "1 more waits" : "\(left) more wait") · next: \(after.title)"
     }
 }

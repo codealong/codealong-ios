@@ -437,13 +437,14 @@ private struct SideTurns: View {
 
 /// Under a side conversation's turn while its copy answers (the core's `side_turn_line`): the turn
 /// it's on breathing, with how long since it was asked, so minutes on a slow command read as work
-/// going on, as the Mac's working line has it; one asked after it says it waits.
+/// going on, as the Mac's working line has it, and words only while it reads the conversation;
+/// one asked after it says it's queued.
 private struct SideTurnLineView: View {
     let line: SideTurnLine
 
     var body: some View {
         if line.waits {
-            Text(line.words)
+            Text(line.words ?? "")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         } else {
@@ -451,16 +452,19 @@ private struct SideTurnLineView: View {
             TimelineView(.periodic(from: .now, by: 10)) { context in
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     StatusMark(status: .working, stalled: false)
-                    Text(line.words)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
+                    if let words = line.words {
+                        Text(words)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
                     if let since = line.since {
                         Text(Clock.ago(since, now: context.date))
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.tertiary)
                     }
                 }
-                .accessibilityElement(children: .combine)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel([line.words ?? "Working", line.since.map { Clock.ago($0, now: context.date) }].compactMap { $0 }.joined(separator: ", "))
             }
         }
     }
