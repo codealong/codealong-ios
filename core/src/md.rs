@@ -274,7 +274,7 @@ fn kept_at(s: &str) -> Option<(PromptPart, usize)> {
 /// How long the web link at the start of a prompt's text is, as the Mac's todos.ts takes one: up
 /// to a space, angle bracket or parenthesis, less the punctuation that ends a sentence.
 fn prompt_link_len(s: &str) -> Option<usize> {
-    let scheme = if s[..s.len().min(8)].eq_ignore_ascii_case("https://") { 8 } else { 7 };
+    let scheme = scheme_len(s);
     let end = s[scheme..].find(|c: char| c.is_whitespace() || "<>()".contains(c)).map_or(s.len(), |i| scheme + i);
     let body = s[..end].trim_end_matches(|c: char| ".,;:!?'\"".contains(c));
     (body.len() > scheme).then_some(body.len())
@@ -593,12 +593,22 @@ fn web_start(s: &str) -> Option<usize> {
 /// angle bracket, parenthesis or backtick (in output, a quote or backslash too), less the
 /// punctuation that ends a sentence around it. None when there's nothing after the scheme.
 fn web_len(s: &str, output: bool) -> Option<usize> {
-    let scheme = if s[..s.len().min(8)].eq_ignore_ascii_case("https://") { 8 } else { 7 };
+    let scheme = scheme_len(s);
     let stops = |c: char| c.is_whitespace() || "<>()`".contains(c) || (output && "\"'\\".contains(c));
     let end = s[scheme..].find(stops).map_or(s.len(), |i| scheme + i);
     let trailing: &str = if output { ".,;:!?*_" } else { ".,;:!?'\"*_" };
     let body = s[..end].trim_end_matches(|c: char| trailing.contains(c));
     (body.len() > scheme).then_some(body.len())
+}
+
+/// How long the scheme is of the web link `s` starts with (`http://` or `https://`), read by bytes:
+/// the character after `http://` may take more than one, and a cut through it would panic.
+fn scheme_len(s: &str) -> usize {
+    if s.as_bytes().get(..8).is_some_and(|b| b.eq_ignore_ascii_case(b"https://")) {
+        8
+    } else {
+        7
+    }
 }
 
 fn is_web(url: &str) -> bool {
@@ -636,11 +646,12 @@ pub(crate) fn pr_label(url: &str) -> Option<String> {
     Some(format!("{name}#{number}{}", part.map(|p| format!(" ({p})")).unwrap_or_default()))
 }
 
-/// Text written into a link's words, with what Markdown would read as marks escaped.
+/// Text written into a link's words, with what Markdown would read as marks escaped: entities
+/// (`&lt;`) and strikethrough (`~~`) among them, which the phone's Markdown reads too.
 pub(crate) fn escaped(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
-        if "\\`*_[]<>".contains(c) {
+        if "\\`*_[]<>&~".contains(c) {
             out.push('\\');
         }
         out.push(c);
@@ -985,6 +996,12 @@ mod tests {
         assert_eq!(inline("**bold** and *it*"), "**bold** and *it*");
         // A word that runs into the scheme isn't a link.
         assert_eq!(inline("xhttps://a.b"), "xhttps://a.b");
+        // A host that isn't ASCII is read by its characters, not cut through one.
+        assert_eq!(inline("See http://ü.example/x"), "See [http://ü.example/x](http://ü.example/x)");
+        assert_eq!(linked_output("http://ü.example".into())[0].text, "http://ü.example");
+        assert!(prompt_parts("Look at http://é.example".into()).iter().any(|p| p.url.as_deref() == Some("http://é.example")));
+        // Words that Markdown would read as an entity or a strike keep their marks in a link.
+        assert_eq!(escaped("&lt;title&gt; ~~old~~"), "\\&lt;title\\&gt; \\~\\~old\\~\\~");
     }
 
     #[test]

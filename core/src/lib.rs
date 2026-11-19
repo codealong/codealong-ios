@@ -1129,21 +1129,18 @@ impl Core {
     /// asked only for what came since.
     pub fn conversation(&self, key: String) -> Result<Arc<Conversation>, CoreError> {
         let (device, own) = split_remote(&key).ok_or_else(|| CoreError::Failed("That isn't a session on one of your Macs.".into()))?;
-        let continues = self.client.with_feeds(|feeds| {
-            feeds
-                .iter()
-                .filter(|(d, _)| d.short == device || d.key == device)
-                .flat_map(|(_, r)| r.lanes.iter().flat_map(|l| l.sessions.iter()))
-                .find(|s| s.key == own)
-                .and_then(|s| s.continues.clone())
+        let (continues, mac) = self.client.with_feeds(|feeds| {
+            let mac = feeds.iter().filter(|(d, _)| d.short == device || d.key == device);
+            let continues = mac.clone().flat_map(|(_, r)| r.lanes.iter().flat_map(|l| l.sessions.iter())).find(|s| s.key == own).and_then(|s| s.continues.clone());
+            (continues, mac.map(|(d, _)| d.app.clone()).next().unwrap_or_default())
         });
-        Ok(self.kept.get(&key, continues.as_deref(), || {
+        Ok(self.kept.get(&key, continues.as_deref(), &mac, || {
             let saved = kept::file_for(&self.conversations, &key);
             let mut thread = Thread::default();
-            if let Some(s) = kept::load(&saved, &key, continues.as_deref()) {
+            if let Some(s) = kept::load(&saved, &key, continues.as_deref(), &mac) {
                 thread = Thread { loaded: true, items: s.items, before: s.before, after: s.after, ..Thread::default() };
             }
-            Arc::new(Conversation { client: self.client.clone(), device: device.to_string(), key: own.to_string(), st: Mutex::new(thread), saved, remote: key.clone(), continues: continues.clone(), watched: self.watched.clone(), commands: self.commands.clone() })
+            Arc::new(Conversation { client: self.client.clone(), device: device.to_string(), key: own.to_string(), st: Mutex::new(thread), saved, remote: key.clone(), continues: continues.clone(), mac: mac.clone(), watched: self.watched.clone(), commands: self.commands.clone() })
         }))
     }
 
@@ -1848,17 +1845,21 @@ pub enum CardIcon {
     Peer,
 }
 
+/// The sessions a card can link to: a key as the session's Mac writes it, to that session's title
+/// now, where this phone lists it on that Mac (`Conversation::shown`).
+type Named<'a> = &'a dyn Fn(&str) -> Option<String>;
+
 impl Card {
-    /// The card `i` shows as, if it's one.
-    fn of(i: &api::Item) -> Option<Card> {
+    /// The card `i` shows as, if it's one, naming the sessions `named` has as links.
+    fn of(i: &api::Item, named: Named) -> Option<Card> {
         match i.kind.as_str() {
             // A line that says nothing (a Mac's build that wrote it otherwise, for a while) is
             // none: the card shows the message's first lines.
             "codealong" => Some(match i.glance.as_ref().filter(|g| g.pr.is_some() || !g.parts.is_empty()) {
-                Some(g) => Card { icon: CardIcon::of(g.about), title: glance_title(g), head_only: true },
+                Some(g) => Card { icon: CardIcon::of(g.about), title: glance_title(g, named), head_only: true },
                 None => Card { icon: CardIcon::Codealong, title: "Codealong".into(), head_only: false },
             }),
-            "peer" => Some(Card { icon: CardIcon::Peer, title: peer_title(i), head_only: false }),
+            "peer" => Some(Card { icon: CardIcon::Peer, title: peer_title(i, named), head_only: false }),
             _ => None,
         }
     }
@@ -1886,8 +1887,10 @@ fn session_link(key: &str) -> String {
 
 /// What Codealong's message comes to, as its card's head reads (the Mac's MessageCard.tsx
 /// `GlanceLine`): the PR, a link to it where its address is a PR's, then each part, the session
-/// it's about a link before its words, the parts apart by " · ".
-fn glance_title(g: &codealong_peer::glance::Glance) -> String {
+/// it's about before its words, the parts apart by " · ". A session listed here is a link under
+/// its title now (a helper renamed since reads as it's called now); one that isn't is the title
+/// the message gave it, as words.
+fn glance_title(g: &codealong_peer::glance::Glance, named: Named) -> String {
     let mut out = String::new();
     if let Some(pr) = &g.pr {
         let named = md::escaped(&format!("#{} {}", pr.number, pr.title));
@@ -1900,7 +1903,10 @@ fn glance_title(g: &codealong_peer::glance::Glance) -> String {
         }
     }
     let part = |p: &codealong_peer::glance::Part| match &p.session {
-        Some(n) => format!("[“{}”]({}) {}", md::escaped(&n.title), session_link(&n.key), md::escaped(&p.line)),
+        Some(n) => match named(&n.key) {
+            Some(now) => format!("[“{}”]({}) {}", md::escaped(&now), session_link(&n.key), md::escaped(&p.line)),
+            None => format!("“{}” {}", md::escaped(&n.title), md::escaped(&p.line)),
+        },
         None => md::escaped(&p.line),
     };
     out.push_str(&g.parts.iter().map(part).collect::<Vec<_>>().join(" · "));
@@ -1908,10 +1914,11 @@ fn glance_title(g: &codealong_peer::glance::Glance) -> String {
 }
 
 /// Who another session's message is from, as its card's head reads (the Mac's MessageCard.tsx
-/// `PeerLabel`): the sender a link to its session where the message said which one sent it.
-fn peer_title(i: &api::Item) -> String {
+/// `PeerLabel`): the sender a link to its session where the message said which one sent it and
+/// this phone lists it.
+fn peer_title(i: &api::Item, named: Named) -> String {
     let name = i.from.as_deref().map_or_else(|| "another session".to_string(), |f| format!("“{}”", md::escaped(f)));
-    match &i.from_key {
+    match i.from_key.as_deref().filter(|key| named(key).is_some()) {
         Some(key) => format!("From [{name}]({})", session_link(key)),
         None => format!("From {name}"),
     }
@@ -2016,9 +2023,10 @@ pub struct Pending {
 
 /// What a request asks, as its card says it: a held message's label with the session it's from
 /// (what's from its first quote on, “its title”) a link to that session, where its Mac named it
-/// (`api::Pending::from_key`), as the Mac's SessionReply.tsx `PendingLabel` does.
-fn pending_label(p: &api::Pending) -> String {
-    match (&p.from_key, p.label.find('“')) {
+/// (`api::Pending::from_key`) and this phone lists it, as the Mac's SessionReply.tsx
+/// `PendingLabel` does.
+fn pending_label(p: &api::Pending, named: Named) -> String {
+    match (p.from_key.as_deref().filter(|key| named(key).is_some()), p.label.find('“')) {
         (Some(key), Some(at)) => format!("{}[{}]({})", &p.label[..at], md::escaped(&p.label[at..]), session_link(key)),
         _ => p.label.clone(),
     }
@@ -2221,6 +2229,8 @@ pub struct Conversation {
     saved: PathBuf,
     remote: String,
     continues: Option<String>,
+    /// Its Mac's build when it was opened (`kept::Saved::mac`).
+    mac: String,
     watched: Watched,
     commands: run::Commands,
 }
@@ -2242,10 +2252,17 @@ struct Thread {
 
 impl Thread {
     /// Takes a page in: older pages go in front, newer ones after, and anything already here
-    /// (a page can overlap the last) isn't taken twice.
+    /// (a page can overlap the last) isn't taken twice: the page's copy takes its place, as the
+    /// Mac read it later (a message the session has since taken back says so).
     fn take(&mut self, page: api::Page, older: bool) {
-        let have: std::collections::HashSet<(u64, u32)> = self.items.iter().map(|i| (i.cursor, i.n)).collect();
-        let fresh: Vec<api::Item> = page.items.into_iter().filter(|i| !have.contains(&(i.cursor, i.n))).collect();
+        let have: std::collections::HashMap<(u64, u32), usize> = self.items.iter().enumerate().map(|(at, i)| ((i.cursor, i.n), at)).collect();
+        let mut fresh: Vec<api::Item> = Vec::new();
+        for i in page.items {
+            match have.get(&(i.cursor, i.n)) {
+                Some(&at) => self.items[at] = i,
+                None => fresh.push(i),
+            }
+        }
         if older {
             self.items.splice(0..0, fresh);
             self.before = page.before;
@@ -2261,7 +2278,7 @@ impl Thread {
 
     /// The items as the list shows them: each result folded into the call it answers, when that
     /// call has been read; a result whose call is further back waits for it.
-    fn shown(&self) -> Vec<Item> {
+    fn shown(&self, named: Named) -> Vec<Item> {
         let mut results: std::collections::HashMap<&str, &api::Item> = std::collections::HashMap::new();
         for i in self.items.iter().filter(|i| i.kind == "result") {
             if let Some(id) = &i.id {
@@ -2308,7 +2325,7 @@ impl Thread {
                     files: i.sent.as_ref().map(|s| s.files.iter().map(|f| SentFile::of(f)).collect()).unwrap_or_default(),
                     caption: i.sent.as_ref().and_then(|s| s.caption.clone()),
                     editable,
-                    card: Card::of(i),
+                    card: Card::of(i, named),
                 })
             })
             .collect()
@@ -2499,10 +2516,22 @@ impl Conversation {
         })
     }
 
+    /// The sessions this phone lists on its Mac, for what names one as a link (`Named`): a key as
+    /// that Mac writes it, to the session's title now, as `session_named` finds it. They're read
+    /// only once something asks.
+    fn named(&self) -> impl Fn(&str) -> Option<String> + '_ {
+        let rows: std::cell::OnceCell<Vec<SessionRow>> = std::cell::OnceCell::new();
+        move |key: &str| {
+            let rows = rows.get_or_init(|| self.client.with_feeds(|feeds| session_rows(feeds, true)));
+            let listed = session_named_in(rows, key, Some(&self.device))?;
+            rows.iter().find(|r| r.key == listed).map(|r| r.title.clone())
+        }
+    }
+
     /// The items as the list shows them (`Thread::shown`), an orchestrator's runs that found
     /// nothing folded (`fold`).
-    fn shown(st: &Thread, fold: bool) -> Vec<Item> {
-        let items = st.shown();
+    fn shown(&self, st: &Thread, fold: bool) -> Vec<Item> {
+        let items = st.shown(&self.named());
         if fold { fold_quiet_runs(items, st.before.is_none()) } else { items }
     }
 }
@@ -2524,21 +2553,21 @@ impl Conversation {
         if grew {
             self.save(&st);
         }
-        Ok(Conversation::shown(&st, fold))
+        Ok(self.shown(&st, fold))
     }
 
     /// What's been read so far, without asking its Mac: what was kept from before shows at once.
     pub fn kept(&self) -> Vec<Item> {
         let fold = self.orchestrating();
         let st = self.st.lock().unwrap_or_else(|e| e.into_inner());
-        if st.loaded { Conversation::shown(&st, fold) } else { Vec::new() }
+        if st.loaded { self.shown(&st, fold) } else { Vec::new() }
     }
 
     /// The page before the oldest read so far.
     pub fn older(&self) -> Result<Vec<Item>, CoreError> {
         let fold = self.orchestrating();
         let before = self.st.lock().unwrap_or_else(|e| e.into_inner()).before;
-        let Some(before) = before else { return Ok(Conversation::shown(&self.st.lock().unwrap_or_else(|e| e.into_inner()), fold)) };
+        let Some(before) = before else { return Ok(self.shown(&self.st.lock().unwrap_or_else(|e| e.into_inner()), fold)) };
         let kept = self.st.lock().unwrap_or_else(|e| e.into_inner()).read_back.remove(&before);
         let page = match kept {
             Some(page) => page,
@@ -2547,7 +2576,7 @@ impl Conversation {
         let mut st = self.st.lock().unwrap_or_else(|e| e.into_inner());
         st.take(page, true);
         self.save(&st);
-        Ok(Conversation::shown(&st, fold))
+        Ok(self.shown(&st, fold))
     }
 
     /// Your prompt behind the oldest item read so far, when what's read doesn't start with one: a
@@ -2582,7 +2611,7 @@ impl Conversation {
     pub fn pending(&self) -> Result<Option<Pending>, CoreError> {
         Ok(self.client.pending(&self.device, &self.key)?.map(|p| Pending {
             questions: p.questions.iter().map(|q| question_of(q, None)).collect(),
-            label: pending_label(&p),
+            label: pending_label(&p, &self.named()),
             id: p.id,
             input: p.input,
             cannot: p.cannot,
@@ -2837,7 +2866,7 @@ impl Conversation {
 impl Conversation {
     /// Saves what's been read (`kept`).
     fn save(&self, st: &Thread) {
-        kept::save(&self.saved, &kept::Saved::of(&self.remote, self.continues.as_deref(), &st.items, st.before, st.after));
+        kept::save(&self.saved, &kept::Saved::of(&self.remote, self.continues.as_deref(), &self.mac, &st.items, st.before, st.after));
     }
 
     /// Its Mac was read moments ago: a prefetch needn't read it again.
@@ -2970,10 +2999,16 @@ mod tests {
     #[test]
     fn codealongs_messages_and_other_sessions_are_cards() {
         use codealong_peer::glance::{About, Glance, Named, Part, Pr};
+        // The sessions listed here: one renamed since the message named it.
+        let listed = |key: &str| match key {
+            "claude:work:k1" => Some("Check staging again".to_string()),
+            "claude:work:k2" | "@4f2a:claude:work:k2" => Some("Review the parser".to_string()),
+            _ => None,
+        };
         let shown = |i: api::Item| {
             let mut t = Thread::default();
             t.take(api::Page { items: vec![i], before: None, after: 10 }, false);
-            t.shown().pop().unwrap().card
+            t.shown(&listed).pop().unwrap().card
         };
         let news = Glance {
             about: About::Pr,
@@ -2985,8 +3020,11 @@ mod tests {
         };
         let card = shown(api::Item { glance: Some(news.clone()), ..item("codealong", 1, None, None) }).unwrap();
         assert_eq!(card.icon, CardIcon::Pr);
-        assert_eq!(card.title, "[#397 Cursor \\*file\\* tools](https://github.com/acme/web/pull/397) ana asked for changes · [“Check staging”](codealong://session/claude:work:k1) ended its turn");
+        assert_eq!(card.title, "[#397 Cursor \\*file\\* tools](https://github.com/acme/web/pull/397) ana asked for changes · [“Check staging again”](codealong://session/claude:work:k1) ended its turn");
         assert!(card.head_only);
+        // A session not listed here is the title the message gave it, as words.
+        let gone = Glance { about: About::Helper, pr: None, parts: vec![Part { session: Some(Named { key: "claude:work:gone".into(), title: "Old *helper*".into() }), line: "ended its turn".into() }] };
+        assert_eq!(shown(api::Item { glance: Some(gone), ..item("codealong", 1, None, None) }).unwrap().title, "“Old \\*helper\\*” ended its turn");
         // A PR whose address isn't a PR's is named without a link; one with no parts is its name.
         let unlinked = Glance { pr: Some(Pr { number: 4, title: "Fix it".into(), url: None }), parts: vec![], ..news.clone() };
         assert_eq!(shown(api::Item { glance: Some(unlinked), ..item("codealong", 1, None, None) }).unwrap().title, "#4 Fix it");
@@ -3004,6 +3042,7 @@ mod tests {
         assert_eq!(from(Some("Review the parser"), None).title, "From “Review the parser”");
         assert_eq!(from(None, Some("claude:work:k2")).title, "From [another session](codealong://session/claude:work:k2)");
         assert_eq!(from(None, None).title, "From another session");
+        assert_eq!(from(Some("Gone"), Some("claude:work:gone")).title, "From “Gone”");
         // One the session took back is still its card, which shows it whole, saying so.
         assert_eq!(shown(api::Item { withdrawn: true, ..item("peer", 1, None, None) }).map(|c| c.icon), Some(CardIcon::Peer));
         // What else the conversation has isn't a card.
@@ -3015,11 +3054,13 @@ mod tests {
     #[test]
     fn a_held_message_names_its_sender_as_a_link() {
         let held = |label: &str, key: Option<&str>| api::Pending { id: "held-1".into(), label: label.into(), message: true, from_key: key.map(String::from), ..Default::default() };
-        assert_eq!(pending_label(&held("From “Review the [parser]”", Some("claude:work:k2"))), "From [“Review the \\[parser\\]”](codealong://session/claude:work:k2)");
-        assert_eq!(pending_label(&held("3 messages, the latest from “Fix”", Some("claude:work:k3"))), "3 messages, the latest from [“Fix”](codealong://session/claude:work:k3)");
-        // Without a key, or a name, it's as its Mac wrote it.
-        assert_eq!(pending_label(&held("From “Fix”", None)), "From “Fix”");
-        assert_eq!(pending_label(&held("From another session", Some("claude:work:k3"))), "From another session");
+        let listed = |key: &str| (key != "claude:work:gone").then(|| "Fix".to_string());
+        assert_eq!(pending_label(&held("From “Review the [parser]”", Some("claude:work:k2")), &listed), "From [“Review the \\[parser\\]”](codealong://session/claude:work:k2)");
+        assert_eq!(pending_label(&held("3 messages, the latest from “Fix”", Some("claude:work:k3")), &listed), "3 messages, the latest from [“Fix”](codealong://session/claude:work:k3)");
+        // Without a key, a name, or a session listed here, it's as its Mac wrote it.
+        assert_eq!(pending_label(&held("From “Fix”", None), &listed), "From “Fix”");
+        assert_eq!(pending_label(&held("From another session", Some("claude:work:k3")), &listed), "From another session");
+        assert_eq!(pending_label(&held("From “Gone”", Some("claude:work:gone")), &listed), "From “Gone”");
     }
 
     #[test]
@@ -3027,6 +3068,20 @@ mod tests {
         assert_eq!(SentFile::of("/Users/me/app/shots/before.png"), SentFile { name: "before.png".into(), folder: "~/app/shots".into() });
         assert_eq!(SentFile::of("/Users/me/notes.md"), SentFile { name: "notes.md".into(), folder: "~".into() });
         assert_eq!(SentFile::of("/tmp/out.txt"), SentFile { name: "out.txt".into(), folder: "/tmp".into() });
+    }
+
+    /// A page that overlaps what's read has the Mac's later read of it: a message the session took
+    /// back since says so.
+    #[test]
+    fn a_message_taken_back_since_it_was_read_says_so() {
+        let mut t = Thread::default();
+        t.take(api::Page { items: vec![item("peer", 10, None, None), item("agent", 20, None, None)], before: None, after: 30 }, false);
+        assert!(!t.shown(&|_| None)[0].withdrawn);
+        let mut taken = item("peer", 10, None, None);
+        taken.withdrawn = true;
+        t.take(api::Page { items: vec![taken, item("agent", 20, None, None), item("you", 30, None, None)], before: None, after: 40 }, false);
+        let shown = t.shown(&|_| None);
+        assert_eq!(shown.iter().map(|i| (i.id.as_str(), i.withdrawn)).collect::<Vec<_>>(), [("10:0", true), ("20:0", false), ("30:0", false)]);
     }
 
     #[test]
@@ -3039,12 +3094,12 @@ mod tests {
         t.take(api::Page { items: vec![item("you", 10, None, None), item("agent", 20, None, None), ran, item("you", 40, None, None), taken], before: None, after: 60 }, false);
         // The first comes before anything of the agent's, one is a command you ran, and the last
         // was taken back.
-        let editable: Vec<String> = t.shown().into_iter().filter(|i| i.editable).map(|i| i.id).collect();
+        let editable: Vec<String> = t.shown(&|_| None).into_iter().filter(|i| i.editable).map(|i| i.id).collect();
         assert_eq!(editable, ["40:0"]);
         // A page that doesn't begin at the session's start may have the agent's words above it.
         let mut later = Thread::default();
         later.take(api::Page { items: vec![item("you", 10, None, None)], before: Some(5), after: 20 }, false);
-        assert!(later.shown()[0].editable);
+        assert!(later.shown(&|_| None)[0].editable);
     }
 
     #[test]
@@ -3052,16 +3107,16 @@ mod tests {
         let mut t = Thread::default();
         // The newest page has a result whose call is further back.
         t.take(api::Page { items: vec![item("result", 30, Some("c1"), Some("ok")), item("agent", 40, None, None)], before: Some(20), after: 50 }, false);
-        assert_eq!(t.shown().iter().map(|i| i.kind).collect::<Vec<_>>(), [ItemKind::Agent]);
+        assert_eq!(t.shown(&|_| None).iter().map(|i| i.kind).collect::<Vec<_>>(), [ItemKind::Agent]);
         // The page before brings the call, which then shows with its output.
         t.take(api::Page { items: vec![item("you", 10, None, None), item("tool", 20, Some("c1"), None)], before: None, after: 30 }, true);
-        let shown = t.shown();
+        let shown = t.shown(&|_| None);
         assert_eq!(shown.iter().map(|i| i.kind).collect::<Vec<_>>(), [ItemKind::You, ItemKind::Tool, ItemKind::Agent]);
         assert_eq!(shown[1].output.as_deref(), Some("ok"));
         assert!(t.before.is_none());
         // What came since goes after, and an item read twice shows once.
         t.take(api::Page { items: vec![item("agent", 40, None, None), item("you", 60, None, None)], before: Some(40), after: 70 }, false);
-        assert_eq!(t.shown().len(), 4);
+        assert_eq!(t.shown(&|_| None).len(), 4);
         assert_eq!(t.after, 70);
     }
 
@@ -3081,7 +3136,7 @@ mod tests {
         result.link = Some(api::Link { url: "https://claude.ai/artifact/x".into(), title: "Dashboard".into(), note: None });
         let mut t = Thread::default();
         t.take(api::Page { items: vec![call, result], before: None, after: 40 }, false);
-        let shown = t.shown();
+        let shown = t.shown(&|_| None);
         let asked = &shown[0].questions[0];
         assert_eq!((asked.answered, asked.picked.clone(), asked.own.clone()), (true, vec!["Red".to_string(), "Blue".into()], vec!["green-ish".to_string()]));
         assert_eq!(shown[0].link.as_ref().map(|l| l.title.as_str()), Some("Dashboard"));
@@ -3119,7 +3174,7 @@ mod tests {
             call.questions = qs.to_vec();
             let mut t = Thread::default();
             t.take(api::Page { items: [Some(call), result].into_iter().flatten().collect(), before: None, after: 40 }, false);
-            t.shown().pop().unwrap()
+            t.shown(&|_| None).pop().unwrap()
         };
         let which = ask("Which color?", &["Red", "Blue"], Some("Color"), false);
         // The same questions and choices, though the call's id isn't the card's, and its record
@@ -3160,7 +3215,7 @@ mod tests {
             call.input = input.map(String::from);
             let mut t = Thread::default();
             t.take(api::Page { items: [Some(call), result].into_iter().flatten().collect(), before: None, after: 40 }, false);
-            t.shown().pop().unwrap()
+            t.shown(&|_| None).pop().unwrap()
         };
         // Its label and input alike, whatever spaces end them, though the ids differ.
         assert!(card_shows(line("Bash · `npm test`", Some("npm test"), None), card(" Bash · `npm test` ", Some("npm test\n"))));
@@ -3374,7 +3429,7 @@ mod tests {
         ran.input = Some("ls".into());
         let mut t = Thread::default();
         t.take(api::Page { items: vec![ran, item("result", 20, Some("b1"), Some("a.txt"))], before: None, after: 30 }, false);
-        let shown = t.shown();
+        let shown = t.shown(&|_| None);
         assert_eq!(shown.len(), 1);
         assert_eq!((shown[0].input.as_deref(), shown[0].output.as_deref()), (Some("ls"), Some("a.txt")));
     }

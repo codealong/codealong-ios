@@ -216,8 +216,14 @@ struct SessionView: View {
     /// A link tapped in the conversation, or in a side conversation's answer (`fromSide`), whose
     /// sheet goes away for it: one to a session an agent named (`codealong://session/…`) opens it,
     /// named as this session's Mac names its sessions (the core's `sessionNamed`, the Mac's
-    /// codealongLinks.ts); the web's open as they would anywhere.
+    /// codealongLinks.ts); one to a PR this phone lists opens its page here, as the Mac shows one
+    /// it lists (PrLink.tsx); the web's open as they would anywhere.
     private func openLink(_ url: URL, fromSide: Bool = false) -> OpenURLAction.Result {
+        if let pr = prKeyOf(url: url.absoluteString).flatMap({ store.pr($0) }), !pr.slug.isEmpty {
+            if fromSide { aside = nil }
+            openPr(pr)
+            return .handled
+        }
         guard url.scheme?.lowercased() == "codealong", url.host()?.lowercased() == "session" else { return .systemAction }
         if let named = store.sessionNamed(url, on: row?.device) {
             if fromSide { aside = nil }
@@ -394,7 +400,8 @@ struct SessionView: View {
                                     promptPlaces[item.id] = place
                                 }
                                 .id(item.id)
-                        case .said(let item): ItemView(item: item)
+                        // A message the session took back can go back in the box, whoever sent it.
+                        case .said(let item): ItemView(item: item, putBack: canAct && item.withdrawn ? { draft = $0 } : nil)
                         case .tools(let calls):
                             ToolRun(calls: calls)
                         }
@@ -2898,7 +2905,7 @@ private struct ItemView: View {
                 .frame(maxWidth: .infinity)
         case .peer, .codealong:
             if let card = item.card {
-                MessageCard(item: item, card: card)
+                MessageCard(item: item, card: card, putBack: putBack)
             } else {
                 MarkdownText(text: item.text).foregroundStyle(.secondary)
             }
@@ -2912,10 +2919,12 @@ private struct ItemView: View {
 /// do), when, and a chevron where there's more to show. Under it the message: Codealong's with its
 /// line hidden until it's opened, the rest by their first ten lines, a long one fading out until
 /// it's opened. A tap on the head opens and closes it, as the chevron does; one on a link goes
-/// where the link goes. One the session took back shows whole, saying so.
+/// where the link goes. One the session took back shows whole, saying so, and can go back in the
+/// box, as a prompt of yours it took back can.
 private struct MessageCard: View {
     let item: Item
     let card: Card
+    var putBack: ((String) -> Void)?
     @State private var opened = false
     /// Its message is longer than its first lines.
     @State private var long = false
@@ -2937,11 +2946,17 @@ private struct MessageCard: View {
                     .padding(.bottom, 10)
             }
             if taken {
-                Text("Taken back: the turn was stopped before a reply, so the agent never saw this.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 10)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Taken back: the turn was stopped before a reply, so the agent never saw this.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if let putBack {
+                        Button("Put back in the box", systemImage: "arrow.uturn.backward") { putBack(item.text) }
+                            .font(.caption)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 10)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

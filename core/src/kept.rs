@@ -42,6 +42,12 @@ pub(crate) struct Saved {
     /// that read less is read afresh, so what it left out comes. Missing from builds before.
     #[serde(default)]
     pub reads: u32,
+    /// The build of the Mac it was read from (`client::Device::app`), where known. A Mac on
+    /// another build since may write its items otherwise (Codealong's messages came with the line
+    /// for their cards in 0.26), and only what came since is read again, so one read from another
+    /// build is read afresh. Missing from builds before.
+    #[serde(default)]
+    pub mac: String,
 }
 
 /// What of a conversation's items this build reads, as a number that goes up with what it adds:
@@ -52,7 +58,7 @@ const READS: u32 = 1;
 impl Saved {
     /// What's saved of a conversation: its newest items, from where a record's line starts, so
     /// reading back from the first goes on from there with nothing missed.
-    pub fn of(key: &str, continues: Option<&str>, items: &[api::Item], before: Option<u64>, after: u64) -> Saved {
+    pub fn of(key: &str, continues: Option<&str>, mac: &str, items: &[api::Item], before: Option<u64>, after: u64) -> Saved {
         let mut from = items.len().saturating_sub(SAVED_ITEMS);
         while from > 0 && from < items.len() && items[from].cursor == items[from - 1].cursor {
             from += 1;
@@ -60,7 +66,7 @@ impl Saved {
         let kept = items[from.min(items.len())..].to_vec();
         // Cut short, the page before is the one before the first item kept.
         let before = if from > 0 { kept.first().map(|i| i.cursor).or(before) } else { before };
-        Saved { key: key.to_string(), continues: continues.map(String::from), items: kept, before, after, knows: knows(), reads: READS }
+        Saved { key: key.to_string(), continues: continues.map(String::from), items: kept, before, after, knows: knows(), reads: READS, mac: mac.to_string() }
     }
 }
 
@@ -81,10 +87,16 @@ fn knows() -> Vec<String> {
 }
 
 /// What was saved of a session's conversation, when it's this session's in the record it goes
-/// on in now, read as the phone reads one now.
-pub(crate) fn load(path: &Path, key: &str, continues: Option<&str>) -> Option<Saved> {
+/// on in now, read as the phone reads one now, from its Mac on the build it's on now (`mac`).
+pub(crate) fn load(path: &Path, key: &str, continues: Option<&str>, mac: &str) -> Option<Saved> {
     let saved: Saved = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
-    (saved.key == key && saved.continues.as_deref() == continues && saved.knows == knows() && saved.reads == READS).then_some(saved)
+    (saved.key == key && saved.continues.as_deref() == continues && saved.knows == knows() && saved.reads == READS && same_build(&saved.mac, mac)).then_some(saved)
+}
+
+/// Whether two builds of a Mac are the same, as far as anyone knows: one not known (a Mac not
+/// heard from yet) takes the other's word.
+fn same_build(a: &str, b: &str) -> bool {
+    a.is_empty() || b.is_empty() || a == b
 }
 
 /// Saves a conversation, and lets go of the oldest saved past `SAVED`. A save that fails costs
@@ -118,7 +130,8 @@ fn prune(dir: &Path, keep: usize) {
 
 /// The conversations in memory, the latest used last.
 pub(crate) struct Kept<T> {
-    open: Mutex<Vec<(String, Option<String>, Arc<T>)>>,
+    /// Each with its session's key, the record it went on in and its Mac's build.
+    open: Mutex<Vec<(String, Option<String>, String, Arc<T>)>>,
 }
 
 impl<T> Default for Kept<T> {
@@ -129,18 +142,19 @@ impl<T> Default for Kept<T> {
 
 impl<T> Kept<T> {
     /// The session's conversation in memory, when it's of the record the session goes on in
-    /// now (`continues`); otherwise one `make` makes, in its place. The latest used stay.
-    pub fn get(&self, key: &str, continues: Option<&str>, make: impl FnOnce() -> Arc<T>) -> Arc<T> {
+    /// now (`continues`), read from its Mac on the build it's on now (`mac`); otherwise one `make`
+    /// makes, in its place. The latest used stay.
+    pub fn get(&self, key: &str, continues: Option<&str>, mac: &str, make: impl FnOnce() -> Arc<T>) -> Arc<T> {
         let mut open = self.open.lock().unwrap_or_else(|e| e.into_inner());
-        let found = open.iter().position(|(k, c, _)| k == key && c.as_deref() == continues);
+        let found = open.iter().position(|(k, c, m, _)| k == key && c.as_deref() == continues && same_build(m, mac));
         let conv = match found {
-            Some(i) => open.remove(i).2,
+            Some(i) => open.remove(i).3,
             None => {
-                open.retain(|(k, _, _)| k != key);
+                open.retain(|(k, _, _, _)| k != key);
                 make()
             }
         };
-        open.push((key.to_string(), continues.map(String::from), conv.clone()));
+        open.push((key.to_string(), continues.map(String::from), mac.to_string(), conv.clone()));
         let over = open.len().saturating_sub(IN_MEMORY);
         open.drain(..over);
         conv
@@ -159,14 +173,14 @@ mod tests {
     fn a_long_conversation_saves_its_newest_items_from_where_a_line_starts() {
         // Two items to each line of the record.
         let items: Vec<api::Item> = (0..400u64).flat_map(|c| [item(c * 10, 0), item(c * 10, 1)]).collect();
-        let s = Saved::of("k", None, &items, Some(0), 4_000);
+        let s = Saved::of("k", None, "0.26.0", &items, Some(0), 4_000);
         assert!(s.items.len() <= SAVED_ITEMS + 1 && s.items.len() >= SAVED_ITEMS - 1, "{}", s.items.len());
         assert_eq!(s.items[0].n, 0, "it starts where a line does");
         // Reading back goes on from the first item kept.
         assert_eq!(s.before, Some(s.items[0].cursor));
         assert_eq!(s.after, 4_000);
         // A short one is kept whole, with where it was read back to.
-        let short = Saved::of("k", None, &items[..10], Some(7), 50);
+        let short = Saved::of("k", None, "0.26.0", &items[..10], Some(7), 50);
         assert_eq!((short.items.len(), short.before), (10, Some(7)));
     }
 
@@ -176,29 +190,35 @@ mod tests {
         let path = file_for(&dir, "@abc:claude:claude:1");
         assert_eq!(path, file_for(&dir, "@abc:claude:claude:1"));
         assert_ne!(path, file_for(&dir, "@abc:claude:claude:2"));
-        save(&path, &Saved::of("@abc:claude:claude:1", Some("r1"), &[item(1, 0)], None, 2));
-        assert_eq!(load(&path, "@abc:claude:claude:1", Some("r1")).map(|s| s.items.len()), Some(1));
+        save(&path, &Saved::of("@abc:claude:claude:1", Some("r1"), "0.26.0", &[item(1, 0)], None, 2));
+        assert_eq!(load(&path, "@abc:claude:claude:1", Some("r1"), "0.26.0").map(|s| s.items.len()), Some(1));
         // Gone on in another record, or another session's, it's read afresh.
-        assert!(load(&path, "@abc:claude:claude:1", Some("r2")).is_none());
-        assert!(load(&path, "@abc:claude:claude:2", Some("r1")).is_none());
+        assert!(load(&path, "@abc:claude:claude:1", Some("r2"), "0.26.0").is_none());
+        assert!(load(&path, "@abc:claude:claude:2", Some("r1"), "0.26.0").is_none());
         // So is one read when the phone said it knew less: a build before whole messages from
         // other sessions has them as notes of their first line.
-        let older = Saved { knows: vec!["have".into()], ..Saved::of("@abc:claude:claude:1", Some("r1"), &[item(1, 0)], None, 2) };
+        let older = Saved { knows: vec!["have".into()], ..Saved::of("@abc:claude:claude:1", Some("r1"), "0.26.0", &[item(1, 0)], None, 2) };
         std::fs::write(&path, serde_json::to_vec(&older).unwrap()).unwrap();
-        assert!(load(&path, "@abc:claude:claude:1", Some("r1")).is_none());
+        assert!(load(&path, "@abc:claude:claude:1", Some("r1"), "0.26.0").is_none());
         let mut unsaid = serde_json::to_value(&older).unwrap();
         unsaid.as_object_mut().unwrap().remove("knows");
         std::fs::write(&path, serde_json::to_vec(&unsaid).unwrap()).unwrap();
-        assert!(load(&path, "@abc:claude:claude:1", Some("r1")).is_none());
+        assert!(load(&path, "@abc:claude:claude:1", Some("r1"), "0.26.0").is_none());
         // And one a build saved that read less of each item: its Codealong messages have no line
         // for their cards.
-        let mut before_cards = serde_json::to_value(Saved::of("@abc:claude:claude:1", Some("r1"), &[item(1, 0)], None, 2)).unwrap();
+        let mut before_cards = serde_json::to_value(Saved::of("@abc:claude:claude:1", Some("r1"), "0.26.0", &[item(1, 0)], None, 2)).unwrap();
         before_cards.as_object_mut().unwrap().remove("reads");
         std::fs::write(&path, serde_json::to_vec(&before_cards).unwrap()).unwrap();
-        assert!(load(&path, "@abc:claude:claude:1", Some("r1")).is_none());
+        assert!(load(&path, "@abc:claude:claude:1", Some("r1"), "0.26.0").is_none());
+        // And one read from its Mac on another build, which may write its items otherwise; a Mac
+        // not heard from yet takes the saved one's word.
+        save(&path, &Saved::of("@abc:claude:claude:1", Some("r1"), "0.25.0", &[item(1, 0)], None, 2));
+        assert!(load(&path, "@abc:claude:claude:1", Some("r1"), "0.26.0").is_none());
+        assert!(load(&path, "@abc:claude:claude:1", Some("r1"), "0.25.0").is_some());
+        assert!(load(&path, "@abc:claude:claude:1", Some("r1"), "").is_some());
         // The oldest go past the limit.
         for i in 0..5 {
-            save(&file_for(&dir, &i.to_string()), &Saved::of(&i.to_string(), None, &[], None, 0));
+            save(&file_for(&dir, &i.to_string()), &Saved::of(&i.to_string(), None, "0.26.0", &[], None, 0));
             std::thread::sleep(Duration::from_millis(15));
         }
         prune(&dir, 3);
@@ -209,14 +229,17 @@ mod tests {
     #[test]
     fn the_latest_conversations_stay_in_memory() {
         let kept: Kept<String> = Kept::default();
-        let a = kept.get("a", None, || Arc::new("a1".to_string()));
+        let a = kept.get("a", None, "0.26.0", || Arc::new("a1".to_string()));
         // The same session's again, until it goes on in another record.
-        assert!(Arc::ptr_eq(&a, &kept.get("a", None, || Arc::new("a2".to_string()))));
-        assert_eq!(*kept.get("a", Some("r2"), || Arc::new("a3".to_string())), "a3");
+        assert!(Arc::ptr_eq(&a, &kept.get("a", None, "0.26.0", || Arc::new("a2".to_string()))));
+        assert_eq!(*kept.get("a", Some("r2"), "0.26.0", || Arc::new("a3".to_string())), "a3");
         for i in 0..IN_MEMORY {
-            kept.get(&i.to_string(), None, || Arc::new(i.to_string()));
+            kept.get(&i.to_string(), None, "0.26.0", || Arc::new(i.to_string()));
         }
+        // Its Mac on another build since: read afresh.
+        assert_eq!(*kept.get("a", Some("r2"), "0.27.0", || Arc::new("a5".to_string())), "a5");
+        assert_eq!(*kept.get("a", Some("r2"), "0.27.0", || Arc::new("a6".to_string())), "a5");
         // The least lately used went.
-        assert_eq!(*kept.get("a", Some("r2"), || Arc::new("a4".to_string())), "a4");
+        assert_eq!(*kept.get("a", Some("r2"), "0.26.0", || Arc::new("a4".to_string())), "a4");
     }
 }
