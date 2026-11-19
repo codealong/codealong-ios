@@ -89,7 +89,7 @@ mod tests {
     }
 
     fn raised(key: &str, waits: Waits, since: i64, at: i64, agent: bool) -> QueuePlace {
-        QueuePlace { raised: Some(Raised { at, agent, says: String::new() }), ..place(key, waits, since) }
+        QueuePlace { raised: Some(Raised { at, agent, says: String::new(), phrase: String::new() }), ..place(key, waits, since) }
     }
 
     #[test]
@@ -110,7 +110,7 @@ mod tests {
         let mut places = waiting();
         places.push(finished(place("F", Waits::Unread, 5)));
         assert_eq!(after(places.clone(), ""), ["A", "B", "C", "D", "F"]);
-        places.push(QueuePlace { raised: Some(Raised { at: 1, agent: false, says: String::new() }), ..finished(place("G", Waits::Unread, 6)) });
+        places.push(QueuePlace { raised: Some(Raised { at: 1, agent: false, says: String::new(), phrase: String::new() }), ..finished(place("G", Waits::Unread, 6)) });
         assert_eq!(after(places, ""), ["G", "A", "B", "C", "D", "F"]);
     }
 

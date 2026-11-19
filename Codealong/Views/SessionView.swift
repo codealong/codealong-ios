@@ -372,10 +372,7 @@ struct SessionView: View {
                             .frame(maxWidth: .infinity)
                             .accessibilityLabel("Loading earlier")
                     } else if !loading && !items.isEmpty {
-                        Text("The start of the session")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                            .frame(maxWidth: .infinity)
+                        // Nothing says it's the start, as on the Mac: the first prompt does.
                         if let origin = row?.origin {
                             // Where it came from: a fork of another session, or started by one.
                             let words = "\(origin.fork ? "Forked from" : "Started by") \(origin.title.map { "“\($0)”" } ?? "another session")"
@@ -682,7 +679,7 @@ struct SessionView: View {
                         Task { await answer(pending, choice) }
                     }
                 } else {
-                    QuestionsCard(key: key, pending: pending, account: row?.account ?? "It", hosted: row?.hosted == true, canAct: canAct, why: whyNot, answering: answering, open: $questionsOpen, writing: typing, writingOwn: $writingAnswer) { answers in
+                    QuestionsCard(key: key, pending: pending, canAct: canAct, why: whyNot, answering: answering, open: $questionsOpen, writing: typing, writingOwn: $writingAnswer) { answers in
                         Task { await answer(pending, .allow, questions: answers) }
                     } decline: {
                         Task { await answer(pending, .deny) }
@@ -698,7 +695,7 @@ struct SessionView: View {
             }
             if let limit = row?.limit {
                 // Snoozed from here as from its Snooze menu: it goes on to what's next, if anything.
-                LimitNote(words: limit, suggested: row?.suggestedSnooze) { until in Task { await snooze(until: until) } }
+                LimitNote(said: limit, suggested: row?.suggestedSnooze) { until in Task { await snooze(until: until) } }
             }
             if let error = row?.apiError {
                 // Sent as the box sends a message, so one that isn't running goes on where the box
@@ -707,25 +704,25 @@ struct SessionView: View {
             }
             // Its account signs in on its Mac: nothing here signs it in.
             if let out = row?.signedOut {
-                SessionNote(words: out, symbol: "person.crop.circle.badge.exclamationmark", tint: .orange)
+                SessionNote(said: out, symbol: "person.crop.circle.badge.exclamationmark", tint: .orange)
             }
             if let cut = row?.cutOff {
-                SessionNote(words: cut, symbol: "scissors", tint: .orange)
+                SessionNote(said: cut, symbol: "scissors", tint: .orange)
             }
             if row?.flagged == true {
-                SessionNote(words: SessionNote.flagged, symbol: "flag.fill", tint: .red)
+                SessionNote(said: SessionNote.flagged, symbol: "flag.fill", tint: .red)
             }
             if let raised = row?.raised {
-                SessionNote(words: raised.says, symbol: "arrow.up.to.line", tint: .orange)
+                SessionNote(said: Said(phrase: raised.phrase, words: raised.says), symbol: "arrow.up.to.line", tint: .orange)
             }
             if row?.aside == true {
-                SessionNote(words: SessionNote.aside, symbol: "bubble.left.and.bubble.right", tint: .blue)
+                SessionNote(said: SessionNote.aside, symbol: "bubble.left.and.bubble.right", tint: .blue)
             }
             if let finished = row?.finished {
-                SessionNote(words: finished.says, symbol: finished.sure ? "checkmark.seal.fill" : "checkmark.seal", tint: finished.sure ? .green : .secondary)
+                SessionNote(said: Said(phrase: finished.label, words: finished.says), symbol: finished.sure ? "checkmark.seal.fill" : "checkmark.seal", tint: finished.sure ? .green : .secondary)
             }
             if let seen = row?.agentSeen {
-                SessionNote(words: seen, symbol: "eye", tint: .secondary)
+                SessionNote(said: seen, symbol: "eye", tint: .secondary)
             }
             if let commands = row?.background {
                 BackgroundLine(background: commands) { background = BackgroundShown() }
@@ -1988,7 +1985,9 @@ struct SessionView: View {
 /// A tool call the session waits on you to allow, a plan to approve, or another session's message
 /// it holds for you to deliver, which names its sender as a link to that session (the core's
 /// `pending_label`) and reads as prose. A call its agent offers no way to allow just this once has
-/// no Allow, only Always where it can be allowed from now on.
+/// no Allow, only Always where it can be allowed from now on. As on the Mac, its head is only what
+/// it wants (a plan's, Plan), and what each answer does is in that button's hint: the line under
+/// them says only what changes how you'd answer, a call that can't be allowed just once.
 private struct ApprovalCard: View {
     let pending: Pending
     /// Codealong runs it on its Mac.
@@ -2002,9 +2001,9 @@ private struct ApprovalCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Label {
-                Text(Clock.text(pending.label, now: .now)).font(.subheadline.weight(.medium))
+                Text(pending.plan ? AttributedString("Plan") : Clock.text(pending.label, now: .now)).font(.subheadline.weight(.medium))
             } icon: {
-                Image(systemName: pending.message ? "bubble.left.fill" : "hand.raised.fill").foregroundStyle(.orange)
+                Image(systemName: pending.message ? "bubble.left.fill" : pending.plan ? "list.bullet.clipboard" : "hand.raised.fill").foregroundStyle(.orange)
             }
             if let input = pending.input, !input.isEmpty {
                 // A plan or a message is prose to read; anything else is a command or a change,
@@ -2026,22 +2025,30 @@ private struct ApprovalCard: View {
                 HStack {
                     Button(answering == .deny ? "Denying…" : "Deny", role: .destructive) { answer(.deny) }
                         .buttonStyle(.bordered)
+                        .accessibilityHint(denies)
                     Spacer()
                     // With no Allow, Always is the answer that lets it go on.
                     if pending.always && pending.noOnce {
                         Button(answering == .always ? "Allowing…" : "Always allow") { answer(.always) }
                             .buttonStyle(.borderedProminent)
+                            .accessibilityHint("Allows this call, and calls like it from now on")
                     } else if pending.always {
                         Button(answering == .always ? "Allowing…" : "Always allow") { answer(.always) }
                             .buttonStyle(.bordered)
+                            .accessibilityHint("Allows this call, and calls like it from now on")
                     }
                     if !pending.noOnce {
                         Button(allowLabel) { answer(.allow) }
                             .buttonStyle(.borderedProminent)
+                            .accessibilityHint(allows)
                     }
                 }
                 .disabled(answering != nil)
-                Text(says).font(.footnote).foregroundStyle(.secondary)
+                if pending.noOnce {
+                    Text(pending.always ? "Its agent allows calls like this only from now on" : "Its agent offers no way to allow this")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             } else if let why {
                 Text(why).font(.footnote).foregroundStyle(.secondary)
             }
@@ -2049,15 +2056,18 @@ private struct ApprovalCard: View {
         .modifier(WaitingCard())
     }
 
-    /// What its answers do, as the Mac's card says it.
-    private var says: String {
-        if pending.plan { return "Approve lets it go on with the plan. Deny keeps it planning, or write below what to change." }
-        if pending.message { return "Deliver gives it to the session as that session’s message. Deny drops it, and its sender is told it was declined." }
-        if pending.noOnce {
-            let how = pending.always ? "allows calls like this only from now on, not just this once" : "offers no way to allow this"
-            return "Its agent \(how). Deny tells it no, and it carries on."
-        }
-        return hosted ? "Allow lets this call run once. Deny tells it no, and it carries on." : "Allow lets this call run once. Deny stops the turn, or write below what to do instead."
+    /// What Deny does, as the Mac's button says it under the pointer.
+    private var denies: String {
+        if pending.plan { return "Keeps it planning, or write below what to change" }
+        if pending.message { return "Drops it: its sender is told it was declined" }
+        return hosted || pending.noOnce ? "Tells it no, and it carries on" : "Stops the turn, or write below what to do instead"
+    }
+
+    /// What Allow (or Approve, or Deliver) does, as the Mac's button says it.
+    private var allows: String {
+        if pending.plan { return "Approves the plan" }
+        if pending.message { return "Gives it to the session as that session’s message" }
+        return "Allows this call once"
     }
 
     private var allowLabel: String {
@@ -2077,16 +2087,14 @@ private struct ApprovalCard: View {
 /// to a line of what it asks, so the conversation it came with can be read above it: open, a long
 /// question and its choices covered most of the screen. A tap opens it, and folds it again, as
 /// starting to write in the reply box does, and opening it puts the box's keyboard away. Folded, it
-/// stands for the call's line in the conversation, which leaves it out (`cardLine`). While you
-/// write your own answer, the keyboard leaves little room: what only explains (the note over it, the line under its buttons) makes way for
-/// the question and its choices, and your field stays in view under them rather than scrolling
-/// out of sight with them.
+/// stands for the call's line in the conversation, which leaves it out (`cardLine`). As on the
+/// Mac, its tint says it asks you, so it has no heading saying so, and what its buttons do is in
+/// their hints rather than a line under them. While you write your own answer, your field stays
+/// in view under the question and its choices rather than scrolling out of sight with them.
 private struct QuestionsCard: View {
     /// The session's: what's picked is kept under it (`Store.keptAnswers`).
     let key: String
     let pending: Pending
-    let account: String
-    let hosted: Bool
     let canAct: Bool
     let why: String?
     let answering: Choice?
@@ -2111,32 +2119,50 @@ private struct QuestionsCard: View {
         let shown = min(at, questions.count - 1)
         let q = questions[shown]
         let next = nextQuestion(after: shown)
+        // Its tint says it asks you, so its head is what it asks: folded, the question; open, the
+        // strip of questions, or the one question's header, beside the button that folds it.
         VStack(alignment: .leading, spacing: 12) {
-            Button {
-                withAnimation(.snappy) { open.toggle() }
-            } label: {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
+            if open {
+                HStack(alignment: .center, spacing: 8) {
                     Image(systemName: "questionmark.bubble.fill").foregroundStyle(.orange)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Asks you").font(.subheadline.weight(.medium))
-                        if !open {
-                            Text(gist).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-                        }
+                    if questions.count > 1 {
+                        steps(showing: shown)
+                    } else if let header = q.header {
+                        Text(header).font(.subheadline.weight(.medium)).lineLimit(1)
                     }
                     Spacer(minLength: 8)
-                    Image(systemName: "chevron.up")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .rotationEffect(.degrees(open ? 180 : 0))
+                    Button {
+                        withAnimation(.snappy) { open = false }
+                    } label: {
+                        Image(systemName: "chevron.down")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(minWidth: 28, minHeight: 28)
+                            .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Fold it away")
+                    .accessibilityHint("To read the conversation")
                 }
-                .contentShape(.rect)
-            }
-            .buttonStyle(.plain)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(open ? "Asks you" : "Asks you: \(String(gist.characters))")
-            .accessibilityHint(open ? "Folds it away, to read the conversation" : "Opens it, to answer")
-            if open {
                 card(q, shown: shown, next: next)
+            } else {
+                Button {
+                    withAnimation(.snappy) { open = true }
+                } label: {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Image(systemName: "questionmark.bubble.fill").foregroundStyle(.orange)
+                        Text(gist).font(.subheadline).lineLimit(1)
+                        Spacer(minLength: 8)
+                        Image(systemName: "chevron.up")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("It asks: \(String(gist.characters))")
+                .accessibilityHint("Opens it, to answer")
             }
         }
         .modifier(WaitingCard())
@@ -2208,21 +2234,11 @@ private struct QuestionsCard: View {
     /// The card opened: the question showing, its choices, and the answers to give.
     @ViewBuilder
     private func card(_ q: Question, shown: Int, next: Int?) -> some View {
-        let questions = pending.questions
-        if pending.unwritten && !ownFocused {
-            // What it wrote with them isn't in the conversation above yet.
-            Text("What \(account) wrote with this question shows in the conversation once it’s answered\(hosted ? "" : "; where it runs on its Mac has it now").")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-        }
-        if questions.count > 1 {
-            steps(showing: shown)
-        }
         VStack(alignment: .leading, spacing: 8) {
             // As tall as the question is, up to a point, and it scrolls past that.
             UpTo(most: 320) {
                 ScrollView {
-                    question(q, alone: questions.count == 1)
+                    question(q)
                         .id(q.question)
                 }
                 .scrollBounceBehavior(.basedOnSize)
@@ -2236,15 +2252,18 @@ private struct QuestionsCard: View {
                     .disabled(!canAct || answering != nil)
             }
         }
+        // Its buttons say what they do in their hints, not in a line under them.
         if canAct {
             HStack {
                 if pending.exiting {
                     // Calls the exit off, as Escape in its terminal does.
                     Button(answering == .deny ? "Cancelling…" : "Cancel", action: decline)
                         .buttonStyle(.bordered)
+                        .accessibilityHint("Calls the exit off: it stays open at its prompt")
                 } else {
                     Button(answering == .deny ? "Declining…" : "Decline", role: .destructive, action: decline)
                         .buttonStyle(.bordered)
+                        .accessibilityHint("Stops the turn without an answer. Or write below to say something else")
                 }
                 Spacer()
                 if let next {
@@ -2257,11 +2276,6 @@ private struct QuestionsCard: View {
                 }
             }
             .disabled(answering != nil)
-            if !ownFocused {
-                Text(pending.exiting ? "It’s exiting. Cancel keeps it open, at its prompt." : "\(q.multiSelect ? "Pick one or more." : "Pick one, or write your own.") Decline stops the turn, or write below to say something else.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
         } else if let why {
             Text(why).font(.footnote).foregroundStyle(.secondary)
         }
@@ -2296,19 +2310,10 @@ private struct QuestionsCard: View {
         .scrollIndicators(.hidden)
     }
 
-    private func question(_ q: Question, alone: Bool) -> some View {
+    /// A question and its choices; its header is the card's head.
+    private func question(_ q: Question) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                // With several, the strip above names each by its header.
-                if alone, let header = q.header {
-                    Text(header)
-                        .font(.caption.weight(.semibold))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(.background, in: .capsule)
-                }
-                Text(Clock.text(q.question, now: .now)).font(.subheadline)
-            }
+            Text(Clock.text(q.question, now: .now)).font(.subheadline)
             ForEach(q.options, id: \.label) { o in
                 let on = (picks[q.question] ?? []).contains(o.label)
                 Button {
@@ -2410,30 +2415,74 @@ private struct WaitingCard: ViewModifier {
     }
 }
 
-/// Why its last turn ended, when its harness couldn't reach its API, as the Mac's header says it.
-/// Something about the session's last turn, above the box, as the Mac's header says it.
+/// Something about the session's last turn, above the box, as the Mac's header says it: in a few
+/// words (the core's `Said`), the whole sentence under them once they're tapped, as the Mac's is
+/// under the pointer. What a command or a helper's terminal asks is said whole: it's what to
+/// answer.
 private struct SessionNote: View {
-    let words: String
+    let phrase: String
+    /// The whole of it, where there's more than the phrase.
+    var words: String?
     let symbol: String
     let tint: Color
     /// Its words have code in backticks, from its Mac (what a command asks), drawn as code. Not
     /// for words an agent wrote, whose `*` and `_` would be read as emphasis.
     var code = false
+    @State private var whole = false
+
+    init(said: Said, symbol: String, tint: Color) {
+        self.phrase = said.phrase
+        self.words = said.words
+        self.symbol = symbol
+        self.tint = tint
+    }
+
+    init(words: String, symbol: String, tint: Color, code: Bool = false) {
+        self.phrase = words
+        self.symbol = symbol
+        self.tint = tint
+        self.code = code
+    }
 
     /// A session its provider flagged, as the Mac's Flagged chip says it.
-    static let flagged = "Its provider flagged a message in this conversation, so by default its Mac sends it nothing by itself (Settings › Automation there). You can still reply yourself."
+    static let flagged = Said(phrase: "Flagged", words: "Its provider flagged a message in this conversation, so by default its Mac sends it nothing by itself (Settings › Automation there). You can still reply yourself.")
 
-    /// A session set aside for its side conversation, as the Mac's On the side chip says it.
-    static let aside = "You set it aside until its side conversation answers. It needs you again then."
+    /// A session set aside for its side conversation, as the Mac's header says it.
+    static let aside = Said(phrase: "On the side", words: "You set it aside until its side conversation answers. It needs you again then.")
 
     var body: some View {
-        Label {
-            Text(code ? Clock.text(words, now: .now) : AttributedString(words))
-        } icon: {
-            Image(systemName: symbol).foregroundStyle(tint)
+        VStack(alignment: .leading, spacing: 4) {
+            Label {
+                Text(code ? Clock.text(phrase, now: .now) : AttributedString(phrase))
+            } icon: {
+                Image(systemName: symbol).foregroundStyle(tint)
+            }
+            if whole, let words {
+                Text(words).foregroundStyle(.secondary).padding(.leading, 28)
+            }
         }
         .font(.footnote)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .modifier(SaysMore(whole: $whole, more: words != nil))
+    }
+}
+
+/// A note in a few words that a tap opens to the whole sentence, and closes again.
+private struct SaysMore: ViewModifier {
+    @Binding var whole: Bool
+    /// There's more to say than the note's words.
+    let more: Bool
+
+    func body(content: Content) -> some View {
+        if more {
+            content
+                .contentShape(.rect)
+                .onTapGesture { withAnimation(.snappy) { whole.toggle() } }
+                .accessibilityAddTraits(.isButton)
+                .accessibilityHint(whole ? "Says less" : "Says more")
+        } else {
+            content
+        }
     }
 }
 
@@ -2456,17 +2505,25 @@ private struct ApiErrorLine: View {
     /// A message to it is on its way: the button waits, so a second tap doesn't send another
     /// before its Mac says the turn is going.
     var sending = false
+    @State private var whole = false
 
     var body: some View {
         let button = tryAgain.flatMap { run in note.button.map { (label: $0, run: run) } }
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Label {
-                Text(button == nil ? note.saysAlone : note.says)
-            } icon: {
-                Image(systemName: note.lost ? "wifi.exclamationmark" : "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            // In a few words, the whole sentence once they're tapped, as the Mac's header says it.
+            VStack(alignment: .leading, spacing: 4) {
+                Label {
+                    Text(note.phrase)
+                } icon: {
+                    Image(systemName: note.lost ? "wifi.exclamationmark" : "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                }
+                if whole {
+                    Text(button == nil ? note.saysAlone : note.says).foregroundStyle(.secondary).padding(.leading, 28)
+                }
             }
             .font(.footnote)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .modifier(SaysMore(whole: $whole, more: true))
             if let button {
                 Button(button.label, action: button.run)
                     .buttonStyle(.bordered)
@@ -2501,11 +2558,9 @@ private struct SnoozeSuggestionLine: View {
         // Checked again as it's tapped: a line drawn just before the offer ended is still there.
         return Button { if offered { snooze() } } label: {
             HStack(spacing: 6) {
-                Image(systemName: "moon.zzz").font(.caption).foregroundStyle(.secondary)
+                Image(systemName: "moon.zzz").font(.caption).foregroundStyle(.teal)
                 Text("Snooze until \(when)")
                     .font(.footnote.weight(.medium))
-                    .layoutPriority(1)
-                Text("as its reply says").font(.footnote).foregroundStyle(.secondary)
                 Spacer(minLength: 0)
             }
             .lineLimit(1)
@@ -2514,7 +2569,8 @@ private struct SnoozeSuggestionLine: View {
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
-        .modifier(WaitingCard(tint: nil, padding: 0))
+        // In suggestions' color, as the Mac's: a suggestion doesn't wait on you.
+        .modifier(WaitingCard(tint: .teal, padding: 0))
         .accessibilityLabel("Snooze until \(when), as its reply says")
         .accessibilityHint("It leaves what waits on you until then. \(suggested.by ?? "")")
     }
@@ -2526,11 +2582,13 @@ private struct SnoozeSuggestionLine: View {
 /// time in its Snooze menu does. It's back then, for the minute or few until its Mac tells it to
 /// carry on, where its Mac does.
 private struct LimitNote: View {
-    let words: String
+    /// Which limit and when it lifts, and the whole of it once that's tapped.
+    let said: Said
     let suggested: SuggestedSnooze?
     /// A still page's (one sliding in): drawn as it is now, not kept ticking.
     var now: Date?
     let snooze: (Date) -> Void
+    @State private var whole = false
 
     var body: some View {
         if let now {
@@ -2545,13 +2603,19 @@ private struct LimitNote: View {
     private func note(now: Date) -> some View {
         let lifts = suggested.flatMap { $0.why == .limit && now.ms < $0.offeredTill ? $0 : nil }
         return HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Label {
-                Text(Clock.text(words, now: now))
-            } icon: {
-                Image(systemName: "gauge.with.dots.needle.100percent").foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 4) {
+                Label {
+                    Text(Clock.text(said.phrase, now: now))
+                } icon: {
+                    Image(systemName: "gauge.with.dots.needle.100percent").foregroundStyle(.orange)
+                }
+                if whole {
+                    Text(Clock.text(said.words, now: now)).foregroundStyle(.secondary).padding(.leading, 28)
+                }
             }
             .font(.footnote)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .modifier(SaysMore(whole: $whole, more: true))
             if let lifts {
                 // Checked again as it's tapped: drawn up to 30 seconds ago, the offer may have ended.
                 Button("Snooze until it lifts") {
@@ -2580,6 +2644,8 @@ private struct SuggestedRepliesView: View {
     /// Shown whole. Folded, they're a line over the box, so they don't take the conversation's
     /// room until you look.
     @State private var open = false
+    /// Who suggested them and why shows, under the sparkle.
+    @State private var why = false
 
     var body: some View {
         if open {
@@ -2595,13 +2661,9 @@ private struct SuggestedRepliesView: View {
             withAnimation(.snappy) { open = true }
         } label: {
             HStack(spacing: 6) {
-                Image(systemName: "sparkles").font(.caption).foregroundStyle(.secondary)
+                Image(systemName: "sparkles").font(.caption).foregroundStyle(.teal)
                 Text(count == 1 ? "A suggested reply" : "\(count) suggested replies")
                     .font(.footnote.weight(.medium))
-                    .layoutPriority(1)
-                if let by = suggestions.by {
-                    Text("· \(by)").font(.footnote).foregroundStyle(.secondary)
-                }
                 Spacer(minLength: 8)
                 Image(systemName: "chevron.up").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             }
@@ -2611,7 +2673,7 @@ private struct SuggestedRepliesView: View {
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
-        .modifier(WaitingCard(tint: nil, padding: 0))
+        .modifier(WaitingCard(tint: .teal, padding: 0))
         .contextMenu {
             Button("Dismiss", systemImage: "xmark") { dismiss() }
         }
@@ -2619,17 +2681,31 @@ private struct SuggestedRepliesView: View {
         .accessibilityHint("Shows them")
     }
 
+    /// Their card has no heading, as on the Mac: its color says they're suggestions, its sparkle
+    /// says who suggested them and why when it's tapped, and × takes them away.
     private var whole: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                Image(systemName: "sparkles").font(.caption)
-                Text(suggestions.by.map { "Suggested by \($0)" } ?? "Suggested replies")
-                    .font(.caption.weight(.medium))
-                    .lineLimit(1)
+                Button {
+                    withAnimation(.snappy) { why.toggle() }
+                } label: {
+                    Image(systemName: "sparkles").font(.caption)
+                        .frame(minWidth: 28, minHeight: 22, alignment: .leading)
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.teal)
+                .accessibilityLabel(byWhom)
+                .accessibilityHint(why ? "Hides who suggested them" : "Says who suggested them, and why")
                 Spacer(minLength: 8)
-                Button("Dismiss", action: dismiss)
-                    .font(.caption)
-                    .accessibilityHint("Takes these suggestions away")
+                Button(action: dismiss) {
+                    Image(systemName: "xmark").font(.caption.weight(.semibold))
+                        .frame(width: 28, height: 22)
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Dismiss")
+                .accessibilityHint("Takes these suggestions away")
                 Button {
                     withAnimation(.snappy) { open = false }
                 } label: {
@@ -2641,8 +2717,8 @@ private struct SuggestedRepliesView: View {
                 .accessibilityLabel("Fold them away")
             }
             .foregroundStyle(.secondary)
-            if let note = suggestions.note {
-                Text(note).font(.caption).foregroundStyle(.secondary)
+            if why {
+                Text([byWhom, suggestions.note].compactMap { $0 }.joined(separator: ": ")).font(.caption).foregroundStyle(.secondary)
             }
             ForEach(Array(suggestions.replies.enumerated()), id: \.offset) { _, reply in
                 Button {
@@ -2676,8 +2752,14 @@ private struct SuggestedRepliesView: View {
                 Text(blocked).font(.caption2).foregroundStyle(.secondary)
             }
         }
-        // Solid, as what waits on you is: over the conversation they were hard to read.
-        .modifier(WaitingCard(tint: nil))
+        // Solid, as what waits on you is: over the conversation they were hard to read. Its tint is
+        // suggestions', as the Mac's: they don't wait on you.
+        .modifier(WaitingCard(tint: .teal))
+    }
+
+    /// Who suggested them.
+    private var byWhom: String {
+        suggestions.by.map { "Suggested by \($0)" } ?? "Suggested"
     }
 }
 
@@ -3596,10 +3678,6 @@ struct SessionGlance: View {
         Color.clear.overlay(alignment: .bottom) {
             VStack(alignment: .leading, spacing: 14) {
                 if !kept.items.isEmpty && !kept.hasOlder && entries.count <= shown {
-                    Text("The start of the session")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .frame(maxWidth: .infinity)
                     if let origin = row?.origin {
                         let listed = store.sessions.contains { $0.key == origin.key }
                         Text("\(origin.fork ? "Forked from" : "Started by") \(origin.title.map { "“\($0)”" } ?? "another session")")
@@ -3656,7 +3734,7 @@ struct SessionGlance: View {
                 if pending.questions.isEmpty || pending.cannot != nil {
                     ApprovalCard(pending: pending, hosted: row?.hosted == true, canAct: canAct, why: why, answering: nil) { _ in }
                 } else {
-                    QuestionsCard(key: key, pending: pending, account: row?.account ?? "It", hosted: row?.hosted == true, canAct: canAct, why: why, answering: nil, open: .constant(false)) { _ in } decline: {}
+                    QuestionsCard(key: key, pending: pending, canAct: canAct, why: why, answering: nil, open: .constant(false)) { _ in } decline: {}
                 }
             }
             if let asked = row?.inputAsked {
@@ -3666,31 +3744,31 @@ struct SessionGlance: View {
                 SessionNote(words: waits, symbol: "terminal", tint: .orange)
             }
             if let limit = row?.limit {
-                LimitNote(words: limit, suggested: row?.suggestedSnooze, now: .now) { _ in }
+                LimitNote(said: limit, suggested: row?.suggestedSnooze, now: .now) { _ in }
             }
             if let error = row?.apiError {
                 ApiErrorLine(note: error, tryAgain: canAct && pending == nil ? {} : nil)
             }
             if let out = row?.signedOut {
-                SessionNote(words: out, symbol: "person.crop.circle.badge.exclamationmark", tint: .orange)
+                SessionNote(said: out, symbol: "person.crop.circle.badge.exclamationmark", tint: .orange)
             }
             if let cut = row?.cutOff {
-                SessionNote(words: cut, symbol: "scissors", tint: .orange)
+                SessionNote(said: cut, symbol: "scissors", tint: .orange)
             }
             if row?.flagged == true {
-                SessionNote(words: SessionNote.flagged, symbol: "flag.fill", tint: .red)
+                SessionNote(said: SessionNote.flagged, symbol: "flag.fill", tint: .red)
             }
             if let raised = row?.raised {
-                SessionNote(words: raised.says, symbol: "arrow.up.to.line", tint: .orange)
+                SessionNote(said: Said(phrase: raised.phrase, words: raised.says), symbol: "arrow.up.to.line", tint: .orange)
             }
             if row?.aside == true {
-                SessionNote(words: SessionNote.aside, symbol: "bubble.left.and.bubble.right", tint: .blue)
+                SessionNote(said: SessionNote.aside, symbol: "bubble.left.and.bubble.right", tint: .blue)
             }
             if let finished = row?.finished {
-                SessionNote(words: finished.says, symbol: finished.sure ? "checkmark.seal.fill" : "checkmark.seal", tint: finished.sure ? .green : .secondary)
+                SessionNote(said: Said(phrase: finished.label, words: finished.says), symbol: finished.sure ? "checkmark.seal.fill" : "checkmark.seal", tint: finished.sure ? .green : .secondary)
             }
             if let seen = row?.agentSeen {
-                SessionNote(words: seen, symbol: "eye", tint: .secondary)
+                SessionNote(said: seen, symbol: "eye", tint: .secondary)
             }
             if let commands = row?.background {
                 BackgroundLine(background: commands) {}

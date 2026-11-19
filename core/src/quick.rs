@@ -1340,7 +1340,7 @@ pub(crate) mod tests {
     fn whats_moved_to_the_top_is_listed_apart_in_the_order_the_queue_takes_it() {
         let hour = 3600 * 1000;
         let up = |mut r: SessionRow, at: i64, agent: bool| {
-            r.raised = Some(crate::Raised { at, agent, says: String::new() });
+            r.raised = Some(crate::Raised { at, agent, says: String::new(), phrase: String::new() });
             r
         };
         let rows = vec![

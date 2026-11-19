@@ -105,7 +105,10 @@ so it shows at once. On the last one the bar says nothing else waits, and going 
 with how many sessions are working; whatever comes to wait on you while it's open shows up there,
 a swipe away. Replies an
 agent suggested for a session (a supervisor going over what waits on you, with `codealong session
-suggest`) show above its box: tap one to send it, or hold it to change it first. Helper sessions
+suggest`) show above its box, in a card of suggestions' color whose sparkle says who suggested
+them: tap one to send it, or hold it to change it first. What's said of a session over its box
+(cut off, signed out, a usage limit, seen by its agent) is a few words, as on the Mac, and a tap
+on them says the rest. Helper sessions
 (ones an agent started to help it, and automatic PR reviews) stay out of your lists unless they
 need you, as on the Mac.
 
