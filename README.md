@@ -85,7 +85,7 @@ again on its Mac (`/login` in its box signs in nothing from the phone, and says 
 **Work through what's waiting.** Sessions that need you, PRs waiting on your review and finished
 turns come one after another, in the Mac's order: the ones moved to the top first, then each kind
 the longest waiting first, and the ones you go on from come round again after the rest. While something else waits on you, a bar over the
-reply box says how many more do and what swiping left does to the session you're reading: marks it
+reply box says how many more do, which comes next, and what swiping left does to the session you're reading: marks it
 seen and goes on, or marks it done where its Mac says its work is finished (a PR of its merged, a
 todo of its done, its own status line) and it only waits for you to read it. Opening one doesn't
 mark it seen, so one you read and go back from is still waiting. Tap the bar to do something else
@@ -122,7 +122,10 @@ need you, as on the Mac.
 - allow or deny what it wants to run (or deny it and say what to do instead), deliver or drop
   another session's message it holds for you, and answer its
   questions, folded to a line over the box while you read and brought up from that line: the card
-  over the box stands in for the call's line in the conversation until it's answered;
+  over the box stands in for the call's line in the conversation until it's answered. A dialog of
+  Claude Code's own (its offer to make auto mode the default, a command's list of choices), which
+  a Mac of 0.26 or later reads off the session's terminal, is a card of its choices alone, picked
+  there as you'd pick one, with *Cancel* pressing Escape;
 - stop its turn, with the square that takes send's place while it runs, or a command its agent
   left running in the background, from the list above its box;
 - switch a running session's model, effort or mode (a Claude Code background job's too, from a Mac
@@ -150,7 +153,8 @@ Renaming, archiving, marking seen, *Mark as unread*, *Move to top* (first in eve
 device, and listed under *Moved to top*, until you send it something or see its finished turn;
 *Back in line* undoes it), *Snooze*
 (off what waits on you until the time you pick, on every device; a session whose last reply says its
-work goes on later is offered a snooze until then, above its box and first in its menu, and one
+work goes on later is offered a snooze until then, above its box and first in its menu, saying
+who read the reply so (Jev, or the agent that tagged it) and never beside a question it asks you, and one
 stopped at its usage limit a snooze until the limit lifts, beside the limit's note) and *Quiet* (its turns stop waiting
 on you; it comes to you only when it needs you) work with any Mac, remote control or not, and so
 do *Labels*: the labels you put on a session there, as todos wear them, shown on its row and under
