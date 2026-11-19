@@ -2065,8 +2065,9 @@ pub struct Pending {
     /// It's a dialog of its harness's own, read off the terminal it runs in (Claude Code's offer to
     /// make auto mode the default, a command's list of choices: `Pending::dialog`): its one
     /// question's choices are all it takes, picked there as you'd pick one, and declining presses
-    /// Escape, which closes it as its own cancel does. False from Macs before 2026-11-18, which
-    /// send such a dialog as questions and refuse words of your own for it.
+    /// Escape, which closes it as its own cancel does. Macs before 2026-11-18 offer no such
+    /// dialog; a phone older than this field shows one from a newer Mac as questions with a field
+    /// for your own words, which that Mac refuses.
     pub dialog: bool,
 }
 

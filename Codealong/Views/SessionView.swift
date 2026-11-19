@@ -1567,6 +1567,10 @@ struct SessionView: View {
             done(result, outcome: outcome)
         } catch {
             said = words(error)
+            // What it waits on may have changed under the card with nothing the row shows moving
+            // (Claude Code going from one dialog of its own to another), and its Mac refuses the
+            // old one's id: read it again, so a retry answers what's there now.
+            await readPending()
         }
     }
 

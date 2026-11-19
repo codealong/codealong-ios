@@ -216,6 +216,7 @@ struct GoOnBar<Pick: GoOnPick>: View {
     /// Does a pick to it and goes on; nil for what a swipe does.
     let go: (Pick?) -> Void
     @ScaledMetric(relativeTo: .subheadline) private var symbolWidth: CGFloat = 22
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         Group {
@@ -268,10 +269,12 @@ struct GoOnBar<Pick: GoOnPick>: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(going.words)
                     .font(.subheadline.weight(.semibold))
+                // On a line, as the Mac's strip has it; at the larger text sizes it wraps, so the
+                // next one's title shows past how many wait.
                 Text(count)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
             }
             .multilineTextAlignment(.leading)
             Spacer(minLength: 8)

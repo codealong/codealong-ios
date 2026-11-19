@@ -124,8 +124,9 @@ need you, as on the Mac.
   questions, folded to a line over the box while you read and brought up from that line: the card
   over the box stands in for the call's line in the conversation until it's answered. A dialog of
   Claude Code's own (its offer to make auto mode the default, a command's list of choices), which
-  a Mac of 0.26 or later reads off the session's terminal, is a card of its choices alone, picked
-  there as you'd pick one, with *Cancel* pressing Escape;
+  a Mac of 0.26 or later reads off a session's terminal where it can read it (Rex, tmux or
+  Codealong's own terminal; in another terminal app it's answered there), is a card of its choices
+  alone, picked there as you'd pick one, with *Cancel* pressing Escape;
 - stop its turn, with the square that takes send's place while it runs, or a command its agent
   left running in the background, from the list above its box;
 - switch a running session's model, effort or mode (a Claude Code background job's too, from a Mac
