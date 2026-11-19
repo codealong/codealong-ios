@@ -216,10 +216,10 @@ struct SessionView: View {
     /// A link tapped in the conversation, or in a side conversation's answer (`fromSide`), whose
     /// sheet goes away for it: one to a session an agent named (`codealong://session/…`) opens it,
     /// named as this session's Mac names its sessions (the core's `sessionNamed`, the Mac's
-    /// codealongLinks.ts); one to a PR this phone lists opens its page here, as the Mac shows one
-    /// it lists (PrLink.tsx); the web's open as they would anywhere.
+    /// codealongLinks.ts); one to a PR this phone lists (on its host) opens its page here, as the
+    /// Mac shows one it lists (PrLink.tsx); the web's open as they would anywhere.
     private func openLink(_ url: URL, fromSide: Bool = false) -> OpenURLAction.Result {
-        if let pr = prKeyOf(url: url.absoluteString).flatMap({ store.pr($0) }), !pr.slug.isEmpty {
+        if let pr = prKeyOf(url: url.absoluteString).flatMap({ store.pr($0) }), !pr.slug.isEmpty, URL(string: pr.url)?.host()?.lowercased() == url.host()?.lowercased() {
             if fromSide { aside = nil }
             openPr(pr)
             return .handled
@@ -393,7 +393,7 @@ struct SessionView: View {
                     ForEach(Entry.of(items.filter { $0.id != cardLine })) { entry in
                         switch entry {
                         case .said(let item) where item.kind == .you:
-                            ItemView(item: item, putBack: canAct ? { draft = $0 } : nil, editFrom: canAct && item.editable && row?.edits == true ? { editing = item } : nil)
+                            ItemView(item: item, putBack: canAct ? { putBack($0) } : nil, editFrom: canAct && item.editable && row?.edits == true ? { editing = item } : nil)
                                 .onGeometryChange(for: PromptPlace.self) { [viewTop] geo in
                                     PromptPlace(geo.frame(in: .global), top: viewTop)
                                 } action: { place in
@@ -401,7 +401,7 @@ struct SessionView: View {
                                 }
                                 .id(item.id)
                         // A message the session took back can go back in the box, whoever sent it.
-                        case .said(let item): ItemView(item: item, putBack: canAct && item.withdrawn ? { draft = $0 } : nil)
+                        case .said(let item): ItemView(item: item, putBack: canAct && item.withdrawn ? { putBack($0) } : nil)
                         case .tools(let calls):
                             ToolRun(calls: calls)
                         }
@@ -1103,6 +1103,12 @@ struct SessionView: View {
         } else {
             addToBox(words)
         }
+    }
+
+    /// A message the session took back, in the box after what's written there, as the Mac's Put
+    /// back does: once, though it's put back again.
+    private func putBack(_ words: String) {
+        if !draft.contains(words) { addToBox(words) }
     }
 
     /// Words of a held message in the box, after what's written there.

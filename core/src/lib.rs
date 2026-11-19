@@ -2028,6 +2028,8 @@ pub struct Pending {
 fn pending_label(p: &api::Pending, named: Named) -> String {
     match (p.from_key.as_deref().filter(|key| named(key).is_some()), p.label.find('“')) {
         (Some(key), Some(at)) => format!("{}[{}]({})", &p.label[..at], md::escaped(&p.label[at..]), session_link(key)),
+        // Its sender's name as written, though not a link.
+        (None, Some(at)) if p.message => format!("{}{}", &p.label[..at], md::escaped(&p.label[at..])),
         _ => p.label.clone(),
     }
 }
@@ -2252,14 +2254,15 @@ struct Thread {
 
 impl Thread {
     /// Takes a page in: older pages go in front, newer ones after, and anything already here
-    /// (a page can overlap the last) isn't taken twice: the page's copy takes its place, as the
-    /// Mac read it later (a message the session has since taken back says so).
+    /// (a page can overlap the last) isn't taken twice, but for a message the session has taken
+    /// back since, which says so. Only that is taken: two reads can answer out of order, and once
+    /// taken back, a message stays so.
     fn take(&mut self, page: api::Page, older: bool) {
         let have: std::collections::HashMap<(u64, u32), usize> = self.items.iter().enumerate().map(|(at, i)| ((i.cursor, i.n), at)).collect();
         let mut fresh: Vec<api::Item> = Vec::new();
         for i in page.items {
             match have.get(&(i.cursor, i.n)) {
-                Some(&at) => self.items[at] = i,
+                Some(&at) => self.items[at].withdrawn |= i.withdrawn,
                 None => fresh.push(i),
             }
         }
@@ -3061,6 +3064,8 @@ mod tests {
         assert_eq!(pending_label(&held("From “Fix”", None), &listed), "From “Fix”");
         assert_eq!(pending_label(&held("From another session", Some("claude:work:k3")), &listed), "From another session");
         assert_eq!(pending_label(&held("From “Gone”", Some("claude:work:gone")), &listed), "From “Gone”");
+        // Its name keeps what Markdown would read as marks, linked or not.
+        assert_eq!(pending_label(&held("From “Fix ~~old~~ markup”", None), &listed), "From “Fix \\~\\~old\\~\\~ markup”");
     }
 
     #[test]
@@ -3082,6 +3087,13 @@ mod tests {
         t.take(api::Page { items: vec![taken, item("agent", 20, None, None), item("you", 30, None, None)], before: None, after: 40 }, false);
         let shown = t.shown(&|_| None);
         assert_eq!(shown.iter().map(|i| (i.id.as_str(), i.withdrawn)).collect::<Vec<_>>(), [("10:0", true), ("20:0", false), ("30:0", false)]);
+        // A read that answers late, from before, takes nothing back, and an item already here
+        // stays as it was otherwise.
+        let mut late = item("agent", 20, None, None);
+        late.text = "agent 20, as read before".into();
+        t.take(api::Page { items: vec![item("peer", 10, None, None), late], before: None, after: 40 }, false);
+        let shown = t.shown(&|_| None);
+        assert_eq!((shown[0].withdrawn, shown[1].text.as_str()), (true, "agent 20"));
     }
 
     #[test]

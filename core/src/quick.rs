@@ -754,10 +754,13 @@ pub(crate) fn pr_key(url: &str, theirs: &str) -> String {
 }
 
 /// The PR a link goes to, by its key (`pr_key`), for a conversation to open it here where the
-/// phone lists it, as the Mac does (PrLink.tsx); none for a link that isn't a PR's.
+/// phone lists it, as the Mac does (PrLink.tsx); none for a link that isn't to a PR itself: one to
+/// its files or a comment on it goes to GitHub, which shows that, as does anything else. Its host
+/// is for the caller to match with the PR's own address.
 #[uniffi::export]
 pub fn pr_key_of(url: String) -> Option<String> {
-    Some(pr_key(&url, "")).filter(|k| !k.is_empty())
+    let after = url.split_once("/pull/")?.1;
+    after.trim_end_matches('/').bytes().all(|b| b.is_ascii_digit()).then(|| pr_key(&url, "")).filter(|k| !k.is_empty())
 }
 
 /// Whether a PR, by its `key` and its Mac's own for it (`theirs`), is new to `seen`, which keeps
@@ -1907,8 +1910,12 @@ pub(crate) mod tests {
         assert_eq!(pr_key("https://github.com/new/app/pull/12", "old/app#12"), "new/app#12");
         assert_eq!(pr_key("https://ghe.example.com/o/app/pull/3#discussion", "o/app#3"), "o/app#3");
         assert_eq!(pr_key("", "app#4"), "app#4");
-        // A link in a conversation goes to the PR by that key, whatever in it it goes to.
-        assert_eq!(pr_key_of("https://github.com/acme/app/pull/12/files".into()).as_deref(), Some("acme/app#12"));
+        // A link in a conversation to a PR itself goes to it by that key; one to its files or a
+        // comment on it, or to anything else, isn't one.
+        assert_eq!(pr_key_of("https://github.com/acme/app/pull/12".into()).as_deref(), Some("acme/app#12"));
+        assert_eq!(pr_key_of("https://github.com/acme/app/pull/12/".into()).as_deref(), Some("acme/app#12"));
+        assert_eq!(pr_key_of("https://github.com/acme/app/pull/12/files".into()), None);
+        assert_eq!(pr_key_of("https://github.com/acme/app/pull/12#issuecomment-9".into()), None);
         assert_eq!(pr_key_of("https://github.com/acme/app/issues/12".into()), None);
         assert_eq!(pr_key_of("codealong://session/claude:work:k".into()), None);
         assert_eq!(pr_key("https://github.com/o/app/issues/5", "o/app#5"), "o/app#5");

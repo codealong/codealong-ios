@@ -233,12 +233,13 @@ mod tests {
         // The same session's again, until it goes on in another record.
         assert!(Arc::ptr_eq(&a, &kept.get("a", None, "0.26.0", || Arc::new("a2".to_string()))));
         assert_eq!(*kept.get("a", Some("r2"), "0.26.0", || Arc::new("a3".to_string())), "a3");
+        // Its Mac on another build since: read afresh. A Mac not heard from yet takes its word.
+        assert_eq!(*kept.get("a", Some("r2"), "0.27.0", || Arc::new("a5".to_string())), "a5");
+        assert_eq!(*kept.get("a", Some("r2"), "0.27.0", || Arc::new("a6".to_string())), "a5");
+        assert_eq!(*kept.get("a", Some("r2"), "", || Arc::new("a7".to_string())), "a5");
         for i in 0..IN_MEMORY {
             kept.get(&i.to_string(), None, "0.26.0", || Arc::new(i.to_string()));
         }
-        // Its Mac on another build since: read afresh.
-        assert_eq!(*kept.get("a", Some("r2"), "0.27.0", || Arc::new("a5".to_string())), "a5");
-        assert_eq!(*kept.get("a", Some("r2"), "0.27.0", || Arc::new("a6".to_string())), "a5");
         // The least lately used went.
         assert_eq!(*kept.get("a", Some("r2"), "0.26.0", || Arc::new("a4".to_string())), "a4");
     }
