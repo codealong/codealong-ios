@@ -2023,6 +2023,9 @@ pub struct Pending {
     pub cannot: Option<String>,
     /// It can be allowed from now on too (`Choice::Always`).
     pub always: bool,
+    /// What allowing it from now on adds, in a sentence, where its Mac can say (the rule it
+    /// writes, or the mode it switches the session to), for Always allow's hint.
+    pub always_rule: Option<String>,
     /// It can't be allowed just this once: its agent offers no answer that does, so there's no
     /// Allow, only Always where `always` says so.
     pub no_once: bool,
@@ -2641,6 +2644,7 @@ impl Conversation {
             input: p.input,
             cannot: p.cannot,
             always: p.always,
+            always_rule: p.always_rule,
             no_once: p.no_once,
             plan: p.plan,
             message: p.message,
@@ -3196,6 +3200,7 @@ mod tests {
             input: None,
             cannot: None,
             always: false,
+            always_rule: None,
             no_once: false,
             plan: false,
             message: false,
@@ -3236,6 +3241,7 @@ mod tests {
             input: input.map(String::from),
             cannot: None,
             always: true,
+            always_rule: None,
             no_once: false,
             plan: false,
             message: false,

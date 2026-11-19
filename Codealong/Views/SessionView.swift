@@ -2031,11 +2031,11 @@ private struct ApprovalCard: View {
                     if pending.always && pending.noOnce {
                         Button(answering == .always ? "Allowing…" : "Always allow") { answer(.always) }
                             .buttonStyle(.borderedProminent)
-                            .accessibilityHint("Allows this call, and calls like it from now on")
+                            .accessibilityHint(pending.alwaysRule ?? "Allows this call, and calls like it from now on")
                     } else if pending.always {
                         Button(answering == .always ? "Allowing…" : "Always allow") { answer(.always) }
                             .buttonStyle(.bordered)
-                            .accessibilityHint("Allows this call, and calls like it from now on")
+                            .accessibilityHint(pending.alwaysRule ?? "Allows this call, and calls like it from now on")
                     }
                     if !pending.noOnce {
                         Button(allowLabel) { answer(.allow) }
@@ -2335,6 +2335,7 @@ private struct QuestionsCard: View {
                 .buttonStyle(.plain)
                 .disabled(!canAct || answering != nil)
                 .accessibilityAddTraits(on ? .isSelected : [])
+                .accessibilityHint(q.multiSelect ? "One or more can be picked" : "")
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -2454,6 +2455,8 @@ private struct SessionNote: View {
         VStack(alignment: .leading, spacing: 4) {
             Label {
                 Text(code ? Clock.text(phrase, now: .now) : AttributedString(phrase))
+                    // Its few words stay on a line, the rest a tap away; one said whole is all there is.
+                    .lineLimit(words == nil ? nil : 1)
             } icon: {
                 Image(systemName: symbol).foregroundStyle(tint)
             }
@@ -2513,7 +2516,8 @@ private struct ApiErrorLine: View {
             // In a few words, the whole sentence once they're tapped, as the Mac's header says it.
             VStack(alignment: .leading, spacing: 4) {
                 Label {
-                    Text(note.phrase)
+                    // Its harness's words can run long: on a line, the rest a tap away.
+                    Text(note.phrase).lineLimit(1)
                 } icon: {
                     Image(systemName: note.lost ? "wifi.exclamationmark" : "exclamationmark.triangle.fill").foregroundStyle(.orange)
                 }
@@ -2605,7 +2609,7 @@ private struct LimitNote: View {
         return HStack(alignment: .firstTextBaseline, spacing: 8) {
             VStack(alignment: .leading, spacing: 4) {
                 Label {
-                    Text(Clock.text(said.phrase, now: now))
+                    Text(Clock.text(said.phrase, now: now)).lineLimit(1)
                 } icon: {
                     Image(systemName: "gauge.with.dots.needle.100percent").foregroundStyle(.orange)
                 }
