@@ -140,7 +140,12 @@ struct SideSheet: View {
             if now { Task { await reread() } }
         }
         .onChange(of: showing) { _, now in
-            if now == .list { Task { await readEarlier() } } else { gone = nil }
+            // While one named settles, it reads them (`settle`): a read here would overtake it.
+            if now == .list {
+                if !settling { Task { await readEarlier() } }
+            } else {
+                gone = nil
+            }
         }
     }
 
@@ -226,7 +231,7 @@ struct SideSheet: View {
             Button("Earlier", systemImage: "clock.arrow.circlepath") { shown = .list }
         }
         // Only one read among this session's own: a message a fork copied names its source's.
-        if case .past(let id) = showing, past != nil {
+        if case .past(let id) = showing, past != nil, id != open?.id {
             Button("Delete", systemImage: "trash", role: .destructive) { Task { await forget(id) } }
                 .disabled(!online || asking)
         }
@@ -295,17 +300,22 @@ struct SideSheet: View {
 
     /// Shows the one named, now its Mac has said which is open: that one, or one it keeps, read
     /// where the kept ones are, by its id or by when a message from it came (the core's
-    /// `side_for_message`). One deleted since leaves the list, saying so. A read that fails leaves
-    /// it settling, for the next to settle.
+    /// `side_for_message`). One that isn't this session's leaves the list, saying so. A read that
+    /// fails leaves it settling, for the next to settle. It alone reads the kept ones meanwhile.
     private func settle() async {
         if let reading, open?.id == reading {
             shown = .open
         } else {
             guard await readEarlier() else { return }
-            if let reading {
+            // What its Mac said while they were read: the one named may be open again.
+            if let conv = conversation { open = conv.side() }
+            if let reading, open?.id == reading {
+                shown = .open
+            } else if let reading {
                 shown = earlier.contains { $0.id == reading } ? .past(reading) : .list
                 if shown == .list {
-                    gone = "That side conversation isn\u{2019}t kept on \(mac) any more: it was deleted."
+                    // Deleted, or another session's: a fork's conversation has its source's messages.
+                    gone = "That side conversation isn\u{2019}t among this session\u{2019}s on \(mac): it was deleted, or it\u{2019}s another session\u{2019}s."
                 }
             } else if let sentAt {
                 switch sideForMessage(open: open, kept: earlier, at: sentAt) {
