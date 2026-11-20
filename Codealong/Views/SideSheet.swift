@@ -47,6 +47,8 @@ struct SideSheet: View {
     /// which a question would go to. Settled by the first read that answers (`settle`), on
     /// reconnecting too.
     @State private var settling = false
+    /// What's kept was read as it settled on the list: showing it needn't read it again.
+    @State private var earlierFresh = false
     @State private var loading = true
     @ScaledMetric(relativeTo: .body) private var sendSize: CGFloat = 32
 
@@ -142,9 +144,14 @@ struct SideSheet: View {
         .onChange(of: showing) { _, now in
             // While one named settles, it reads them (`settle`): a read here would overtake it.
             if now == .list {
-                if !settling { Task { await readEarlier() } }
+                if earlierFresh {
+                    earlierFresh = false
+                } else if !settling {
+                    Task { await readEarlier() }
+                }
             } else {
                 gone = nil
+                earlierFresh = false
             }
         }
     }
@@ -152,7 +159,15 @@ struct SideSheet: View {
     @ViewBuilder
     private var content: some View {
         if settling {
-            ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
+            // A read that didn't go through (its Mac slow to answer, say) is tried again here, as
+            // well as when its Mac comes back.
+            if problem != nil {
+                Button("Try again", systemImage: "arrow.clockwise") { Task { await reread() } }
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 40)
+            } else {
+                ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
+            }
         } else {
             shownContent
         }
@@ -313,6 +328,7 @@ struct SideSheet: View {
                 shown = .open
             } else if let reading {
                 shown = earlier.contains { $0.id == reading } ? .past(reading) : .list
+                earlierFresh = true
                 if shown == .list {
                     // Deleted, or another session's: a fork's conversation has its source's messages.
                     gone = "That side conversation isn\u{2019}t among this session\u{2019}s on \(mac): it was deleted, or it\u{2019}s another session\u{2019}s."
@@ -323,6 +339,7 @@ struct SideSheet: View {
                 case let id?: shown = .past(id)
                 case nil: shown = .list
                 }
+                earlierFresh = true
             }
         }
         settling = false

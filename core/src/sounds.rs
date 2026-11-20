@@ -14,7 +14,9 @@
 //! - a session that comes to wait on you within `WATCHED_MS` of going back to work makes none:
 //!   you just sent it something or answered it, so you're likely still looking at it; nor does
 //!   one you just marked unread, woke from a snooze or otherwise sorted here;
-//! - one sound at most every `REST_MS`: a few at once make one sound, the most urgent's.
+//! - one sound at most every `REST_MS`: a few at once make one sound, the most urgent's;
+//! - nothing sounds while a session on a Mac it has heard from is listening (you're in a meeting),
+//!   nor afterwards for what came during it, as the Mac stays quiet while one of its own listens.
 
 use std::collections::{HashMap, HashSet};
 
@@ -94,7 +96,9 @@ impl Chimer {
     pub fn due(&mut self, devices: &[(Device, i64)], rows: &[SessionRow], now: i64, on: &[Sound]) -> Option<Sound> {
         let mut came = Vec::new();
         let mut was = HashMap::new();
+        let mut listening = false;
         for (d, fed_at) in devices.iter().filter(|(d, _)| heard(d)) {
+            listening |= rows.iter().any(|r| r.device == d.key && r.listening);
             let mine: Vec<&SessionRow> = rows.iter().filter(|r| r.device == d.key && !r.unattended).collect();
             let opened = d.since.unwrap_or_default();
             let before = self.was.remove(&d.key).filter(|(at, _)| *at == opened).map(|(_, w)| w);
@@ -109,7 +113,8 @@ impl Chimer {
         self.working_since.retain(|k, _| known.contains(k.as_str()));
         self.sorted.retain(|_, at| now - *at < WATCHED_MS);
         let kind = came.into_iter().filter(|k| on.contains(k)).min()?;
-        if self.last_at.is_some_and(|at| now - at < REST_MS) {
+        // What came is taken as heard all the same, so it doesn't sound once the listening ends.
+        if listening || self.last_at.is_some_and(|at| now - at < REST_MS) {
             return None;
         }
         self.last_at = Some(now);
@@ -200,6 +205,25 @@ mod tests {
         let mut c = Chimer::default();
         assert_eq!(due(&mut c, NOW - 3_600_000, rows), None);
         c
+    }
+
+    #[test]
+    fn nothing_sounds_while_a_session_is_listening_nor_after_for_what_came_during_it() {
+        let working = |key: &str| session(key, Status::Working, NOW - 3_600_000);
+        let meeting = SessionRow { listening: true, ..session("meet", Status::Working, NOW - 3_600_000) };
+        let mut c = after(vec![working("a"), working("b"), working("c"), meeting.clone()]);
+        // A session that needs you and a finished turn are quiet while it listens.
+        assert_eq!(due(&mut c, NOW, vec![session("a", Status::Needs, NOW), session("b", Status::Unread, NOW), working("c"), meeting.clone()]), None);
+        // Once it stops, what came during it is still quiet, and what comes next sounds at once.
+        let ended = SessionRow { listening: false, ..meeting };
+        assert_eq!(due(&mut c, NOW + 1_000, vec![session("a", Status::Needs, NOW), session("b", Status::Unread, NOW), working("c"), ended.clone()]), None);
+        assert_eq!(due(&mut c, NOW + 2_000, vec![session("a", Status::Needs, NOW), session("b", Status::Unread, NOW), session("c", Status::Unread, NOW + 2_000), ended]), Some(Sound::YourTurn));
+        // A Mac not heard from on this connection (a saved feed) doesn't keep the rest quiet.
+        let mut c = Chimer::default();
+        let away = Device { key: "far".into(), online: false, since: None, ..mac("far") };
+        let saved = SessionRow { device: "far".into(), listening: true, ..row("x", Status::Working, NOW, None, NOW) };
+        assert_eq!(c.due(&[(mac("m"), NOW - 3_600_000), (away.clone(), NOW)], &[working("a"), saved.clone()], NOW - 3_600_000, &BOTH), None);
+        assert_eq!(c.due(&[(mac("m"), NOW), (away, NOW)], &[session("a", Status::Needs, NOW), saved], NOW, &BOTH), Some(Sound::NeedsYou));
     }
 
     #[test]

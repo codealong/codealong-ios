@@ -57,7 +57,8 @@ project that lives on two Macs is one project here. Each session has the emblem 
 beside its title, an emoji or a small drawn picture for what it works on, so you know it at a
 glance as you do there. While the app is open, a short sound says when a session on any of your Macs starts
 to wait on you, as the Mac's do: a pop when it needs you, a lighter tink when its turn ends (turn
-either off in the Macs sheet; neither plays with the phone silenced).
+either off in the Macs sheet; neither plays with the phone silenced, nor while a session on one of
+your Macs is listening to a meeting).
 
 **Read any conversation.** Each session's conversation shows as it does on the Mac: replies as
 formatted text with tables, nested lists and code you can copy, your prompts with their images
