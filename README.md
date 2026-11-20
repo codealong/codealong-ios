@@ -66,7 +66,9 @@ what they printed, and the questions an agent asked with what you picked. What C
 session by itself (a PR's news, a helper's, a schedule's run, a review handed back) is a card that
 says it in a line, the PR and each helper it names a link, and a tap opens it to the whole message;
 another session's message is a card that names who sent it, as a link to that session, over its
-first lines. Scroll up to read
+first lines (one its own side conversation sent links to that side conversation). A session moved
+to another account on its Mac says *Moved to* and the account on its row, and at the end of its
+conversation a tap goes to the copy that carries it on, which says what it was moved from. Scroll up to read
 further back, with the prompt you're reading the answer to pinned at the top and a button at the
 foot that goes back down to the newest. A session running
 inside Codealong on your Mac streams its reply as it's written, and one that only waits on a command
@@ -177,7 +179,7 @@ draft), whose merge or work waits on it, then the rest under the tab's own headi
 and closed ones folded away. Yours are the ones opened by the GitHub account
 most of your Macs are signed in as; when one is signed in as another (a bot your agents open PRs
 as, or a work account), the menu's *Your GitHub accounts* picks which count as you. Open one to see where it stands (checks, whether it can merge, its size, who asked you, its labels, an approval of earlier commits, whose move it is where its review state doesn't say, as the Mac's *Author replied* or *Re-review asked* does, and Codealong's own review of it), the
-sessions that worked on it on every Mac (tap one to open it), the one its Mac tells of what happens on it first, tagged Primary, your draft review of it if you began one, its description, reviews, comments and changed files with
+sessions that worked on it on every Mac (tap one to open it), the one its Mac tells of what happens on it first, tagged Primary (the session that started a helper that made it, once that helper is done), your draft review of it if you began one, its description, reviews, comments and changed files with
 their diffs. The box at its foot reviews it, as the Mac's does: write what to say, then *Request
 changes*, *Comment* or *Approve* (only *Comment* on your own PR or a closed one), submitting your
 draft with it as GitHub's *Finish your review* does. Once your approval stands, *Approve* reads
