@@ -662,6 +662,44 @@ pub(crate) fn escaped(s: &str) -> String {
 /// How a link to a session starts (the Mac's codealongLinks.ts `sessionLink`).
 pub(crate) const SESSION_LINK: &str = "codealong://session/";
 
+/// How a link to one of the shown session's side conversations starts: the phone's own, for the
+/// head of a message one sent (`peer_title`), which the session's page opens as its side sheet.
+const SIDE_LINK: &str = "codealong://side/";
+
+/// A link to the shown session's side conversation `id`.
+pub(crate) fn side_link_to(id: &str) -> String {
+    let safe: String = id.chars().filter(|c| c.is_ascii_alphanumeric() || "-_.".contains(*c)).collect();
+    format!("{SIDE_LINK}{safe}")
+}
+
+/// A link to the shown session's side conversation that sent a message at `at` (ms), for one that
+/// didn't say which.
+pub(crate) fn side_link_at(at: i64) -> String {
+    format!("{SIDE_LINK}?at={}", at.max(0))
+}
+
+/// Which of the shown session's side conversations a link names (`side_link_to`, `side_link_at`).
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct SideLink {
+    /// Its id, where the link names one.
+    pub id: Option<String>,
+    /// When the message that links to it came (ms), where the link names none: the side sheet
+    /// goes by it (`side_for_message`). 0 when unknown.
+    pub at: i64,
+}
+
+/// What a link to a side conversation names; None for any other link.
+#[uniffi::export]
+pub fn side_link(url: String) -> Option<SideLink> {
+    let url = url.trim();
+    let head = url.get(..SIDE_LINK.len()).filter(|h| h.eq_ignore_ascii_case(SIDE_LINK))?;
+    let rest = &url[head.len()..];
+    let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let id = path.trim_end_matches('/');
+    let at = query.split('&').find_map(|kv| kv.strip_prefix("at=")).and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
+    Some(SideLink { id: (!id.is_empty()).then(|| id.to_string()), at })
+}
+
 /// How long the link to a session at the start of `s` is, as the Mac's `BARE_SOURCE` takes one:
 /// up to a space, angle bracket, parenthesis or backtick, less the punctuation that ends a
 /// sentence around it. None when it names nothing. A todo's link isn't one: the phone shows no
@@ -1024,6 +1062,11 @@ mod tests {
         assert_eq!(session_link_name("codealong://session/claude:claude:abc/"), Some("claude:claude:abc".into()));
         assert_eq!(session_link_name("codealong://todo/t-1"), None);
         assert_eq!(session_link_name("codealong://link/cal1abc"), None);
+        assert_eq!(side_link(side_link_to("s-7f3a")), Some(SideLink { id: Some("s-7f3a".into()), at: 0 }));
+        assert_eq!(side_link(side_link_at(1_700_000)), Some(SideLink { id: None, at: 1_700_000 }));
+        assert_eq!(side_link("codealong://side/".into()), Some(SideLink { id: None, at: 0 }));
+        assert_eq!(side_link(side_link_to("a/b?c")), Some(SideLink { id: Some("abc".into()), at: 0 }));
+        assert_eq!(side_link("codealong://session/claude:work:k".into()), None);
     }
 
     #[test]

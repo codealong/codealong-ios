@@ -166,7 +166,7 @@ mod tests {
     use super::*;
 
     fn item(cursor: u64, n: u32) -> api::Item {
-        api::Item { at: cursor as i64, kind: "agent".into(), text: format!("{cursor}.{n}"), from: None, from_key: None, glance: None, id: None, input: None, output: None, failed: false, withdrawn: false, stop: false, questions: vec![], answers: Default::default(), link: None, sent: None, cursor, n }
+        api::Item { at: cursor as i64, kind: "agent".into(), text: format!("{cursor}.{n}"), from: None, from_key: None, from_side: None, glance: None, id: None, input: None, output: None, failed: false, withdrawn: false, stop: false, questions: vec![], answers: Default::default(), link: None, sent: None, cursor, n }
     }
 
     #[test]

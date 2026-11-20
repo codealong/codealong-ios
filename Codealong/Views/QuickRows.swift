@@ -96,10 +96,14 @@ struct QuickSessionRow: View {
         .accessibilityElement(children: .combine)
     }
 
-    /// Its marks (Top, On the side, Finished, Seen by agent), its labels with `labels`, and where
-    /// it is.
+    /// Its marks (Moved to, Top, On the side, Finished, Seen by agent), its labels with `labels`,
+    /// and where it is.
     private func whereLine(labels: Bool) -> some View {
         HStack(spacing: 6) {
+            // Where it went, first, as the Mac's row has it; its page goes there.
+            if let moved = row.movedTo {
+                Chip(words: moved.words, symbol: "arrow.up.right", tint: .secondary)
+            }
             if row.raised != nil {
                 Chip(words: "Top", symbol: "arrow.up", tint: .orange)
             }
@@ -156,9 +160,9 @@ struct QuickSessionRow: View {
     }
 }
 
-/// A word on a row that says something of it, as the Mac's chips do: Top, On the side, Finished,
-/// Seen by agent (and the labels you put on it, `SessionLabelChip`). Its page says who and why,
-/// which a Mac's tooltip does there.
+/// A word on a row that says something of it, as the Mac's chips do: Moved to, Top, On the side,
+/// Finished, Seen by agent (and the labels you put on it, `SessionLabelChip`). Its page says who
+/// and why, which a Mac's tooltip does there.
 private struct Chip: View {
     let words: String
     let symbol: String

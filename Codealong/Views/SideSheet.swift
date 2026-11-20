@@ -13,8 +13,12 @@ struct SideSheet: View {
     /// A question to ask as it opens: `/side` and a question in the session's box.
     var question: String?
     /// The one that answered and wasn't seen, to show as it opens (`Session::side_answer`): the
-    /// open one, or one closed since, as its Mac says then.
+    /// open one, or one closed since, as its Mac says then. Or the one a message it sent names, by
+    /// a tap on the message's head.
     var reading: String?
+    /// When a message from one of them came, which didn't say which (a Mac before 2026-11-20): the
+    /// one it came from shows as it opens, as the core finds it (`side_for_message`), else the list.
+    var sentAt: Int64?
     @Environment(Store.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var conversation: Conversation?
@@ -262,11 +266,19 @@ struct SideSheet: View {
         if let reading, open?.id != reading {
             shown = .past(reading)
             await readEarlier()
+        } else if reading == nil, let sentAt {
+            // Which it was goes by when each started, of the kept ones and the open one.
+            await readEarlier()
+            switch sideForMessage(open: open, kept: earlier, at: sentAt) {
+            case let id? where id == open?.id: shown = .open
+            case let id?: shown = .past(id)
+            case nil: shown = .list
+            }
         }
         loading = false
         if let question, !question.isEmpty {
             await ask(question)
-        } else if open == nil && reading == nil {
+        } else if open == nil && reading == nil && sentAt == nil {
             typing = true
         }
     }

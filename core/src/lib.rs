@@ -276,6 +276,10 @@ pub struct SessionRow {
     pub name: Option<String>,
     /// The session it came from, when its harness or Codealong wrote that down.
     pub origin: Option<SessionOrigin>,
+    /// It was moved to another account, and the copy that carries it on there is on its Mac's
+    /// board (the Mac's lineage.ts `movedTargets`): the Mac's row shows a Moved to chip that goes
+    /// to it.
+    pub moved_to: Option<MovedTo>,
     /// Its last turn ended on its account's usage limit and nothing has been said since: what that
     /// comes to, in a sentence or two, with `{in:<ms>}` for when it lifts.
     pub limit: Option<Said>,
@@ -947,15 +951,117 @@ pub struct SuggestedReplies {
     pub by: Option<String>,
 }
 
-/// The session one came from: forked from it, or started by its agent.
+/// The session one came from: forked from it, moved from it to another account, or started by its
+/// agent, as a helper of it or not.
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
 pub struct SessionOrigin {
     /// Its key here (`@<device>:<key>`).
     pub key: String,
     /// Its title, while its Mac still lists it.
     pub title: Option<String>,
-    /// A copy of its conversation going on by itself; otherwise its agent started this one.
-    pub fork: bool,
+    /// How this one came of it, before its title, as the Mac's session panel says it (lineage.ts
+    /// `originWord`): "Forked from “Fix the header”", "Moved from …", "Helper of …", "Started by
+    /// …", or "… another session" once its Mac no longer lists it.
+    pub words: String,
+}
+
+/// How a session came of the one it names as its origin, as the Mac's lineage.ts `kinHow` tells
+/// it: a fork onto another account is that session moved there (start.rs `move_to`), and one
+/// started by a session whose helper it is is its helper.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kin {
+    Fork,
+    Moved,
+    Helper,
+    Started,
+}
+
+impl Kin {
+    fn of(how: OriginHow, from: &Session, to: &Session) -> Kin {
+        if to.helper.as_ref().and_then(|h| h.parent.as_deref()) == Some(from.key.as_str()) {
+            return Kin::Helper;
+        }
+        match how {
+            OriginHow::Fork if from.account != to.account => Kin::Moved,
+            OriginHow::Fork => Kin::Fork,
+            OriginHow::Started => Kin::Started,
+        }
+    }
+
+    /// As a phrase before that session's title (lineage.ts `originWord`).
+    fn word(self) -> &'static str {
+        match self {
+            Kin::Fork => "Forked from",
+            Kin::Moved => "Moved from",
+            Kin::Helper => "Helper of",
+            Kin::Started => "Started by",
+        }
+    }
+}
+
+/// The session one goes on as on another account, where it was moved there: the latest copy on its
+/// Mac's board, following one moved again.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct MovedTo {
+    /// The copy's key here (`@<device>:<key>`).
+    pub key: String,
+    /// The account it went to.
+    pub account: String,
+    /// For its chip, as the Mac's says it: "Moved to work".
+    pub words: String,
+    /// The same with the copy's title, as the Mac's chip's tooltip says it: "Moved to “Fix the
+    /// header” on work".
+    pub says: String,
+}
+
+/// Where each session that moved to another account on a Mac went, by its key there: the copy
+/// still on the board that carries it on, following any chain of moves, as the Mac's lineage.ts
+/// `movedTargets` finds it. Copies of the same session share its start once closed, so a tie goes
+/// to one not archived, then live, then the latest active, then the latest started.
+fn moved_targets<'a>(sessions: &std::collections::HashMap<&'a str, &'a Session>) -> std::collections::HashMap<&'a str, &'a Session> {
+    let started = |s: &Session| s.started_at.unwrap_or(s.last_prompt_at);
+    let better = |a: &Session, b: &Session| -> bool {
+        if a.archived != b.archived {
+            return !a.archived;
+        }
+        if a.live != b.live {
+            return a.live;
+        }
+        if a.last_activity != b.last_activity {
+            return a.last_activity > b.last_activity;
+        }
+        if started(a) != started(b) {
+            return started(a) > started(b);
+        }
+        a.key > b.key
+    };
+    let mut direct: std::collections::HashMap<&'a str, &'a Session> = std::collections::HashMap::new();
+    for &to in sessions.values() {
+        let Some(origin) = to.origin.as_ref().filter(|_| !to.headless) else { continue };
+        let Some(&from) = sessions.get(origin.key.as_str()) else { continue };
+        if Kin::of(origin.how, from, to) != Kin::Moved {
+            continue;
+        }
+        match direct.get(from.key.as_str()) {
+            Some(prev) if !better(to, prev) => {}
+            _ => {
+                direct.insert(from.key.as_str(), to);
+            }
+        }
+    }
+    let mut out = std::collections::HashMap::new();
+    for (&key, &first) in &direct {
+        let mut cur = first;
+        let mut seen: std::collections::HashSet<&str> = [key, cur.key.as_str()].into();
+        while let Some(&next) = direct.get(cur.key.as_str()) {
+            if !seen.insert(next.key.as_str()) {
+                break;
+            }
+            cur = next;
+        }
+        out.insert(key, cur);
+    }
+    out
 }
 
 /// A message a session's harness holds until the turn it's taking ends (`Session::queued`).
@@ -1445,7 +1551,8 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
     let mut sessions = Vec::new();
     let mut unlisted = Vec::new();
     for (d, replica) in feeds {
-        let titles: std::collections::HashMap<&str, &str> = replica.lanes.iter().flat_map(|l| l.sessions.iter()).map(|s| (s.key.as_str(), s.title.as_str())).collect();
+        let by_key: std::collections::HashMap<&str, &Session> = replica.lanes.iter().flat_map(|l| l.sessions.iter()).map(|s| (s.key.as_str(), s)).collect();
+        let moved = moved_targets(&by_key);
         let mut seen = std::collections::HashSet::new();
         // A session shows under every lane it worked in; its own lane lists it without a
         // visitor note, so that one goes first.
@@ -1514,7 +1621,22 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 edits: matches!(s.harness, Harness::Claude | Harness::Codex | Harness::Opencode),
                 sides: matches!(s.harness, Harness::Claude | Harness::Codex),
                 name: s.name.clone(),
-                origin: s.origin.as_ref().map(|o| SessionOrigin { key: remote_key(&d.short, &o.key), title: titles.get(o.key.as_str()).map(|t| t.to_string()), fork: o.how == OriginHow::Fork }),
+                origin: s.origin.as_ref().map(|o| {
+                    let from = by_key.get(o.key.as_str()).copied();
+                    // A session its Mac no longer lists is a fork or a start, as its record says.
+                    let kin = from.map_or(if o.how == OriginHow::Fork { Kin::Fork } else { Kin::Started }, |f| Kin::of(o.how, f, s));
+                    let words = match from {
+                        Some(f) => format!("{} \u{201c}{}\u{201d}", kin.word(), f.title),
+                        None => format!("{} another session", kin.word()),
+                    };
+                    SessionOrigin { key: remote_key(&d.short, &o.key), title: from.map(|f| f.title.clone()), words }
+                }),
+                moved_to: moved.get(s.key.as_str()).map(|to| MovedTo {
+                    key: remote_key(&d.short, &to.key),
+                    account: to.account.clone(),
+                    words: format!("Moved to {}", to.account),
+                    says: format!("Moved to \u{201c}{}\u{201d} on {}", to.title, to.account),
+                }),
                 limit: s.limit.as_ref().filter(|_| status != Status::Working).map(|l| limit_words(&s.account, l, now)),
                 api_error: api_error_note(s, status),
                 signed_out: signed_out_words(s, status),
@@ -1955,12 +2077,46 @@ fn glance_title(g: &codealong_peer::glance::Glance, named: Named) -> String {
 
 /// Who another session's message is from, as its card's head reads (the Mac's MessageCard.tsx
 /// `PeerLabel`): the sender a link to its session where the message said which one sent it and
-/// this phone lists it.
+/// this phone lists it; or, for one from this session's side conversation, a link to that side
+/// conversation (`md::side_link`), by its id where the message gave one (Macs since 2026-11-20),
+/// else by when it came, which the side sheet goes by (`side_for_message`).
 fn peer_title(i: &api::Item, named: Named) -> String {
+    if i.from_key.is_none() && (i.from_side.is_some() || i.from.as_deref() == Some(SIDE_SENDER)) {
+        let name = i.from.as_deref().map_or_else(|| SIDE_SENDER.to_string(), |f| format!("“{}”", md::escaped(f)));
+        let link = match i.from_side.as_deref() {
+            Some(id) => md::side_link_to(id),
+            None => md::side_link_at(i.at),
+        };
+        return format!("From [{name}]({link})");
+    }
     let name = i.from.as_deref().map_or_else(|| "another session".to_string(), |f| format!("“{}”", md::escaped(f)));
     match i.from_key.as_deref().filter(|key| named(key).is_some()) {
         Some(key) => format!("From [{name}]({})", session_link(key)),
         None => format!("From {name}"),
+    }
+}
+
+/// Who a message from a session's side conversation says it's from (the Mac's side.rs byline).
+const SIDE_SENDER: &str = "Side conversation";
+
+/// Which of a session's side conversations a message from one came from where the message didn't
+/// say (a Mac before 2026-11-20): the one started last at or before it came (`at`), of the open
+/// one and those its Mac keeps, or with no time, the only one; none when every one started after
+/// it, or there are several and no time to choose by, which leaves them listed. As the Mac's
+/// side.ts `sideForMessage` finds one.
+#[uniffi::export]
+pub fn side_for_message(open: Option<SideConversation>, kept: Vec<SideKept>, at: i64) -> Option<String> {
+    let mut all: Vec<(String, i64)> = kept.iter().map(|k| (k.id.clone(), k.started_at)).collect();
+    // One whose first turn hasn't ended isn't kept yet.
+    if let Some(o) = open.as_ref().filter(|o| !kept.iter().any(|k| k.id == o.id)) {
+        all.push((o.id.clone(), o.turns.first().map_or(0, |t| t.at)));
+    }
+    if at > 0 {
+        return all.into_iter().filter(|(_, started)| *started > 0 && *started <= at).max_by_key(|(_, started)| *started).map(|(id, _)| id);
+    }
+    match all.as_slice() {
+        [(id, _)] => Some(id.clone()),
+        _ => None,
     }
 }
 
@@ -3041,7 +3197,7 @@ mod tests {
     }
 
     fn item(kind: &str, cursor: u64, id: Option<&str>, output: Option<&str>) -> api::Item {
-        api::Item { at: cursor as i64, kind: kind.into(), text: format!("{kind} {cursor}"), from: None, from_key: None, glance: None, id: id.map(String::from), input: None, output: output.map(String::from), failed: false, withdrawn: false, stop: false, questions: vec![], answers: Default::default(), link: None, sent: None, cursor, n: 0 }
+        api::Item { at: cursor as i64, kind: kind.into(), text: format!("{kind} {cursor}"), from: None, from_key: None, from_side: None, glance: None, id: id.map(String::from), input: None, output: output.map(String::from), failed: false, withdrawn: false, stop: false, questions: vec![], answers: Default::default(), link: None, sent: None, cursor, n: 0 }
     }
 
     /// What's neither yours nor the agent's is a card, as the Mac's MessageCard.tsx draws it:
@@ -3094,6 +3250,14 @@ mod tests {
         assert_eq!(from(None, Some("claude:work:k2")).title, "From [another session](codealong://session/claude:work:k2)");
         assert_eq!(from(None, None).title, "From another session");
         assert_eq!(from(Some("Gone"), Some("claude:work:gone")).title, "From “Gone”");
+        // The session's side conversation's links to it: by its id where the message gave one,
+        // else by when it came; one from another session that says the same is that session's.
+        let side = |from: Option<&str>, side: Option<&str>, at: i64| shown(api::Item { at, from: from.map(String::from), from_side: side.map(String::from), ..item("peer", 1, None, None) }).unwrap().title;
+        assert_eq!(side(Some("Side conversation"), Some("s-7f3a"), 5), "From [“Side conversation”](codealong://side/s-7f3a)");
+        assert_eq!(side(None, Some("s-7f3a"), 5), "From [Side conversation](codealong://side/s-7f3a)");
+        assert_eq!(side(Some("Side conversation"), None, 1_700_000), "From [“Side conversation”](codealong://side/?at=1700000)");
+        assert_eq!(side(Some("Side conversation"), None, 0), "From [“Side conversation”](codealong://side/?at=0)");
+        assert_eq!(shown(api::Item { from: Some("Side conversation".into()), from_key: Some("claude:work:k2".into()), ..item("peer", 1, None, None) }).unwrap().title, "From [“Side conversation”](codealong://session/claude:work:k2)");
         // One the session took back is still its card, which shows it whole, saying so.
         assert_eq!(shown(api::Item { withdrawn: true, ..item("peer", 1, None, None) }).map(|c| c.icon), Some(CardIcon::Peer));
         // What else the conversation has isn't a card.
@@ -4496,6 +4660,7 @@ mod order_tests {
             sides: false,
             name: None,
             origin: None,
+            moved_to: None,
             limit: None,
             api_error: None,
             signed_out: None,
@@ -4532,7 +4697,7 @@ mod order_tests {
         let run = |key: &str, status: Status, from: Option<&str>| SessionRow {
             headless: true,
             unattended: status != Status::Needs,
-            origin: from.map(|k| SessionOrigin { key: k.into(), title: None, fork: false }),
+            origin: from.map(|k| SessionOrigin { key: k.into(), title: None, words: "Started by another session".into() }),
             ..row(key, status, 0, None, 0)
         };
         let mut rows = vec![
@@ -5122,6 +5287,63 @@ mod order_tests {
         assert_eq!(every[..2], listed[..]);
         assert!(!every[1].unattended);
         assert_eq!(every[2].runs, 0);
+    }
+
+    #[test]
+    fn a_session_moved_to_another_account_says_where_it_went_and_its_copy_where_it_came_from() {
+        use codealong_peer::client::Device;
+        use codealong_peer::feed::Replica;
+        use codealong_peer::model::{Helper, SessionOrigin as Origin};
+        let mac = Device { key: "m".into(), short: "m".into(), name: "Mac".into(), online: true, since: None, last_seen: None, remote_control: true, app: String::new(), loading: false, linked_back: true };
+        let from = |key: &str, how: OriginHow| Some(Origin { key: key.into(), how });
+        let mut lane = codealong_peer::model::Lane::new("/src/app", "App", "app");
+        lane.sessions = vec![
+            // Moved from claude to work, then on to home; a first try at the move left a copy that
+            // stopped, archived.
+            Session { archived: true, title: "Fix the header".into(), ..Session::new(Harness::Claude, "claude", "first") },
+            Session { archived: true, last_activity: 5, origin: from("claude:claude:first", OriginHow::Fork), ..Session::new(Harness::Claude, "work", "tried") },
+            Session { archived: true, last_activity: 9, title: "Fix the header".into(), origin: from("claude:claude:first", OriginHow::Fork), ..Session::new(Harness::Claude, "work", "second") },
+            Session { live: true, title: "Fix the header".into(), origin: from("claude:work:second", OriginHow::Fork), ..Session::new(Harness::Claude, "home", "third") },
+            // A fork on the same account, a helper and a start aren't moves.
+            Session { origin: from("claude:home:third", OriginHow::Fork), ..Session::new(Harness::Claude, "home", "fork") },
+            Session { helper: Some(Helper { parent: Some("claude:home:third".into()), ..Helper::default() }), origin: from("claude:home:third", OriginHow::Started), ..Session::new(Harness::Claude, "claude", "helper") },
+            Session { origin: from("claude:home:third", OriginHow::Started), ..Session::new(Harness::Claude, "work", "started") },
+            Session { origin: from("claude:claude:gone", OriginHow::Fork), ..Session::new(Harness::Claude, "work", "orphan") },
+        ];
+        let replica = Replica { lanes: vec![lane], ..Replica::default() };
+        let rows = session_rows(&[(mac, &replica)], true);
+        let row = |id: &str| rows.iter().find(|r| r.key.ends_with(&format!(":{id}"))).unwrap();
+        let moved = |id: &str| row(id).moved_to.as_ref().map(|m| (m.key.as_str(), m.words.as_str(), m.says.as_str()));
+        let came = |id: &str| row(id).origin.as_ref().map(|o| o.words.as_str());
+        // Each one moved goes to the copy that carries it on now, along the chain.
+        assert_eq!(moved("first"), Some(("@m:claude:home:third", "Moved to home", "Moved to “Fix the header” on home")));
+        assert_eq!(moved("second"), Some(("@m:claude:home:third", "Moved to home", "Moved to “Fix the header” on home")));
+        assert_eq!(moved("third"), None);
+        assert_eq!(moved("fork"), None);
+        assert_eq!(came("third"), Some("Moved from “Fix the header”"));
+        assert_eq!(came("fork"), Some("Forked from “Fix the header”"));
+        assert_eq!(came("helper"), Some("Helper of “Fix the header”"));
+        assert_eq!(came("started"), Some("Started by “Fix the header”"));
+        assert_eq!(came("orphan"), Some("Forked from another session"));
+        assert_eq!(row("orphan").origin.as_ref().map(|o| o.title.clone()), Some(None));
+    }
+
+    #[test]
+    fn a_side_conversations_message_without_its_id_goes_by_when_it_came() {
+        let turn = |at: i64| SideTurn { question: "Why?".into(), answer: String::new(), tools: vec![], tool: None, done: true, error: None, at };
+        let kept = |id: &str, started_at: i64| SideKept { id: id.into(), started_at, last_at: started_at, turns: vec![turn(started_at)], answering: false };
+        let open = |id: &str, at: i64| SideConversation { id: id.into(), turns: vec![turn(at)], running: true, ended: false, closed: false };
+        let earlier = vec![kept("a", 100), kept("b", 300)];
+        assert_eq!(side_for_message(None, earlier.clone(), 250), Some("a".into()));
+        assert_eq!(side_for_message(None, earlier.clone(), 300), Some("b".into()));
+        assert_eq!(side_for_message(None, earlier.clone(), 50), None);
+        // The open one, not kept yet, counts from its first question.
+        assert_eq!(side_for_message(Some(open("c", 400)), earlier.clone(), 450), Some("c".into()));
+        assert_eq!(side_for_message(Some(open("b", 300)), earlier.clone(), 450), Some("b".into()));
+        // With no time, only the only one.
+        assert_eq!(side_for_message(None, vec![kept("a", 100)], 0), Some("a".into()));
+        assert_eq!(side_for_message(None, earlier, 0), None);
+        assert_eq!(side_for_message(None, vec![], 100), None);
     }
 
     #[test]

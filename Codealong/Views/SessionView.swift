@@ -209,7 +209,7 @@ struct SessionView: View {
 
     /// Its side conversations, whose links are named on this session's Mac too.
     private func sideSheet(_ ask: SideAsk) -> some View {
-        SideSheet(key: key, question: ask.question, reading: ask.reading)
+        SideSheet(key: key, question: ask.question, reading: ask.reading, sentAt: ask.sentAt)
             .environment(\.openURL, OpenURLAction { openLink($0, fromSide: true) })
     }
 
@@ -217,8 +217,14 @@ struct SessionView: View {
     /// sheet goes away for it: one to a session an agent named (`codealong://session/…`) opens it,
     /// named as this session's Mac names its sessions (the core's `sessionNamed`, the Mac's
     /// codealongLinks.ts); one to a PR this phone lists (on its host) opens its page here, as the
-    /// Mac shows one it lists (PrLink.tsx); the web's open as they would anywhere.
+    /// Mac shows one it lists (PrLink.tsx); one to its side conversation (a message one sent's
+    /// head, the core's `side_link`) shows it, as the Mac shows it above the box; the web's open as
+    /// they would anywhere.
     private func openLink(_ url: URL, fromSide: Bool = false) -> OpenURLAction.Result {
+        if let side = sideLink(url: url.absoluteString) {
+            aside = side.id.map { SideAsk(reading: $0) } ?? SideAsk(sentAt: side.at)
+            return .handled
+        }
         if let pr = prKeyOf(url: url.absoluteString).flatMap({ store.pr($0) }), !pr.slug.isEmpty, URL(string: pr.url)?.host()?.lowercased() == url.host()?.lowercased() {
             if fromSide { aside = nil }
             openPr(pr)
@@ -374,14 +380,14 @@ struct SessionView: View {
                     } else if !loading && !items.isEmpty {
                         // Nothing says it's the start, as on the Mac: the first prompt does.
                         if let origin = row?.origin {
-                            // Where it came from: a fork of another session, or started by one.
-                            let words = "\(origin.fork ? "Forked from" : "Started by") \(origin.title.map { "“\($0)”" } ?? "another session")"
+                            // Where it came from: a fork of another session, moved from it, or
+                            // started by one, as its Mac's panel says it.
                             if store.sessions.contains(where: { $0.key == origin.key }) {
-                                Button(words) { go(origin.key) }
+                                Button(origin.words) { go(origin.key) }
                                     .font(.caption)
                                     .frame(maxWidth: .infinity)
                             } else {
-                                Text(words).font(.caption).foregroundStyle(.tertiary).frame(maxWidth: .infinity)
+                                Text(origin.words).font(.caption).foregroundStyle(.tertiary).frame(maxWidth: .infinity)
                             }
                         }
                     }
@@ -421,6 +427,17 @@ struct SessionView: View {
                     // yours to write again.
                     if let unheld, unheld.removing, !heldShown.contains(where: { $0.id == unheld.id }) {
                         UnheldView(unheld: unheld, putInBox: unheld.words.map { w in { addToBox(w) } }) { self.unheld = nil }
+                    }
+                    // Moved to another account: the conversation goes on in the copy there, which
+                    // the Mac's row goes to from its Moved to chip.
+                    if let moved = row?.movedTo, !(loading && items.isEmpty) {
+                        if store.sessions.contains(where: { $0.key == moved.key }) {
+                            Button(moved.says) { go(moved.key) }
+                                .font(.caption)
+                                .frame(maxWidth: .infinity)
+                        } else {
+                            Text(moved.says).font(.caption).foregroundStyle(.tertiary).frame(maxWidth: .infinity)
+                        }
                     }
                     if loading && items.isEmpty {
                         ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
@@ -570,9 +587,13 @@ struct SessionView: View {
                 Label("Open in the Claude app", systemImage: "arrow.up.forward.app")
             }
         }
-        if let origin = row?.origin, let title = origin.title {
-            Button(origin.fork ? "Forked from “\(title)”" : "Started by “\(title)”", systemImage: "arrow.turn.left.up") { go(origin.key) }
+        if let origin = row?.origin, origin.title != nil {
+            Button(origin.words, systemImage: "arrow.turn.left.up") { go(origin.key) }
                 .disabled(!store.sessions.contains { $0.key == origin.key })
+        }
+        if let moved = row?.movedTo {
+            Button(moved.says, systemImage: "arrow.turn.right.up") { go(moved.key) }
+                .disabled(!store.sessions.contains { $0.key == moved.key })
         }
         // The labels its Mac's sessions wear, each checked where it wears it, as the Mac's Labels ›.
         Menu("Labels", systemImage: "tag") {
@@ -3670,6 +3691,9 @@ struct SideAsk: Identifiable {
     var question: String?
     /// The one that answered, to show as they open.
     var reading: String?
+    /// When a message from one that didn't say which came, to show the one it came from as they
+    /// open (the core's `side_for_message`).
+    var sentAt: Int64?
 
     /// What `/side` or `/btw` at the start of what's written asks, its lines kept: empty for the
     /// command alone, which shows the side conversations; nil when it isn't one.
@@ -3734,7 +3758,7 @@ struct SessionGlance: View {
                 if !kept.items.isEmpty && !kept.hasOlder && entries.count <= shown {
                     if let origin = row?.origin {
                         let listed = store.sessions.contains { $0.key == origin.key }
-                        Text("\(origin.fork ? "Forked from" : "Started by") \(origin.title.map { "“\($0)”" } ?? "another session")")
+                        Text(origin.words)
                             .font(.caption)
                             .foregroundStyle(listed ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.tertiary))
                             .frame(maxWidth: .infinity)

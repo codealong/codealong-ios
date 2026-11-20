@@ -396,6 +396,7 @@ fn primary_of(p: &codealong_peer::pr::PrCard, d: &codealong_peer::client::Device
         Some(PrimaryBy::Pushed) => "It pushed to the PR\u{2019}s branch most. ",
         Some(PrimaryBy::Opened) => "It opened the PR, and no other session pushed to it more. ",
         Some(PrimaryBy::Started) => "No session\u{2019}s records show it opened the PR or pushed to it, so it\u{2019}s the one that started first. ",
+        Some(PrimaryBy::Helper) => "It started the helper that made the PR, which is done, so it took the PR over. ",
         Some(PrimaryBy::Other) | None => "",
     };
     let says = format!("The PR\u{2019}s primary session on {}: when that Mac nudges the PR, only this one is told what happens on it. {why}The PR\u{2019}s menu there picks another.", d.name);
@@ -1277,6 +1278,7 @@ pub(crate) mod tests {
             sides: false,
             name: None,
             origin: None,
+            moved_to: None,
             limit: None,
             api_error: None,
             signed_out: None,
