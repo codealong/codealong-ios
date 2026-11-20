@@ -42,6 +42,11 @@ struct SideSheet: View {
     @State private var problem: String?
     /// The one a tap or an answer named isn't kept any more: deleted since.
     @State private var gone: String?
+    /// One was named (`reading`, `sentAt`) and its Mac hasn't yet said enough to show it: nothing
+    /// shows or takes a question meanwhile, since the one this phone kept as open may be another,
+    /// which a question would go to. Settled by the first read that answers (`settle`), on
+    /// reconnecting too.
+    @State private var settling = false
     @State private var loading = true
     @ScaledMetric(relativeTo: .body) private var sendSize: CGFloat = 32
 
@@ -141,6 +146,15 @@ struct SideSheet: View {
 
     @ViewBuilder
     private var content: some View {
+        if settling {
+            ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
+        } else {
+            shownContent
+        }
+    }
+
+    @ViewBuilder
+    private var shownContent: some View {
         switch showing {
         case .open:
             if let open {
@@ -193,7 +207,9 @@ struct SideSheet: View {
 
     @ViewBuilder
     private var menu: some View {
-        if showing == .open {
+        if settling {
+            EmptyView()
+        } else if showing == .open {
             Button {
                 Task { await close() }
             } label: {
@@ -209,7 +225,8 @@ struct SideSheet: View {
         if showing != .list {
             Button("Earlier", systemImage: "clock.arrow.circlepath") { shown = .list }
         }
-        if case .past(let id) = showing {
+        // Only one read among this session's own: a message a fork copied names its source's.
+        if case .past(let id) = showing, past != nil {
             Button("Delete", systemImage: "trash", role: .destructive) { Task { await forget(id) } }
                 .disabled(!online || asking)
         }
@@ -265,36 +282,41 @@ struct SideSheet: View {
         conversation = conv
         // What's known shows at once; its Mac says what it is now.
         open = conv.side()
-        // One named shows once its Mac has said which is open: until then the one this phone kept
-        // as open may be another, which a question asked meanwhile would go to.
-        let named = reading != nil || sentAt != nil
-        if named {
-            shown = .list
-        } else if open != nil {
-            loading = false
-        }
+        settling = reading != nil || sentAt != nil
+        if open != nil && !settling { loading = false }
         await reread()
-        // Not the open one any more, if it ever was: it's read where the kept ones are.
-        if let reading, open?.id != reading {
-            shown = .past(reading)
-            await readEarlier()
-        } else if reading != nil {
-            shown = .open
-        } else if let sentAt {
-            // Which it was goes by when each started, of the kept ones and the open one.
-            await readEarlier()
-            switch sideForMessage(open: open, kept: earlier, at: sentAt) {
-            case let id? where id == open?.id: shown = .open
-            case let id?: shown = .past(id)
-            case nil: shown = .list
-            }
-        }
-        loading = false
+        if !settling { loading = false }
         if let question, !question.isEmpty {
             await ask(question)
         } else if open == nil && reading == nil && sentAt == nil {
             typing = true
         }
+    }
+
+    /// Shows the one named, now its Mac has said which is open: that one, or one it keeps, read
+    /// where the kept ones are, by its id or by when a message from it came (the core's
+    /// `side_for_message`). One deleted since leaves the list, saying so. A read that fails leaves
+    /// it settling, for the next to settle.
+    private func settle() async {
+        if let reading, open?.id == reading {
+            shown = .open
+        } else {
+            guard await readEarlier() else { return }
+            if let reading {
+                shown = earlier.contains { $0.id == reading } ? .past(reading) : .list
+                if shown == .list {
+                    gone = "That side conversation isn\u{2019}t kept on \(mac) any more: it was deleted."
+                }
+            } else if let sentAt {
+                switch sideForMessage(open: open, kept: earlier, at: sentAt) {
+                case let id? where id == open?.id: shown = .open
+                case let id?: shown = .past(id)
+                case nil: shown = .list
+                }
+            }
+        }
+        settling = false
+        loading = false
     }
 
     /// Reads the open one from its Mac, which tells of each change from then on, and the earlier
@@ -308,17 +330,24 @@ struct SideSheet: View {
             problem = nil
         } catch {
             problem = words(error)
+            if settling { return }
         }
-        if showing != .open { await readEarlier() }
+        if settling {
+            await settle()
+        } else if showing != .open {
+            await readEarlier()
+        }
     }
 
-    private func readEarlier() async {
-        guard let conv = conversation else { return }
+    /// Reads the ones its Mac keeps; true when the read is the latest asked for and went through.
+    @discardableResult
+    private func readEarlier() async -> Bool {
+        guard let conv = conversation else { return false }
         earlierRead += 1
         let read = earlierRead
         do {
             let kept = try await Task.detached { try conv.earlierSides() }.value
-            guard read == earlierRead else { return }
+            guard read == earlierRead else { return false }
             earlier = kept
             // Forgotten since it answered, or since a message it sent: there's nothing of it to
             // read.
@@ -328,8 +357,10 @@ struct SideSheet: View {
             }
             // What's kept says how far each closed one got; the core let go of the ones done.
             follow()
+            return true
         } catch {
             if read == earlierRead { problem = words(error) }
+            return false
         }
     }
 
