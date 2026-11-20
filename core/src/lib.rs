@@ -1476,7 +1476,9 @@ impl Core {
         self.client.with_feeds(|feeds| {
             let devices: Vec<(codealong_peer::client::Device, i64)> = feeds.iter().map(|(d, r)| (d.clone(), r.generated_at)).collect();
             let rows = all_rows(feeds);
-            self.chimer.lock().unwrap_or_else(|e| e.into_inner()).due(&devices, &rows, now, &on)
+            // Any session listening on a Mac, listed or not (an archived one, one in no project).
+            let listening: std::collections::HashSet<String> = feeds.iter().filter(|(_, r)| r.lanes.iter().any(|l| l.sessions.iter().any(|s| s.listening))).map(|(d, _)| d.key.clone()).collect();
+            self.chimer.lock().unwrap_or_else(|e| e.into_inner()).due(&devices, &rows, &listening, now, &on)
         })
     }
 }

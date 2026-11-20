@@ -162,7 +162,11 @@ struct SideSheet: View {
             // A read that didn't go through (its Mac slow to answer, say) is tried again here, as
             // well as when its Mac comes back.
             if problem != nil {
-                Button("Try again", systemImage: "arrow.clockwise") { Task { await reread() } }
+                Button("Try again", systemImage: "arrow.clockwise") {
+                    // The spinner while it reads, so it isn't asked twice.
+                    problem = nil
+                    Task { await reread() }
+                }
                     .frame(maxWidth: .infinity)
                     .padding(.top, 40)
             } else {
@@ -328,7 +332,7 @@ struct SideSheet: View {
                 shown = .open
             } else if let reading {
                 shown = earlier.contains { $0.id == reading } ? .past(reading) : .list
-                earlierFresh = true
+                earlierFresh = shown == .list
                 if shown == .list {
                     // Deleted, or another session's: a fork's conversation has its source's messages.
                     gone = "That side conversation isn\u{2019}t among this session\u{2019}s on \(mac): it was deleted, or it\u{2019}s another session\u{2019}s."
@@ -339,7 +343,7 @@ struct SideSheet: View {
                 case let id?: shown = .past(id)
                 case nil: shown = .list
                 }
-                earlierFresh = true
+                earlierFresh = shown == .list
             }
         }
         settling = false

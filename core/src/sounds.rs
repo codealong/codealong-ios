@@ -17,6 +17,8 @@
 //! - one sound at most every `REST_MS`: a few at once make one sound, the most urgent's;
 //! - nothing sounds while a session on a Mac it has heard from is listening (you're in a meeting),
 //!   nor afterwards for what came during it, as the Mac stays quiet while one of its own listens.
+//!   The Mac is quiet too in the moment between a listening starting and its session showing,
+//!   which its feed doesn't say.
 
 use std::collections::{HashMap, HashSet};
 
@@ -92,13 +94,13 @@ pub(crate) struct Chimer {
 impl Chimer {
     /// The sound due at `now` (the phone's clock), if any: the most urgent kind that came and is
     /// in `on`. A kind that's off leaves the way clear for the rest. Each Mac comes with when it
-    /// made its last feed, by its own clock.
-    pub fn due(&mut self, devices: &[(Device, i64)], rows: &[SessionRow], now: i64, on: &[Sound]) -> Option<Sound> {
+    /// made its last feed, by its own clock; `listening` has the Macs with a session listening.
+    pub fn due(&mut self, devices: &[(Device, i64)], rows: &[SessionRow], listening: &HashSet<String>, now: i64, on: &[Sound]) -> Option<Sound> {
         let mut came = Vec::new();
         let mut was = HashMap::new();
-        let mut listening = false;
+        let mut hearing = false;
         for (d, fed_at) in devices.iter().filter(|(d, _)| heard(d)) {
-            listening |= rows.iter().any(|r| r.device == d.key && r.listening);
+            hearing |= listening.contains(&d.key);
             let mine: Vec<&SessionRow> = rows.iter().filter(|r| r.device == d.key && !r.unattended).collect();
             let opened = d.since.unwrap_or_default();
             let before = self.was.remove(&d.key).filter(|(at, _)| *at == opened).map(|(_, w)| w);
@@ -114,7 +116,7 @@ impl Chimer {
         self.sorted.retain(|_, at| now - *at < WATCHED_MS);
         let kind = came.into_iter().filter(|k| on.contains(k)).min()?;
         // What came is taken as heard all the same, so it doesn't sound once the listening ends.
-        if listening || self.last_at.is_some_and(|at| now - at < REST_MS) {
+        if hearing || self.last_at.is_some_and(|at| now - at < REST_MS) {
             return None;
         }
         self.last_at = Some(now);
@@ -195,9 +197,14 @@ mod tests {
         SessionRow { device: "m".into(), ..row(key, status, since, None, since) }
     }
 
+    /// The Macs with a session listening among `rows`.
+    fn hearing(rows: &[SessionRow]) -> HashSet<String> {
+        rows.iter().filter(|r| r.listening).map(|r| r.device.clone()).collect()
+    }
+
     /// A look at `at`, the Mac's feed made then too.
     fn due(c: &mut Chimer, at: i64, rows: Vec<SessionRow>) -> Option<Sound> {
-        c.due(&[(mac("m"), at)], &rows, at, &BOTH)
+        c.due(&[(mac("m"), at)], &rows, &hearing(&rows), at, &BOTH)
     }
 
     /// The chimer after a first look at `rows` an hour before `NOW`, which never sounds.
@@ -221,9 +228,13 @@ mod tests {
         // A Mac not heard from on this connection (a saved feed) doesn't keep the rest quiet.
         let mut c = Chimer::default();
         let away = Device { key: "far".into(), online: false, since: None, ..mac("far") };
-        let saved = SessionRow { device: "far".into(), listening: true, ..row("x", Status::Working, NOW, None, NOW) };
-        assert_eq!(c.due(&[(mac("m"), NOW - 3_600_000), (away.clone(), NOW)], &[working("a"), saved.clone()], NOW - 3_600_000, &BOTH), None);
-        assert_eq!(c.due(&[(mac("m"), NOW), (away, NOW)], &[session("a", Status::Needs, NOW), saved], NOW, &BOTH), Some(Sound::NeedsYou));
+        let far: HashSet<String> = ["far".to_string()].into();
+        assert_eq!(c.due(&[(mac("m"), NOW - 3_600_000), (away.clone(), NOW)], &[working("a")], &far, NOW - 3_600_000, &BOTH), None);
+        assert_eq!(c.due(&[(mac("m"), NOW), (away, NOW)], &[session("a", Status::Needs, NOW)], &far, NOW, &BOTH), Some(Sound::NeedsYou));
+        // A session listening that the list leaves out (archived, in no project) keeps it quiet.
+        let mut c = after(vec![working("a")]);
+        let m: HashSet<String> = ["m".to_string()].into();
+        assert_eq!(c.due(&[(mac("m"), NOW)], &[session("a", Status::Needs, NOW)], &m, NOW, &BOTH), None);
     }
 
     #[test]
@@ -242,22 +253,22 @@ mod tests {
         // What the phone saved, before the Mac answers: not connected, then connected and not
         // yet heard from, then heard from but still on its first scan.
         let away = Device { online: false, since: None, ..mac("m") };
-        assert_eq!(c.due(&[(away, NOW)], &rows(Status::Working), NOW, &BOTH), None);
+        assert_eq!(c.due(&[(away, NOW)], &rows(Status::Working), &hearing(&rows(Status::Working)), NOW, &BOTH), None);
         let connected = Device { since: Some(NOW), last_seen: Some(NOW - 3_600_000), ..mac("m") };
-        assert_eq!(c.due(&[(connected, NOW)], &rows(Status::Working), NOW + 100, &BOTH), None);
+        assert_eq!(c.due(&[(connected, NOW)], &rows(Status::Working), &hearing(&rows(Status::Working)), NOW + 100, &BOTH), None);
         let scanning = Device { since: Some(NOW), last_seen: Some(NOW + 200), loading: true, ..mac("m") };
-        assert_eq!(c.due(&[(scanning.clone(), NOW)], &rows(Status::Needs), NOW + 200, &BOTH), None);
+        assert_eq!(c.due(&[(scanning.clone(), NOW)], &rows(Status::Needs), &hearing(&rows(Status::Needs)), NOW + 200, &BOTH), None);
         // Its first feed brings what came while the app was away: no sound.
         let heard = Device { loading: false, last_seen: Some(NOW + 300), ..scanning };
-        assert_eq!(c.due(&[(heard.clone(), NOW)], &rows(Status::Needs), NOW + 300, &BOTH), None);
+        assert_eq!(c.due(&[(heard.clone(), NOW)], &rows(Status::Needs), &hearing(&rows(Status::Needs)), NOW + 300, &BOTH), None);
         // After it, what comes sounds.
         let mut more = rows(Status::Needs);
         more.push(session("b", Status::Needs, NOW + 60_000));
-        assert_eq!(c.due(&[(heard.clone(), NOW)], &more, NOW + 60_000, &BOTH), Some(Sound::NeedsYou));
+        assert_eq!(c.due(&[(heard.clone(), NOW)], &more, &hearing(&more), NOW + 60_000, &BOTH), Some(Sound::NeedsYou));
         // A Mac that reconnects starts afresh.
         let again = Device { since: Some(NOW + 70_000), last_seen: Some(NOW + 70_000), ..heard };
         more.push(session("c", Status::Needs, NOW + 70_000));
-        assert_eq!(c.due(&[(again, NOW)], &more, NOW + 90_000, &BOTH), None);
+        assert_eq!(c.due(&[(again, NOW)], &more, &hearing(&more), NOW + 90_000, &BOTH), None);
     }
 
     #[test]
@@ -305,12 +316,12 @@ mod tests {
         // a turn of a second is still one you're watching.
         let skew = 5_000;
         let mut c = after(vec![session("a", Status::Needs, NOW - 3_600_000)]);
-        assert_eq!(c.due(&[(mac("m"), NOW - 1_000)], &[session("a", Status::Working, NOW - 1_000)], NOW - 1_000 + skew + 500, &BOTH), None);
-        assert_eq!(c.due(&[(mac("m"), NOW)], &[session("a", Status::Unread, NOW)], NOW + skew + 500, &BOTH), None);
+        assert_eq!(c.due(&[(mac("m"), NOW - 1_000)], &[session("a", Status::Working, NOW - 1_000)], &hearing(&[session("a", Status::Working, NOW - 1_000)]), NOW - 1_000 + skew + 500, &BOTH), None);
+        assert_eq!(c.due(&[(mac("m"), NOW)], &[session("a", Status::Unread, NOW)], &hearing(&[session("a", Status::Unread, NOW)]), NOW + skew + 500, &BOTH), None);
         // Seen running first a while into its turn, it counts from the feed that showed it.
         let mut c = after(vec![session("a", Status::Needs, NOW - 3_600_000)]);
-        assert_eq!(c.due(&[(mac("m"), NOW - 60_000)], &[session("a", Status::Working, NOW - 90_000)], NOW - 60_000 + skew, &BOTH), None);
-        assert_eq!(c.due(&[(mac("m"), NOW)], &[session("a", Status::Unread, NOW)], NOW + skew, &BOTH), Some(Sound::YourTurn));
+        assert_eq!(c.due(&[(mac("m"), NOW - 60_000)], &[session("a", Status::Working, NOW - 90_000)], &hearing(&[session("a", Status::Working, NOW - 90_000)]), NOW - 60_000 + skew, &BOTH), None);
+        assert_eq!(c.due(&[(mac("m"), NOW)], &[session("a", Status::Unread, NOW)], &hearing(&[session("a", Status::Unread, NOW)]), NOW + skew, &BOTH), Some(Sound::YourTurn));
     }
 
     #[test]
@@ -343,17 +354,17 @@ mod tests {
         let needs_only = [Sound::NeedsYou];
         let mut c = after(vec![session("a", Status::Working, NOW - 3_600_000), session("b", Status::Working, NOW - 3_600_000)]);
         let rows = vec![session("a", Status::Unread, NOW), session("b", Status::Working, NOW - 3_600_000)];
-        assert_eq!(c.due(&[(mac("m"), NOW)], &rows, NOW, &needs_only), None);
+        assert_eq!(c.due(&[(mac("m"), NOW)], &rows, &hearing(&rows), NOW, &needs_only), None);
         // The turn that made no sound doesn't hold back the one that comes to need you.
         let rows = vec![session("a", Status::Unread, NOW), session("b", Status::Needs, NOW + 1_000)];
-        assert_eq!(c.due(&[(mac("m"), NOW)], &rows, NOW + 1_000, &needs_only), Some(Sound::NeedsYou));
+        assert_eq!(c.due(&[(mac("m"), NOW)], &rows, &hearing(&rows), NOW + 1_000, &needs_only), Some(Sound::NeedsYou));
         // With both off, as while the app is behind another, nothing, and nothing held back
         // for when it's in front again.
         let mut c = after(vec![session("a", Status::Working, NOW - 3_600_000), session("b", Status::Working, NOW - 3_600_000)]);
         let rows = vec![session("a", Status::Needs, NOW), session("b", Status::Working, NOW - 3_600_000)];
-        assert_eq!(c.due(&[(mac("m"), NOW)], &rows, NOW, &[]), None);
+        assert_eq!(c.due(&[(mac("m"), NOW)], &rows, &hearing(&rows), NOW, &[]), None);
         let rows = vec![session("a", Status::Needs, NOW), session("b", Status::Needs, NOW + 1_000)];
-        assert_eq!(c.due(&[(mac("m"), NOW + 1_000)], &rows, NOW + 1_000, &BOTH), Some(Sound::NeedsYou));
+        assert_eq!(c.due(&[(mac("m"), NOW + 1_000)], &rows, &hearing(&rows), NOW + 1_000, &BOTH), Some(Sound::NeedsYou));
     }
 
     #[test]
@@ -371,10 +382,10 @@ mod tests {
         // A session on another Mac is that Mac's: its first feed is no news, here or there.
         let mut c = Chimer::default();
         let other = |r: SessionRow| SessionRow { device: "n".into(), ..r };
-        assert_eq!(c.due(&[(mac("m"), NOW)], &[session("a", Status::Working, NOW - 3_600_000)], NOW - 60_000, &BOTH), None);
+        assert_eq!(c.due(&[(mac("m"), NOW)], &[session("a", Status::Working, NOW - 3_600_000)], &hearing(&[session("a", Status::Working, NOW - 3_600_000)]), NOW - 60_000, &BOTH), None);
         let rows = vec![session("a", Status::Working, NOW - 3_600_000), other(session("b", Status::Needs, NOW - 60_000))];
-        assert_eq!(c.due(&[(mac("m"), NOW), (mac("n"), NOW)], &rows, NOW, &BOTH), None);
+        assert_eq!(c.due(&[(mac("m"), NOW), (mac("n"), NOW)], &rows, &hearing(&rows), NOW, &BOTH), None);
         let rows = vec![session("a", Status::Working, NOW - 3_600_000), other(session("b", Status::Needs, NOW - 60_000)), other(session("c", Status::Unread, NOW + 1_000))];
-        assert_eq!(c.due(&[(mac("m"), NOW), (mac("n"), NOW)], &rows, NOW + 1_000, &BOTH), Some(Sound::YourTurn));
+        assert_eq!(c.due(&[(mac("m"), NOW), (mac("n"), NOW)], &rows, &hearing(&rows), NOW + 1_000, &BOTH), Some(Sound::YourTurn));
     }
 }
