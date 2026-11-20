@@ -513,11 +513,17 @@ struct SessionView: View {
                 }
             }
             .animation(.snappy, value: scrolledUp)
-            // A bar, as a PR's review box is, with a hard edge: the conversation goes under it
+            // A bar with a hard edge, as a PR's review box is: the conversation goes under it
             // rather than reading through what's over the box (how the last one went, which has
-            // no glass of its own, was written over its words).
-            .scrollEdgeEffectStyle(.hard, for: .bottom)
-            .safeAreaBar(edge: .bottom) { bottom }
+            // no glass of its own, was written over its words). The edge is the bar's own solid
+            // ground, not `safeAreaBar` with a hard scroll edge: with an open question's keyboard
+            // up, the conversation is squeezed to almost nothing, and the scroll pocket iOS puts
+            // around it for such a bar shifted it down at each step of the keyboard's slide and
+            // never back. Once answered, it was drawn far below where it was laid out, under the
+            // box, with an empty screen above.
+            .safeAreaInset(edge: .bottom) {
+                bottom.background(.background, ignoresSafeAreaEdges: .bottom)
+            }
         }
     }
 
