@@ -381,9 +381,10 @@ struct SessionView: View {
                         // Nothing says it's the start, as on the Mac: the first prompt does.
                         if let origin = row?.origin {
                             // Where it came from: a fork of another session, moved from it, or
-                            // started by one, as its Mac's panel says it.
-                            if store.sessions.contains(where: { $0.key == origin.key }) {
-                                Button(origin.words) { go(origin.key) }
+                            // started by one, as its Mac's panel says it. It opens over this page
+                            // while its Mac has it, archived or not.
+                            if origin.title != nil {
+                                Button(origin.words) { follow(origin.key) }
                                     .font(.caption)
                                     .frame(maxWidth: .infinity)
                             } else {
@@ -428,16 +429,13 @@ struct SessionView: View {
                     if let unheld, unheld.removing, !heldShown.contains(where: { $0.id == unheld.id }) {
                         UnheldView(unheld: unheld, putInBox: unheld.words.map { w in { addToBox(w) } }) { self.unheld = nil }
                     }
-                    // Moved to another account: the conversation goes on in the copy there, which
-                    // the Mac's row goes to from its Moved to chip.
+                    // Moved to another account: the conversation goes on in the copy there (on its
+                    // Mac's board, or the core wouldn't name it), which opens over this page, as the
+                    // Mac's row goes to it from its Moved to chip.
                     if let moved = row?.movedTo, !(loading && items.isEmpty) {
-                        if store.sessions.contains(where: { $0.key == moved.key }) {
-                            Button(moved.says) { go(moved.key) }
-                                .font(.caption)
-                                .frame(maxWidth: .infinity)
-                        } else {
-                            Text(moved.says).font(.caption).foregroundStyle(.tertiary).frame(maxWidth: .infinity)
-                        }
+                        Button(moved.says) { follow(moved.key) }
+                            .font(.caption)
+                            .frame(maxWidth: .infinity)
                     }
                     if loading && items.isEmpty {
                         ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
@@ -588,12 +586,10 @@ struct SessionView: View {
             }
         }
         if let origin = row?.origin, origin.title != nil {
-            Button(origin.words, systemImage: "arrow.turn.left.up") { go(origin.key) }
-                .disabled(!store.sessions.contains { $0.key == origin.key })
+            Button(origin.words, systemImage: "arrow.turn.left.up") { follow(origin.key) }
         }
         if let moved = row?.movedTo {
-            Button(moved.says, systemImage: "arrow.turn.right.up") { go(moved.key) }
-                .disabled(!store.sessions.contains { $0.key == moved.key })
+            Button(moved.says, systemImage: "arrow.turn.right.up") { follow(moved.key) }
         }
         // The labels its Mac's sessions wear, each checked where it wears it, as the Mac's Labels ›.
         Menu("Labels", systemImage: "tag") {
@@ -3757,7 +3753,7 @@ struct SessionGlance: View {
             VStack(alignment: .leading, spacing: 14) {
                 if !kept.items.isEmpty && !kept.hasOlder && entries.count <= shown {
                     if let origin = row?.origin {
-                        let listed = store.sessions.contains { $0.key == origin.key }
+                        let listed = origin.title != nil
                         Text(origin.words)
                             .font(.caption)
                             .foregroundStyle(listed ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.tertiary))

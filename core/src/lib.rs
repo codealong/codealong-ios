@@ -957,7 +957,8 @@ pub struct SuggestedReplies {
 pub struct SessionOrigin {
     /// Its key here (`@<device>:<key>`).
     pub key: String,
-    /// Its title, while its Mac still lists it.
+    /// Its title, while its Mac still lists it (on its board, archived or not), which is when it
+    /// can be opened.
     pub title: Option<String>,
     /// How this one came of it, before its title, as the Mac's session panel says it (lineage.ts
     /// `originWord`): "Forked from “Fix the header”", "Moved from …", "Helper of …", "Started by
@@ -983,6 +984,21 @@ impl Kin {
         }
         match how {
             OriginHow::Fork if from.account != to.account => Kin::Moved,
+            OriginHow::Fork => Kin::Fork,
+            OriginHow::Started => Kin::Started,
+        }
+    }
+
+    /// For an origin its Mac no longer lists, by its key alone: a fork whose key is another
+    /// account's of the same harness was moved, as the Mac's origins.rs `is_move` reads keys.
+    fn of_key(how: OriginHow, from: &str, to: &str) -> Kin {
+        let whose = |key: &str| {
+            let mut parts = key.splitn(3, ':');
+            (parts.next().unwrap_or_default().to_string(), parts.next().unwrap_or_default().to_string())
+        };
+        let ((from_harness, from_account), (to_harness, to_account)) = (whose(from), whose(to));
+        match how {
+            OriginHow::Fork if from_harness == to_harness && from_account != to_account => Kin::Moved,
             OriginHow::Fork => Kin::Fork,
             OriginHow::Started => Kin::Started,
         }
@@ -1623,8 +1639,8 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 name: s.name.clone(),
                 origin: s.origin.as_ref().map(|o| {
                     let from = by_key.get(o.key.as_str()).copied();
-                    // A session its Mac no longer lists is a fork or a start, as its record says.
-                    let kin = from.map_or(if o.how == OriginHow::Fork { Kin::Fork } else { Kin::Started }, |f| Kin::of(o.how, f, s));
+                    // One its Mac no longer lists goes by the keys.
+                    let kin = from.map_or_else(|| Kin::of_key(o.how, &o.key, &s.key), |f| Kin::of(o.how, f, s));
                     let words = match from {
                         Some(f) => format!("{} \u{201c}{}\u{201d}", kin.word(), f.title),
                         None => format!("{} another session", kin.word()),
@@ -2012,8 +2028,9 @@ pub enum CardIcon {
 type Named<'a> = &'a dyn Fn(&str) -> Option<String>;
 
 impl Card {
-    /// The card `i` shows as, if it's one, naming the sessions `named` has as links.
-    fn of(i: &api::Item, named: Named) -> Option<Card> {
+    /// The card `i` shows as, if it's one, naming the sessions `named` has as links; `at` is when
+    /// it came, or the item before it did where it doesn't say.
+    fn of(i: &api::Item, at: i64, named: Named) -> Option<Card> {
         match i.kind.as_str() {
             // A line that says nothing (a Mac's build that wrote it otherwise, for a while) is
             // none: the card shows the message's first lines.
@@ -2021,7 +2038,7 @@ impl Card {
                 Some(g) => Card { icon: CardIcon::of(g.about), title: glance_title(g, named), head_only: true },
                 None => Card { icon: CardIcon::Codealong, title: "Codealong".into(), head_only: false },
             }),
-            "peer" => Some(Card { icon: CardIcon::Peer, title: peer_title(i, named), head_only: false }),
+            "peer" => Some(Card { icon: CardIcon::Peer, title: peer_title(i, at, named), head_only: false }),
             _ => None,
         }
     }
@@ -2079,13 +2096,13 @@ fn glance_title(g: &codealong_peer::glance::Glance, named: Named) -> String {
 /// `PeerLabel`): the sender a link to its session where the message said which one sent it and
 /// this phone lists it; or, for one from this session's side conversation, a link to that side
 /// conversation (`md::side_link`), by its id where the message gave one (Macs since 2026-11-20),
-/// else by when it came, which the side sheet goes by (`side_for_message`).
-fn peer_title(i: &api::Item, named: Named) -> String {
+/// else by when it came (`at`), which the side sheet goes by (`side_for_message`).
+fn peer_title(i: &api::Item, at: i64, named: Named) -> String {
     if i.from_key.is_none() && (i.from_side.is_some() || i.from.as_deref() == Some(SIDE_SENDER)) {
         let name = i.from.as_deref().map_or_else(|| SIDE_SENDER.to_string(), |f| format!("“{}”", md::escaped(f)));
         let link = match i.from_side.as_deref() {
             Some(id) => md::side_link_to(id),
-            None => md::side_link_at(i.at),
+            None => md::side_link_at(at),
         };
         return format!("From [{name}]({link})");
     }
@@ -2492,11 +2509,17 @@ impl Thread {
         }
         // Anything above what's been read may be the agent's.
         let mut answered = self.before.is_some();
+        // When the last item that said when came: one that doesn't say goes by it, as the Mac's
+        // thread does.
+        let mut last_at = 0;
         self.items
             .iter()
             .filter_map(|i| {
                 if matches!(i.kind.as_str(), "agent" | "tool") {
                     answered = true;
+                }
+                if i.at > 0 {
+                    last_at = i.at;
                 }
                 let editable = i.kind == "you" && answered && !i.withdrawn && i.input.is_none() && !i.text.trim().is_empty();
                 let kind = match i.kind.as_str() {
@@ -2530,7 +2553,7 @@ impl Thread {
                     files: i.sent.as_ref().map(|s| s.files.iter().map(|f| SentFile::of(f)).collect()).unwrap_or_default(),
                     caption: i.sent.as_ref().and_then(|s| s.caption.clone()),
                     editable,
-                    card: Card::of(i, named),
+                    card: Card::of(i, last_at, named),
                 })
             })
             .collect()
@@ -3257,6 +3280,12 @@ mod tests {
         assert_eq!(side(None, Some("s-7f3a"), 5), "From [Side conversation](codealong://side/s-7f3a)");
         assert_eq!(side(Some("Side conversation"), None, 1_700_000), "From [“Side conversation”](codealong://side/?at=1700000)");
         assert_eq!(side(Some("Side conversation"), None, 0), "From [“Side conversation”](codealong://side/?at=0)");
+        // One that doesn't say when goes by the item before it.
+        let mut t = Thread::default();
+        let said = api::Item { at: 1_650_000, ..item("agent", 1, None, None) };
+        let undated = api::Item { at: 0, from: Some("Side conversation".into()), ..item("peer", 2, None, None) };
+        t.take(api::Page { items: vec![said, undated], before: None, after: 10 }, false);
+        assert_eq!(t.shown(&listed).pop().unwrap().card.unwrap().title, "From [“Side conversation”](codealong://side/?at=1650000)");
         assert_eq!(shown(api::Item { from: Some("Side conversation".into()), from_key: Some("claude:work:k2".into()), ..item("peer", 1, None, None) }).unwrap().title, "From [“Side conversation”](codealong://session/claude:work:k2)");
         // One the session took back is still its card, which shows it whole, saying so.
         assert_eq!(shown(api::Item { withdrawn: true, ..item("peer", 1, None, None) }).map(|c| c.icon), Some(CardIcon::Peer));
@@ -5309,6 +5338,8 @@ mod order_tests {
             Session { helper: Some(Helper { parent: Some("claude:home:third".into()), ..Helper::default() }), origin: from("claude:home:third", OriginHow::Started), ..Session::new(Harness::Claude, "claude", "helper") },
             Session { origin: from("claude:home:third", OriginHow::Started), ..Session::new(Harness::Claude, "work", "started") },
             Session { origin: from("claude:claude:gone", OriginHow::Fork), ..Session::new(Harness::Claude, "work", "orphan") },
+            Session { origin: from("claude:work:gone", OriginHow::Fork), ..Session::new(Harness::Claude, "work", "lost-fork") },
+            Session { origin: from("claude:claude:gone", OriginHow::Started), ..Session::new(Harness::Claude, "work", "lost-start") },
         ];
         let replica = Replica { lanes: vec![lane], ..Replica::default() };
         let rows = session_rows(&[(mac, &replica)], true);
@@ -5324,8 +5355,11 @@ mod order_tests {
         assert_eq!(came("fork"), Some("Forked from “Fix the header”"));
         assert_eq!(came("helper"), Some("Helper of “Fix the header”"));
         assert_eq!(came("started"), Some("Started by “Fix the header”"));
-        assert_eq!(came("orphan"), Some("Forked from another session"));
+        // One whose origin has gone from the board goes by the keys: another account's is a move.
+        assert_eq!(came("orphan"), Some("Moved from another session"));
         assert_eq!(row("orphan").origin.as_ref().map(|o| o.title.clone()), Some(None));
+        assert_eq!(came("lost-fork"), Some("Forked from another session"));
+        assert_eq!(came("lost-start"), Some("Started by another session"));
     }
 
     #[test]

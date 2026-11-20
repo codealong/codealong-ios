@@ -40,6 +40,8 @@ struct SideSheet: View {
     @State private var typing = false
     @State private var asking = false
     @State private var problem: String?
+    /// The one a tap or an answer named isn't kept any more: deleted since.
+    @State private var gone: String?
     @State private var loading = true
     @ScaledMetric(relativeTo: .body) private var sendSize: CGFloat = 32
 
@@ -133,7 +135,7 @@ struct SideSheet: View {
             if now { Task { await reread() } }
         }
         .onChange(of: showing) { _, now in
-            if now == .list { Task { await readEarlier() } }
+            if now == .list { Task { await readEarlier() } } else { gone = nil }
         }
     }
 
@@ -153,6 +155,9 @@ struct SideSheet: View {
             if loading {
                 ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
             } else {
+                if let gone {
+                    Text(gone).font(.footnote)
+                }
                 Text("A copy of the session’s conversation answers on \(mac). The session carries on and never hears of it. The copy may do what the session can without asking, but changes nothing unless you ask for that change in so many words.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -260,13 +265,22 @@ struct SideSheet: View {
         conversation = conv
         // What's known shows at once; its Mac says what it is now.
         open = conv.side()
-        if open != nil { loading = false }
+        // One named shows once its Mac has said which is open: until then the one this phone kept
+        // as open may be another, which a question asked meanwhile would go to.
+        let named = reading != nil || sentAt != nil
+        if named {
+            shown = .list
+        } else if open != nil {
+            loading = false
+        }
         await reread()
         // Not the open one any more, if it ever was: it's read where the kept ones are.
         if let reading, open?.id != reading {
             shown = .past(reading)
             await readEarlier()
-        } else if reading == nil, let sentAt {
+        } else if reading != nil {
+            shown = .open
+        } else if let sentAt {
             // Which it was goes by when each started, of the kept ones and the open one.
             await readEarlier()
             switch sideForMessage(open: open, kept: earlier, at: sentAt) {
@@ -306,8 +320,12 @@ struct SideSheet: View {
             let kept = try await Task.detached { try conv.earlierSides() }.value
             guard read == earlierRead else { return }
             earlier = kept
-            // Forgotten since it answered: there's nothing of it to read.
-            if case .past(let id) = shown, !kept.contains(where: { $0.id == id }) { shown = .list }
+            // Forgotten since it answered, or since a message it sent: there's nothing of it to
+            // read.
+            if case .past(let id) = shown, !kept.contains(where: { $0.id == id }) {
+                shown = .list
+                gone = "That side conversation isn\u{2019}t kept on \(mac) any more: it was deleted."
+            }
             // What's kept says how far each closed one got; the core let go of the ones done.
             follow()
         } catch {
