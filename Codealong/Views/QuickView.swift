@@ -1342,6 +1342,8 @@ struct QuickView: View {
         guard let device = composer.device, mac?.online == true else { return }
         do {
             let got = try await store.startChoices(device)
+            // Another Mac picked meanwhile has its own choices on the way: these aren't its.
+            guard composer.device == device, !Task.isCancelled else { return }
             composer.choices = got
             let usable = got.accounts.filter { $0.unavailable == nil }
             let first = usable.first { $0.name == lastAccount } ?? usable.first { $0.preferred } ?? usable.first
@@ -1352,6 +1354,7 @@ struct QuickView: View {
             composer.model = nil
             composer.effort = nil
         } catch {
+            guard composer.device == device, !Task.isCancelled else { return }
             composer.choicesProblem = words(error)
         }
     }

@@ -525,9 +525,12 @@ private struct PrHeader: View {
 
     private var open: Bool { ["open", "draft", "approved", "changes"].contains(pr.state) }
 
-    /// Whether it can merge, as the board reads it, for an open PR.
+    /// Whether it can merge, as the board reads it, for an open PR. Resting only on approvals of
+    /// an earlier commit, it isn't called ready (the core's `pr_ready`): its stale line says why
+    /// GitHub would merge it all the same.
     private var mergeWords: String? {
         guard open else { return nil }
+        if pr.stale != nil, pr.merge == "clean" || pr.merge == "unstable" { return nil }
         switch pr.merge {
         case "clean": return "Ready to merge"
         case "conflicts": return "Conflicts with \(pr.base ?? "its base")"

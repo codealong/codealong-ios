@@ -3060,7 +3060,10 @@ impl Conversation {
     /// the open side conversation, or a new one, or with `from`, in that one from before, which is
     /// the open one then. The answer comes as it's written (`side`).
     pub fn ask_side(&self, text: String, from: Option<String>) -> Result<SideConversation, CoreError> {
-        let side = self.client.side_ask(&self.device, &self.key, &text, from.as_deref()).map_err(|e| older_mac(e, &self.client, &self.device, "ask on the side from here"))?;
+        let side = self.client.side_ask(&self.device, &self.key, &text, from.as_deref()).map_err(|e| match side_refused(&e, &mac_name(&self.client, &self.device)) {
+            Some(why) => why,
+            None => older_mac(e, &self.client, &self.device, "ask on the side from here"),
+        })?;
         Ok(side.into())
     }
 
@@ -5541,6 +5544,12 @@ mod start_tests {
     }
 
     #[test]
+    fn an_older_macs_refusal_of_a_side_question_says_to_update_it() {
+        assert_eq!(side_refused("Antigravity has no side conversations.", "Mini").as_deref(), Some("Codealong on Mini is from before Antigravity sessions could be asked on the side: update it there."));
+        assert_eq!(side_refused("That session isn't running.", "Mini"), None);
+    }
+
+    #[test]
     fn codealong_makes_a_new_worktree_where_the_harness_makes_none() {
         use api::Place::*;
         let all = [Terminal, Background, CodexApp, Codealong];
@@ -5584,6 +5593,19 @@ fn older_mac(e: String, client: &Client, device: &str, to: &str) -> String {
     if !e.contains("doesn't know how to") {
         return e;
     }
-    let name = client.devices().into_iter().find(|d| d.key == device || d.short == device).map(|d| d.name).unwrap_or_else(|| "that Mac".into());
-    format!("Update Codealong on {name} to {to}.")
+    format!("Update Codealong on {} to {to}.", mac_name(client, device))
+}
+
+/// A Mac's name, as the phone lists it.
+fn mac_name(client: &Client, device: &str) -> String {
+    client.devices().into_iter().find(|d| d.key == device || d.short == device).map(|d| d.name).unwrap_or_else(|| "that Mac".into())
+}
+
+/// What a Mac's refusal to ask a session on the side means here, when its harness "has no side
+/// conversations." there (harness.rs `Adapter::side`): the phone offers them only where a Mac of
+/// today has them (`SessionRow::sides`), so it's a Mac from before they came to that harness
+/// (Antigravity's in 0.28), an update away.
+fn side_refused(e: &str, mac: &str) -> Option<String> {
+    let harness = e.strip_suffix(" has no side conversations.")?;
+    Some(format!("Codealong on {mac} is from before {harness} sessions could be asked on the side: update it there."))
 }
