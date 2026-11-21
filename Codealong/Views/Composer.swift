@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Where a new session starts, as the start capsule's menu sets it: the Mac, the repo and the
-/// worktree in it or a new one its harness makes, the account, model and effort, and where it
+/// worktree in it or a new one its harness or Codealong makes, the account, model and effort, and where it
 /// runs. The list keeps it, reading the Mac's choices on the navigation stack, so they're there
 /// when you're back from a session.
 struct Composer {
@@ -27,11 +27,14 @@ struct Composer {
     /// 2026-11-16.
     var isolatesIn: [String] { chosenAccount?.places.first { $0.id == place }?.isolatesIn ?? [] }
 
-    /// The account's command line makes a worktree of its own for a session when asked: the apps
-    /// have their own choice on their new-session pages.
-    var takesNewWorktree: Bool {
-        chosenAccount?.worktree == true && (place == "terminal" || place == "background")
+    /// Who makes a new worktree for a session started at the place picked (the core's
+    /// `new_worktree_by`): its harness on its command line, or Codealong; none where nobody does
+    /// from here, as the apps have their own choice on their new-session pages.
+    var newWorktreeBy: String? {
+        chosenAccount?.places.first { $0.id == place }?.newWorktreeBy
     }
+
+    var takesNewWorktree: Bool { newWorktreeBy != nil }
 
     /// The place chosen takes a model and effort: the command line and Codealong do, the apps
     /// choose their own.
@@ -118,12 +121,14 @@ struct Composer {
         let name = w.chat ? "a folder of its own" : w.main ? "\(w.name) (main)" : w.name
         let tree = tree && !w.chat
         switch place {
-        case "codealong": return "Codealong runs \(who) in \(name). Its replies show here as they're written."
+        case "codealong":
+            let runs = tree ? "makes a new worktree of \(w.repo) and runs \(who) there" : "runs \(who) in \(name)"
+            return "Codealong \(runs). Its replies show here as they're written."
         case "claude-app": return "The Claude app opens a new session in \(name) with this prompt filled in, for someone at the Mac to send."
         case "codex-app": return "The Codex app starts a new thread in \(name) on this prompt."
         default:
             let how = place == "background" ? (behind ? " in a terminal behind the Mac's windows" : " in the background") : " in a terminal"
-            return tree ? "\(chosenAccount?.harness ?? "Its harness") makes a new worktree of \(w.repo) and starts \(who) there\(how)." : "Starts \(who) in \(name)\(how)."
+            return tree ? "\(newWorktreeBy ?? "Its harness") makes a new worktree of \(w.repo) and starts \(who) there\(how)." : "Starts \(who) in \(name)\(how)."
         }
     }
 }

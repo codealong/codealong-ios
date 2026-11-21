@@ -110,11 +110,12 @@ fn is_open(p: &PrRow) -> bool {
     !matches!(p.state.as_str(), "merged" | "closed")
 }
 
-/// GitHub would merge it now: open, not a draft, no conflicts, its checks passed and none running
-/// (prStatus.ts `prReady`). Only GitHub can say so: approved with passing checks can still
-/// conflict with its base.
+/// GitHub would merge it now: open, not a draft, no conflicts, its checks passed and none running,
+/// and not resting only on approvals of an earlier commit (`PrRow::stale`), which Codealong holds
+/// out of Ready to merge though GitHub counts them (prStatus.ts `prReady`). Only GitHub can say so:
+/// approved with passing checks can still conflict with its base.
 fn pr_ready(p: &PrRow) -> bool {
-    is_open(p) && p.state != "draft" && p.merge == "clean" && p.failing == 0 && p.pending == 0
+    is_open(p) && p.state != "draft" && p.merge == "clean" && p.failing == 0 && p.pending == 0 && p.stale.is_none()
 }
 
 /// What a PR needs of you, if it's your move (PrsView.tsx `prMove`): your review, asked for and
@@ -496,6 +497,17 @@ mod tests {
             groups(&pr_sections(&all, "", PrTab::All, NOW)),
             vec![(PrGroup::Pinned, vec![1]), (PrGroup::Requested, vec![2, 3]), (PrGroup::Ready, vec![4]), (PrGroup::Others, vec![5]), (PrGroup::Snoozed, vec![6]), (PrGroup::Done, vec![9, 7])]
         );
+    }
+
+    #[test]
+    fn a_pr_approved_only_before_its_latest_commits_isnt_ready_to_merge() {
+        let mut stale = pr(1, "approved", NOW - HOUR);
+        (stale.mine, stale.merge, stale.stale) = (true, "clean".into(), Some("Approved before its latest commits: ana approved 1a2b3c4.".into()));
+        assert_eq!(groups(&pr_sections(std::slice::from_ref(&stale), "", PrTab::All, NOW)), vec![(PrGroup::Yours, vec![1])]);
+        assert_eq!(groups(&pr_sections(std::slice::from_ref(&stale), "", PrTab::Mine, NOW)), vec![(PrGroup::Waiting, vec![1])]);
+        assert_eq!(pr_moves(std::slice::from_ref(&stale), "").all, 0);
+        stale.stale = None;
+        assert_eq!(groups(&pr_sections(&[stale], "", PrTab::All, NOW)), vec![(PrGroup::Ready, vec![1])]);
     }
 
     #[test]

@@ -270,7 +270,8 @@ pub struct SessionRow {
     /// Code, Codex and OpenCode can, as the Mac's harness.ts `EDITS` has it.
     pub edits: bool,
     /// It can be asked on the side, by a throwaway copy of its conversation on its Mac (`Conversation::ask_side`):
-    /// Claude Code and Codex can, as the Mac's slash.ts `side` has it.
+    /// Claude Code, Codex and Antigravity can, as the Mac's slash.ts `side` has it. A Mac before
+    /// 0.28 refuses an Antigravity session's, saying it has none.
     pub sides: bool,
     /// The name you gave it, where its harness keeps one.
     pub name: Option<String>,
@@ -1637,7 +1638,7 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 cut_off: s.cut_off.filter(|_| status != Status::Working).map(|_| Said { phrase: "Cut off partway".into(), words: CUT_OFF.to_string() }),
                 remote_control: s.remote_control.as_deref().filter(|_| s.live).map(remote_control_url),
                 edits: matches!(s.harness, Harness::Claude | Harness::Codex | Harness::Opencode),
-                sides: matches!(s.harness, Harness::Claude | Harness::Codex),
+                sides: matches!(s.harness, Harness::Claude | Harness::Codex | Harness::Antigravity),
                 name: s.name.clone(),
                 origin: s.origin.as_ref().map(|o| {
                     let from = by_key.get(o.key.as_str()).copied();
@@ -3818,6 +3819,10 @@ pub struct StartPlace {
     /// so a start goes to the main checkout though it holds other work (`start_worktree_in`).
     /// None from Macs before 2026-11-16.
     pub isolates_in: Vec<String>,
+    /// Who makes a new worktree for a session started here, when New worktree is on
+    /// (`new_worktree_by`): its harness, on its command line, or else Codealong itself; none where
+    /// nobody does from here (the apps have their own choice). Always none in `resumes`.
+    pub new_worktree_by: Option<String>,
 }
 
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
@@ -3836,8 +3841,6 @@ pub struct StartAccount {
     pub models: Vec<StartModel>,
     /// The effort levels a start on its command line can ask for, lowest first.
     pub efforts: Vec<StartModel>,
-    /// Its command line makes a new worktree for a session when asked.
-    pub worktree: bool,
     /// Of `places`, where one of its sessions that isn't running can go on; empty from Macs
     /// before 2026-10-06, which resume one only in a terminal.
     pub resumes: Vec<StartPlace>,
@@ -4041,6 +4044,22 @@ mod improve_tests {
         assert_eq!(improve_prompt("  Make the list denser.  ".into(), shots.clone()), "Make the list denser.\n\nCodealong’s windows as they were when this was asked:\n![iPhone screen](images/abc.jpg)");
         assert_eq!(improve_prompt("Fix it".into(), vec![]), "Fix it");
         assert_eq!(improve_prompt("".into(), shots), "Codealong’s windows as they were when this was asked:\n![iPhone screen](images/abc.jpg)");
+    }
+}
+
+/// Who makes a new worktree for a start at `place` from an account whose harness makes one on its
+/// command line when asked (`harness_makes`), as the Mac's start.ts `chooseStart` and start.rs
+/// `start_at` have it: the harness, from a terminal or in the background (Claude Code's and
+/// Cursor's `--worktree`); else Codealong itself there and for its own sessions, in the repo's
+/// `.codealong/worktrees` from its default branch (`StartAccount::codealong_worktree`, which Macs
+/// before 2026-11-20 don't send). The apps have their own choice on their new-session pages.
+fn new_worktree_by(a: &api::StartAccount, harness_makes: bool, place: api::Place) -> Option<String> {
+    use api::Place::*;
+    let on_command_line = matches!(place, Terminal | Background);
+    if on_command_line && harness_makes {
+        Some(a.harness.word().to_string())
+    } else {
+        (a.codealong_worktree && (on_command_line || place == Codealong)).then(|| "Codealong".to_string())
     }
 }
 
@@ -4552,19 +4571,21 @@ fn start_choices(o: api::StartOptions) -> StartChoices {
             // Macs before the models were listed for each account list Claude Code's alone, and
             // make a new worktree only for it.
             let older = a.models.is_empty() && a.harness == Harness::Claude;
-            let place = |p: api::Place| a.places.iter().find(|o| o.place == p).map(|o| StartPlace { id: p.word().to_string(), label: o.label.clone(), behind: o.behind, isolates_in: o.isolates_in.clone() });
+            let place = |p: api::Place, starts: bool| {
+                let tree = new_worktree_by(a, a.worktree || older, p).filter(|_| starts);
+                a.places.iter().find(|o| o.place == p).map(|o| StartPlace { id: p.word().to_string(), label: o.label.clone(), behind: o.behind, isolates_in: o.isolates_in.clone(), new_worktree_by: tree })
+            };
             StartAccount {
                 name: a.name.clone(),
                 harness: a.harness.word().to_string(),
-                places: a.places.iter().filter_map(|o| place(o.place)).collect(),
+                places: a.places.iter().filter_map(|o| place(o.place, true)).collect(),
                 place: start_place(a, &a.places.iter().map(|o| o.place).collect::<Vec<_>>()),
                 unavailable: a.unavailable.clone(),
                 default_model: a.default_model.clone(),
                 preferred: a.preferred,
                 models: if older { claude.clone() } else { listed(&a.models) },
                 efforts: if a.efforts.is_empty() && a.harness == Harness::Claude { claude_efforts.clone() } else { listed(&a.efforts) },
-                worktree: a.worktree || older,
-                resumes: a.resumes.iter().filter_map(|p| place(*p)).collect(),
+                resumes: a.resumes.iter().filter_map(|p| place(*p, false)).collect(),
                 resume: resume_place(a),
                 switches_model: a.switches_model,
                 switches_effort: a.switches_effort,
@@ -5472,6 +5493,7 @@ mod start_tests {
             models: vec![],
             efforts: vec![],
             worktree: false,
+            codealong_worktree: false,
             resumes: vec![],
             switches_model: false,
             switches_effort: false,
@@ -5507,13 +5529,37 @@ mod start_tests {
         codex.models = vec![api::ModelOption { id: "gpt-5.5".into(), label: "GPT-5.5".into() }];
         let o = api::StartOptions { accounts: vec![claude, codex], codex_projects: vec![], claude_models: vec![api::ModelOption { id: "opus".into(), label: "Opus".into() }], claude_efforts: vec![], groups: vec![], auto_group: String::new(), project_defaults: Default::default() };
         let c = start_choices(o);
-        // A Mac that lists no models for Claude Code's account lists them for all of Claude Code.
-        assert_eq!((c.accounts[0].models[0].id.as_str(), c.accounts[0].worktree), ("opus", true));
-        assert_eq!((c.accounts[1].models[0].id.as_str(), c.accounts[1].worktree), ("gpt-5.5", false));
+        // A Mac that lists no models for Claude Code's account lists them for all of Claude Code,
+        // which makes a new worktree from a terminal there; nobody makes Codex one on such a Mac.
+        let by = |a: &StartAccount| a.places.iter().map(|p| p.new_worktree_by.clone()).collect::<Vec<_>>();
+        assert_eq!((c.accounts[0].models[0].id.as_str(), by(&c.accounts[0])), ("opus", vec![Some("Claude Code".into()), Some("Claude Code".into()), None]));
+        assert_eq!((c.accounts[1].models[0].id.as_str(), by(&c.accounts[1])), ("gpt-5.5", vec![None]));
         assert_eq!(c.accounts[0].resumes.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["terminal", "background", "codealong"]);
         // A start from the phone goes to Codealong; a session going on stays its harness's.
         assert_eq!((c.accounts[0].place.as_deref(), c.accounts[0].resume.as_deref()), (Some("codealong"), Some("background")));
         assert!(c.accounts[1].resumes.is_empty() && c.accounts[1].resume.is_none());
+    }
+
+    #[test]
+    fn codealong_makes_a_new_worktree_where_the_harness_makes_none() {
+        use api::Place::*;
+        let all = [Terminal, Background, CodexApp, Codealong];
+        let by = |a: api::StartAccount| start_choices(api::StartOptions { accounts: vec![a], codex_projects: vec![], claude_models: vec![], claude_efforts: vec![], groups: vec![], auto_group: String::new(), project_defaults: Default::default() }).accounts[0].places.iter().map(|p| p.new_worktree_by.clone()).collect::<Vec<_>>();
+        let codex = |codealong_worktree: bool| api::StartAccount { name: "codex".into(), harness: Harness::Codex, models: vec![api::ModelOption { id: "gpt-5.5".into(), label: "GPT-5.5".into() }], codealong_worktree, ..account(&all, None) };
+        let codealong = || Some("Codealong".to_string());
+        // Codex makes none on its command line: Codealong does, there and for its own sessions,
+        // and the app has its own choice.
+        assert_eq!(by(codex(true)), [codealong(), codealong(), None, codealong()]);
+        // A Mac before 2026-11-20 makes none for it.
+        assert_eq!(by(codex(false)), [None, None, None, None]);
+        // Claude Code makes its own on its command line; Codealong makes its own sessions'.
+        let claude = api::StartAccount { worktree: true, codealong_worktree: true, models: vec![api::ModelOption { id: "opus".into(), label: "Opus".into() }], ..account(&[Terminal, Background, ClaudeApp, Codealong], None) };
+        assert_eq!(by(claude), [Some("Claude Code".into()), Some("Claude Code".into()), None, codealong()]);
+        // A session going on never takes one.
+        let mut resumes = codex(true);
+        resumes.resumes = vec![Terminal, Codealong];
+        let c = start_choices(api::StartOptions { accounts: vec![resumes], codex_projects: vec![], claude_models: vec![], claude_efforts: vec![], groups: vec![], auto_group: String::new(), project_defaults: Default::default() });
+        assert!(c.accounts[0].resumes.iter().all(|p| p.new_worktree_by.is_none()));
     }
 }
 

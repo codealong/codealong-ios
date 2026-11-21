@@ -19,11 +19,12 @@
 # label on it, or takes it off where it wears it, PRESS=link:<url> opens that link as a tap on
 # it in the conversation does (a `codealong://session/…` one, named as that session's Mac names
 # its sessions), PRESS=box opens its reply box as a tap on it does, and PRESS=mode:<id> picks
-# that mode (`acceptEdits`, say) in the menu beside Send.
+# that mode (`acceptEdits`, say) in the menu beside Send. NEW_WORKTREE=1 turns the start capsule's
+# New worktree on, where the account and place picked (`start.account`, `start.place`) take one.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 APP=DerivedData/Build/Products/Debug-iphonesimulator/Codealong.app
 # The ID the build has (project.yml's), not one written here again.
 ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")
 xcrun simctl install booted "$APP"
-SIMCTL_CHILD_CODEALONG_LINK_CODE="${LINK_CODE:-}" SIMCTL_CHILD_CODEALONG_QUERY="${QUERY:-}" SIMCTL_CHILD_CODEALONG_OPEN="${OPEN:-}" SIMCTL_CHILD_CODEALONG_LOOK_ONLY="${LOOK_ONLY:-}" SIMCTL_CHILD_CODEALONG_QUEUE="${QUEUE:-}" SIMCTL_CHILD_CODEALONG_IMPROVE="${IMPROVE:-}" SIMCTL_CHILD_CODEALONG_SIDE="${SIDE:-}" SIMCTL_CHILD_CODEALONG_PRESS="${PRESS:-}" xcrun simctl launch --terminate-running-process booted "$ID"
+SIMCTL_CHILD_CODEALONG_LINK_CODE="${LINK_CODE:-}" SIMCTL_CHILD_CODEALONG_QUERY="${QUERY:-}" SIMCTL_CHILD_CODEALONG_OPEN="${OPEN:-}" SIMCTL_CHILD_CODEALONG_LOOK_ONLY="${LOOK_ONLY:-}" SIMCTL_CHILD_CODEALONG_QUEUE="${QUEUE:-}" SIMCTL_CHILD_CODEALONG_IMPROVE="${IMPROVE:-}" SIMCTL_CHILD_CODEALONG_SIDE="${SIDE:-}" SIMCTL_CHILD_CODEALONG_PRESS="${PRESS:-}" SIMCTL_CHILD_CODEALONG_NEW_WORKTREE="${NEW_WORKTREE:-}" xcrun simctl launch --terminate-running-process booted "$ID"

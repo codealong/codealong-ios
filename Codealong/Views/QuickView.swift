@@ -179,6 +179,8 @@ struct QuickView: View {
                     text = q
                     typing = true
                 }
+                // New worktree turned on for a test at launch (`NEW_WORKTREE=1 scripts/run.sh`).
+                if ProcessInfo.processInfo.environment["CODEALONG_NEW_WORKTREE"] == "1" { composer.newWorktree = true }
             }
             // A worktree picked in one project isn't where the next project's work goes.
             .onChange(of: project) { _, _ in composer.pick(worktree: nil) }

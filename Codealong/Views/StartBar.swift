@@ -313,9 +313,9 @@ struct StartBar: View {
     /// What New worktree says under its name, as the Mac's does (start.ts `newWorktreeDetail`):
     /// who makes it from which checkout, or why it can't be made from here.
     private func newWorktreeWords(_ from: Worktree) -> String {
+        if takesNewWorktree, let by = composer.newWorktreeBy { return "\(by) makes one from \(from.nameInRepo)" }
         let who = composer.chosenAccount?.harness ?? "Its harness"
-        if takesNewWorktree { return "\(who) makes one from \(from.nameInRepo)" }
-        return composer.place == "terminal" || composer.place == "background" ? "\(who) can't make one" : "The app has its own choice"
+        return ["terminal", "background", "codealong"].contains(composer.place ?? "") ? "\(who) can't make one" : "The app has its own choice"
     }
 
     private func placeSymbol(_ id: String) -> String {

@@ -144,7 +144,7 @@ need you, as on the Mac.
 - resume one that isn't running, where and on what model you pick;
 - fork it, go on from before one of your prompts with an edit of it (hold the prompt, *Edit from
   here*), or mark it done (closing it where its Mac can);
-- ask a Claude Code or Codex session something on the side (*Ask on the side* in its menu, or
+- ask a Claude Code, Codex or Antigravity session something on the side (*Ask on the side* in its menu, or
   `/side` and a question in its box, as on the Mac): a throwaway copy of its conversation answers
   on its Mac as you watch, saying how long it has been at it, and the session carries on and never
   hears of it. Follow-ups go to the
@@ -172,7 +172,8 @@ icon and a mark for where it stands (checks passed or failing, approved, your mo
 the line under its title, a tap on which opens the PR. The menu's *PRs* page lists every PR your
 Macs know, under tabs for all of them, yours and others', each counting the PRs in it that are
 your move, as the Mac's PRs view does: pinned ones first, then what needs you by what it needs
-(*Review requested*, your own *Ready to merge* and *Needs work*: failing checks, changes asked for,
+(*Review requested*, your own *Ready to merge*, which leaves out one approved only before its
+latest commits, and *Needs work*: failing checks, changes asked for,
 conflicts or a branch behind), then the reviews Codealong's agent is still on (*Agent reviewing*),
 then the ones an agent of yours is at work on (*Fixing* what came of their review, or *Working* on a
 draft), whose merge or work waits on it, then the rest under the tab's own headings (yours and others' under All, *Waiting on others* and
@@ -194,7 +195,10 @@ which says where it starts: its menu picks the Mac (each saying how busy it is, 
 *Strained*, as its machine menu and the Macs sheet say it), the repo (a sheet of the Mac's repos under
 their projects, each saying where a session would start in it) and the worktree in it (*New
 worktree* first, then the ones ready for new work), or *General chat*, in a folder of its own and
-no repo, and the account, model, effort and place. A repo picked starts where new work goes in it,
+no repo, and the account, model, effort and place. A new worktree is made by the harness on its
+command line where it can (Claude Code's and Cursor's `--worktree`), and by Codealong otherwise, in the repo's
+`.codealong/worktrees` from its default branch: for Codex, OpenCode and Antigravity from a
+terminal or the background, and for any session Codealong runs itself (from Macs since 0.28). A repo picked starts where new work goes in it,
 which follows the place picked: where the account's place moves a session out of the main checkout
 into a worktree of its own before it changes anything (a Claude Code background job, from Macs
 since 0.24), it starts in the main checkout whatever work is under way there. The + beside the box attaches

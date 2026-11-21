@@ -270,7 +270,8 @@ pub(crate) fn pr_standing(pr: &PrRow) -> PrStanding {
         _ if pr.state == "changes" => said(K::Changes, "Changes asked for"),
         _ if pr.merge == "conflicts" => said(K::Conflicts, "Conflicts"),
         _ if pr.pending > 0 => said(K::ChecksRunning, "Checks running"),
-        _ if pr.state == "approved" && pr.stale.is_some() => said(K::StaleApproval, &format!("Stale approval{}", if ready { READY_TOO } else { "" })),
+        // Approvals of an earlier commit alone don't make it ready to merge (`stale_words`).
+        _ if pr.state == "approved" && pr.stale.is_some() => said(K::StaleApproval, "Stale approval"),
         _ if pr.state == "approved" => said(K::Approved, &format!("Approved{}", if ready { READY_TOO } else { "" })),
         _ if pr.passed > 0 => said(K::ChecksPassed, "Checks passed"),
         _ => said(K::Open, "Open"),
@@ -488,8 +489,8 @@ fn listed(names: &[String]) -> String {
 }
 
 /// A PR approved only before its latest commits, in a sentence (prStatus.ts `staleWords`): who
-/// approved which commit, and that GitHub still counts it, which is why it can read as ready to
-/// merge. None for one that isn't approved, or is approved as it is.
+/// approved which commit, and that GitHub still counts it, though Codealong holds it out of Ready
+/// to merge (lists.rs `pr_ready`). None for one that isn't approved, or is approved as it is.
 fn stale_words(state: PrState, stale: Option<&codealong_peer::model::StaleApproval>) -> Option<String> {
     let s = stale.filter(|_| state == PrState::Approved)?;
     let at = s.commit.get(..7).unwrap_or(&s.commit);
@@ -1488,7 +1489,7 @@ pub(crate) mod tests {
         assert_eq!(with(&|p| p.state = "changes".into()).1, "Changes asked for");
         assert_eq!(with(&|p| { p.merge = "conflicts".into(); p.pending = 1 }).0, K::Conflicts);
         assert_eq!(with(&|p| { p.pending = 1; p.passed = 3 }).0, K::ChecksRunning);
-        assert_eq!(with(&|p| { p.state = "approved".into(); p.stale = Some("x".into()) }).1, "Stale approval \u{b7} ready to merge");
+        assert_eq!(with(&|p| { p.state = "approved".into(); p.stale = Some("x".into()) }).1, "Stale approval");
         assert_eq!(with(&|p| p.state = "approved".into()).1, "Approved \u{b7} ready to merge");
         assert_eq!(with(&|p| { p.state = "approved".into(); p.merge = "blocked".into() }).1, "Approved");
         assert_eq!(with(&|p| p.passed = 3).0, K::ChecksPassed);
