@@ -73,7 +73,6 @@ pub struct MergeForm {
 struct Words {
     label: &'static str,
     button: &'static str,
-    confirm: &'static str,
     verb: &'static str,
     done: &'static str,
     what: &'static str,
@@ -81,9 +80,9 @@ struct Words {
 
 fn words(m: MergeMethod) -> Words {
     match m {
-        MergeMethod::Merge => Words { label: "Create a merge commit", button: "Merge", confirm: "Confirm merge", verb: "merge", done: "Merged", what: "Every commit on the branch goes onto the base, joined by a merge commit." },
-        MergeMethod::Squash => Words { label: "Squash and merge", button: "Squash and merge", confirm: "Confirm squash and merge", verb: "squash and merge", done: "Squashed and merged", what: "The branch\u{2019}s commits go onto the base as one commit." },
-        MergeMethod::Rebase => Words { label: "Rebase and merge", button: "Rebase and merge", confirm: "Confirm rebase and merge", verb: "rebase and merge", done: "Rebased and merged", what: "The branch\u{2019}s commits go onto the base one by one, with no merge commit." },
+        MergeMethod::Merge => Words { label: "Create a merge commit", button: "Merge", verb: "merge", done: "Merged", what: "Every commit on the branch goes onto the base, joined by a merge commit." },
+        MergeMethod::Squash => Words { label: "Squash and merge", button: "Squash and merge", verb: "squash and merge", done: "Squashed and merged", what: "The branch\u{2019}s commits go onto the base as one commit." },
+        MergeMethod::Rebase => Words { label: "Rebase and merge", button: "Rebase and merge", verb: "rebase and merge", done: "Rebased and merged", what: "The branch\u{2019}s commits go onto the base one by one, with no merge commit." },
     }
 }
 
@@ -245,12 +244,6 @@ pub fn merge_mode_label(mode: MergeMode, method: MergeMethod) -> String {
         MergeMode::Bypass => "Bypass rules and merge".into(),
         MergeMode::Merge => words(method).button.into(),
     }
-}
-
-/// What the confirm button says, once the commit is written.
-#[uniffi::export]
-pub fn merge_confirm_label(mode: MergeMode, method: MergeMethod) -> String {
-    if mode == MergeMode::Auto { "Confirm auto-merge".into() } else { words(method).confirm.into() }
 }
 
 /// The method the box starts on: the one picked before, else GitHub's pick for you, either only
