@@ -60,7 +60,7 @@ pub enum MergeMode {
     Auto,
 }
 
-/// What's filled in before the confirm button.
+/// What's filled in before the merge button.
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
 pub struct MergeForm {
     pub method: MergeMethod,
