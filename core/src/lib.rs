@@ -3440,19 +3440,19 @@ mod tests {
         let which = ask("Which color?", &["Red", "Blue"], Some("Color"), false);
         // The same questions and choices, though the call's id isn't the card's, and its record
         // says no header nor whether it takes several, as a background job's doesn't.
-        assert!(card_shows(line(&[which.clone()], None), card(&[ask(" Which color? ", &["Red ", "Blue"], None, true)])));
+        assert!(card_shows(line(std::slice::from_ref(&which), None), card(&[ask(" Which color? ", &["Red ", "Blue"], None, true)])));
         // Other choices, or other questions, are another call's: its line stays.
-        assert!(!card_shows(line(&[which.clone()], None), card(&[ask("Which color?", &["Red", "Green"], Some("Color"), false)])));
-        assert!(!card_shows(line(&[which.clone()], None), card(&[which.clone(), ask("Why?", &["Because"], None, false)])));
+        assert!(!card_shows(line(std::slice::from_ref(&which), None), card(&[ask("Which color?", &["Red", "Green"], Some("Color"), false)])));
+        assert!(!card_shows(line(std::slice::from_ref(&which), None), card(&[which.clone(), ask("Why?", &["Because"], None, false)])));
         // Answered, it's a line like any other.
         let mut answered = item("result", 30, Some("call-2"), Some("ok"));
         answered.answers = [("Which color?".to_string(), vec!["Red".to_string()])].into();
-        assert!(!card_shows(line(&[which.clone()], Some(answered)), card(&[which.clone()])));
+        assert!(!card_shows(line(std::slice::from_ref(&which), Some(answered)), card(std::slice::from_ref(&which))));
         // Questions the card can't answer, it shows as a call: the line, which opens to them, stays.
-        let cannot = Pending { cannot: Some("Answer them in its terminal.".into()), ..card(&[which.clone()]) };
-        assert!(!card_shows(line(&[which.clone()], None), cannot));
+        let cannot = Pending { cannot: Some("Answer them in its terminal.".into()), ..card(std::slice::from_ref(&which)) };
+        assert!(!card_shows(line(std::slice::from_ref(&which), None), cannot));
         // Nor is a call that asks questions the card's call to allow, whatever its label.
-        assert!(!card_shows(line(&[which.clone()], None), card(&[])));
+        assert!(!card_shows(line(std::slice::from_ref(&which), None), card(&[])));
     }
 
     #[test]
@@ -3917,7 +3917,7 @@ pub(crate) fn all_worktrees(feeds: &Feeds) -> Vec<Worktree> {
             })
         })
         .collect();
-    out.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
+    out.sort_by_key(|a| std::cmp::Reverse(a.last_activity));
     out
 }
 
@@ -3956,7 +3956,7 @@ fn is_ios_source(lane: &Lane) -> bool {
 /// Mac has either: none has the source, or none has this app's and they run Codealong from before
 /// the Mac's mark.
 pub(crate) fn improve_target_of(worktrees: &[Worktree], online: &[String]) -> Option<ImproveTarget> {
-    let up = |w: &Worktree| online.iter().any(|d| *d == w.device);
+    let up = |w: &Worktree| online.contains(&w.device);
     // A checkout in none of the Mac's projects lists as Elsewhere there: no place to start. The
     // first of those that rank alike is the most recently active.
     let picked = worktrees
@@ -5171,7 +5171,7 @@ mod order_tests {
     #[test]
     fn moved_to_the_top_goes_first_in_its_section_and_stays_in_it() {
         let raised = |row: SessionRow, at: i64, agent: bool| SessionRow { raised: Some(Raised { at, agent, says: String::new(), phrase: String::new() }), ..row };
-        let mut rows = vec![
+        let mut rows = [
             row("older", Status::Needs, 10, None, 0),
             row("newer", Status::Needs, 20, None, 0),
             raised(row("agents", Status::Needs, 30, None, 0), 900, true),
@@ -5187,7 +5187,7 @@ mod order_tests {
     #[test]
     fn a_finished_turn_comes_after_the_rest_of_your_turn_but_not_ahead_of_one_moved_up() {
         let finished = |row: SessionRow| SessionRow { waits_finished: true, ..row };
-        let mut rows = vec![
+        let mut rows = [
             finished(row("done-new", Status::Unread, 90, None, 0)),
             row("ended", Status::Unread, 50, None, 0),
             finished(SessionRow { raised: Some(Raised { at: 1, agent: false, says: String::new(), phrase: String::new() }), ..row("done-up", Status::Unread, 10, None, 0) }),

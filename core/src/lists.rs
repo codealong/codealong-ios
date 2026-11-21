@@ -763,7 +763,7 @@ mod tests {
         let worktrees = HashMap::from([("@dshort:/src/app-2".to_string(), start.clone())]);
         let shorts = HashMap::from([("d", "dshort")]);
         let out = project_groups(&rows, &worktrees, &shorts, "", NOW);
-        let shape: Vec<(String, Vec<(String, Vec<String>)>)> = out.iter().map(|p| (p.project.clone(), p.worktrees.iter().map(|w| (w.name.clone(), w.sessions.iter().map(|s| s.key.clone()).collect())).collect())).collect();
+        let shape = out.iter().map(|p| (p.project.clone(), p.worktrees.iter().map(|w| (w.name.clone(), w.sessions.iter().map(|s| s.key.clone()).collect::<Vec<_>>())).collect::<Vec<_>>())).collect::<Vec<_>>();
         // The project and worktree active last lead; in a worktree what needs you comes first.
         assert_eq!(
             shape,

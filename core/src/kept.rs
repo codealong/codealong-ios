@@ -128,10 +128,17 @@ fn prune(dir: &Path, keep: usize) {
     }
 }
 
+struct Entry<T> {
+    key: String,
+    continues: Option<String>,
+    mac: String,
+    conv: Arc<T>,
+}
+
 /// The conversations in memory, the latest used last.
 pub(crate) struct Kept<T> {
     /// Each with its session's key, the record it went on in and its Mac's build.
-    open: Mutex<Vec<(String, Option<String>, String, Arc<T>)>>,
+    open: Mutex<Vec<Entry<T>>>,
 }
 
 impl<T> Default for Kept<T> {
@@ -146,15 +153,15 @@ impl<T> Kept<T> {
     /// makes, in its place. The latest used stay.
     pub fn get(&self, key: &str, continues: Option<&str>, mac: &str, make: impl FnOnce() -> Arc<T>) -> Arc<T> {
         let mut open = self.open.lock().unwrap_or_else(|e| e.into_inner());
-        let found = open.iter().position(|(k, c, m, _)| k == key && c.as_deref() == continues && same_build(m, mac));
+        let found = open.iter().position(|e| e.key == key && e.continues.as_deref() == continues && same_build(&e.mac, mac));
         let conv = match found {
-            Some(i) => open.remove(i).3,
+            Some(i) => open.remove(i).conv,
             None => {
-                open.retain(|(k, _, _, _)| k != key);
+                open.retain(|e| e.key != key);
                 make()
             }
         };
-        open.push((key.to_string(), continues.map(String::from), mac.to_string(), conv.clone()));
+        open.push(Entry { key: key.to_string(), continues: continues.map(String::from), mac: mac.to_string(), conv: conv.clone() });
         let over = open.len().saturating_sub(IN_MEMORY);
         open.drain(..over);
         conv
