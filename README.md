@@ -49,7 +49,7 @@ worktree by worktree (tap a worktree to fold it away, or its ✎ to start a sess
 *Recent*, the last active first. Both lead with your orchestrators' sessions (*Orchestrator*), as
 the Mac's Sessions does: the one that keeps watch over the project picked, or under All every one,
 each saying what it keeps watch over where another session says its worktree, and never among the
-sessions it watches. Its page says over its title when it last looked, or that it's off, and folds
+sessions it watches. Its page says under its title when it last looked, or that it's off, and folds
 each look that found nothing into a line (*Looked 3 times: nothing new*); it isn't marked done,
 archived, pinned or snoozed, since its next look would only start another, and it's turned off on
 its Mac. The pills under the box narrow the list to one project; a
@@ -96,7 +96,7 @@ instead, and go on as you pick it: leave it as it is (to come round again after 
 seen or done, archive it, or snooze it for a while. The next one says in a line how the one you
 left went (done, archived, snoozed, sent) for a few seconds, or until you write or scroll; a tap on
 it shows all its Mac said, such as what Mark as done stopped and cleaned up, and one that didn't
-go as asked stays until you dismiss it. Mark as done from a session's menu first asks about its
+go as asked stays until you dismiss it. Mark as done from a menu (a session's, a row's or the bar's) first asks about its
 helpers whose work isn't over, as the Mac does: make them sessions of your own, or end them too
 (a swipe makes them yours). Swipe
 right to go back to the one you came from, leaving this one as it is. One you replied to, one
@@ -193,8 +193,8 @@ that Mac; reading and snoozing a review don't.
 **Start new work.** Type a prompt in the same box and start it with the capsule at the bottom,
 which says where it starts: its menu picks the Mac (each saying how busy it is, *Calm*, *Busy* or
 *Strained*, as its machine menu and the Macs sheet say it), the repo (a sheet of the Mac's repos under
-their projects, each saying where a session would start in it) and the worktree in it (*New
-worktree* first, then the ones ready for new work), or *General chat*, in a folder of its own and
+their projects, each saying where a session would start in it) and the worktree in it (the main
+checkout first, then *New worktree* and the ones ready for new work), or *General chat*, in a folder of its own and
 no repo, and the account, model, effort and place. A new worktree is made by the harness on its
 command line where it can (Claude Code's and Cursor's `--worktree`), and by Codealong otherwise, in the repo's
 `.codealong/worktrees` from its default branch: for Codex, OpenCode and Antigravity from a
