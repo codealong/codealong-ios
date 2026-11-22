@@ -55,7 +55,12 @@ archived, pinned or snoozed, since its next look would only start another, and i
 its Mac. The pills under the box narrow the list to one project; a
 project that lives on two Macs is one project here. Each session has the emblem its Mac gave it
 beside its title, an emoji or a small drawn picture for what it works on, so you know it at a
-glance as you do there. While the app is open, a short sound says when a session on any of your Macs starts
+glance as you do there. Under its title a row says what it's doing and where it is, as the Mac's
+rows do: its account and its worktree, by its repo where the worktree was made for one piece of
+work (its own name says little) and by its name where it's reused for one after another, after the
+project under All. Its time is how long its state has lasted, or, while it works, how long it has
+worked on what you last asked, which the line of what it's doing doesn't say again; the headless
+runs its commands started are counted there while one is at work or waits on you. While the app is open, a short sound says when a session on any of your Macs starts
 to wait on you, as the Mac's do: a pop when it needs you, a lighter tink when its turn ends (turn
 either off in the Macs sheet; neither plays with the phone silenced, nor while a session on one of
 your Macs is listening to a meeting).

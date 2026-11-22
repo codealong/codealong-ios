@@ -2,7 +2,8 @@ import SwiftUI
 
 /// A session in the list, as the Mac's panel lists one: its state, its title with the words that
 /// matched, what it's doing or asking (or the line of what was said that matched), and where it
-/// is, with how long its state has lasted. Compact, in the list by project under its worktree, it
+/// is, with how long its state has lasted (or, at work, how long it has worked on what you last
+/// asked, which its line of what it's doing leaves out then). Compact, in the list by project under its worktree, it
 /// is its state, title and time on one line, as Codex's phone app lists a folder's chats. Its
 /// worktree's PR, where it has one, ends the line that says where it is (`PrBadge`).
 struct QuickSessionRow: View {
@@ -42,15 +43,15 @@ struct QuickSessionRow: View {
                                 .accessibilityLabel("Snoozed, back in \(Clock.until(until, now: context.date))")
                         } else if row.archived && row.mark == .archived {
                             // Its mark is the box already.
-                            Text(Clock.ago(row.statusSince ?? row.lastActivity, now: context.date))
-                                .accessibilityLabel("Archived, \(Clock.ago(row.statusSince ?? row.lastActivity, now: context.date))")
+                            Text(Clock.ago(row.since, now: context.date))
+                                .accessibilityLabel("Archived, \(Clock.ago(row.since, now: context.date))")
                         } else if row.archived {
                             // Listed only because searches and PRs list archived sessions too; one
                             // at work or waiting on you has that for its mark.
-                            Label(Clock.ago(row.statusSince ?? row.lastActivity, now: context.date), systemImage: "archivebox")
-                                .accessibilityLabel("Archived, \(Clock.ago(row.statusSince ?? row.lastActivity, now: context.date))")
+                            Label(Clock.ago(row.since, now: context.date), systemImage: "archivebox")
+                                .accessibilityLabel("Archived, \(Clock.ago(row.since, now: context.date))")
                         } else {
-                            Text(Clock.ago(row.statusSince ?? row.lastActivity, now: context.date))
+                            Text(Clock.ago(row.since, now: context.date))
                         }
                     }
                     .font(.subheadline)
@@ -63,7 +64,7 @@ struct QuickSessionRow: View {
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
-                    } else if let detail = row.detail, !detail.isEmpty {
+                    } else if let detail = row.listDetail, !detail.isEmpty {
                         TimelineView(.periodic(from: .now, by: 30)) { context in
                             Text(Clock.text(detail, now: context.date))
                                 .font(.subheadline)
@@ -134,10 +135,12 @@ struct QuickSessionRow: View {
         row.section == .needsYou || row.section == .yourTurn
     }
 
-    /// Where it is, as the Mac's panel says it: the account and the worktree, and the Mac and
-    /// project when those aren't plain. Then the headless runs its commands started, which the
-    /// list counts here rather than listing, as the Mac's row does on a chip; or, for a headless
-    /// run listed as a session of its own (no session on a linked Mac ran it), that it is one.
+    /// Where it is, as the Mac's row says it: the account and the worktree (its repo, unless it's
+    /// one reused for one piece of work after another, `place`), and the Mac and project when
+    /// those aren't plain. Then the headless runs its commands started while one is at work or
+    /// waits on you, which the list counts here rather than listing, as the Mac's row does on a
+    /// chip; or, for a headless run listed as a session of its own (no session on a linked Mac
+    /// ran it), that it is one.
     private var place: String {
         var parts: [String] = []
         if showDevice { parts.append(Names.short(row.deviceName)) }
@@ -148,13 +151,9 @@ struct QuickSessionRow: View {
             parts.append(o.words)
             return parts.joined(separator: " · ")
         }
-        if showProject { parts.append(row.project) }
         parts.append(row.account)
-        parts.append(row.worktree)
-        if row.runs > 0 {
-            let runs = row.runs == 1 ? "1 run" : "\(row.runs) runs"
-            parts.append(row.runsWorking > 0 ? "\(runs), \(row.runsWorking) at work" : runs)
-        }
+        parts.append(showProject ? row.placeAcross : row.place)
+        if let runs = row.runs { parts.append(runs) }
         if row.headless { parts.append("headless") }
         return parts.joined(separator: " · ")
     }

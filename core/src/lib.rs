@@ -191,6 +191,10 @@ pub struct SessionRow {
     /// The Mac's own sentence for it; backtick spans are code, `{ago:<ms>}` and `{for:<ms>}` live times.
     pub headline: String,
     pub detail: Option<String>,
+    /// `detail` as its row in the list says it, beside `since`: without the time a working
+    /// session's leads with (`{for:<ms>} · running …`), which that time says (the Mac's
+    /// rowSignal.ts `stripWorkingFor`).
+    pub list_detail: Option<String>,
     pub status: Status,
     /// It says it's working but nothing has happened for a long while.
     pub stalled: bool,
@@ -202,6 +206,13 @@ pub struct SessionRow {
     pub project: String,
     pub repo: String,
     pub worktree: String,
+    /// What its row calls its worktree, as the Mac's worktree chip does (rowSignal.ts
+    /// `worktreeChipParts`): a reusable worktree by its own name, a main checkout and one made
+    /// for a single piece of work by its repo, as the made-up name (`fix-login-a3`) says little.
+    pub place: String,
+    /// `place` in a list of every project: after its project (`Northwind / atlas`), or the project
+    /// alone where the repo is called as it is (ProjectSaid.tsx `projectSaid`).
+    pub place_across: String,
     /// Its worktree's id on its Mac (the worktree's path there).
     pub worktree_id: String,
     /// Its place among its Mac's pinned sessions, the first 0; none when it isn't pinned, or its
@@ -211,6 +222,10 @@ pub struct SessionRow {
     pub last_prompt_at: i64,
     pub last_activity: i64,
     pub status_since: Option<i64>,
+    /// What its time in the list counts from: while it's listed with what's working, when it
+    /// began on what you last asked (the Mac's lanes.ts `workingSince`, which its row's time says
+    /// since 2026-11-21); else when its state began.
+    pub since: i64,
     /// Codealong runs it on its Mac (over ACP): its reply streams, and a turn can be stopped.
     pub hosted: bool,
     pub section: InboxSection,
@@ -305,10 +320,11 @@ pub struct SessionRow {
     /// A run of its harness that nobody is at (`claude -p`, `codex exec`): the Mac counts it on the
     /// row of the session that ran it (its `origin`) rather than listing it.
     pub headless: bool,
-    /// The headless runs this session's commands started that are on its Mac's board, and how
-    /// many of them are at work, which the Mac's row shows as a chip: its `runs` there.
-    pub runs: u32,
-    pub runs_working: u32,
+    /// The headless runs this session's commands started that are on its Mac's board, as the
+    /// Mac's row has them on a chip (`RunsChip`): "2 runs, 1 at work". None while none of them is
+    /// at work or waits on you, as the Mac's row leaves them out then (rowSignal.ts
+    /// `hasActiveRuns`).
+    pub runs: Option<String>,
     /// Replies another session suggested for it, to send with a tap, until something is sent to
     /// it or a turn of its starts.
     pub suggestions: Option<SuggestedReplies>,
@@ -1591,6 +1607,10 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
             let status: Status = s.status.into();
             let snoozed_until = s.snoozed_until.filter(|&t| t > now && status != Status::Working);
             let aside = s.aside.is_some() && status == Status::Needs;
+            // Listed with what's working (lanes.ts `listedStatus`), its time is how long it has
+            // worked on what you last asked, which its detail no longer leads with.
+            let working_since = s.status_since.map(|t| t.max(s.last_prompt_at)).filter(|_| status == Status::Working || aside);
+            let (place, place_across) = place_words(lane, project.as_deref().unwrap_or(&lane.project));
             let row = SessionRow {
                 key: remote_key(&d.short, &s.key),
                 device: d.key.clone(),
@@ -1599,6 +1619,7 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 title: s.title.clone(),
                 headline: s.headline.clone(),
                 detail: s.detail.clone(),
+                list_detail: if working_since.is_some() { without_working_for(s.detail.as_deref()) } else { s.detail.clone() },
                 status,
                 stalled: s.stalled_since.is_some(),
                 waits_in_background: s.waits_in_background(),
@@ -1607,12 +1628,15 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 project: project.unwrap_or_else(|| lane.project.clone()),
                 repo: lane.repo.clone(),
                 worktree: lane.callsign.clone(),
+                place,
+                place_across,
                 worktree_id: lane.id.clone(),
                 pinned: s.pin,
                 branch: s.branch.clone().or_else(|| lane.branch.clone()),
                 last_prompt_at: s.last_prompt_at,
                 last_activity: s.last_activity,
                 status_since: s.status_since,
+                since: working_since.or(s.status_since).unwrap_or(s.last_activity),
                 hosted: s.hosted,
                 section: section(status, snoozed_until, aside),
                 snoozed_until,
@@ -1662,8 +1686,7 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 quiet: s.quiet,
                 unattended: s.unattended(),
                 headless: s.headless,
-                runs: 0,
-                runs_working: 0,
+                runs: None,
                 suggestions: s.suggestions.as_ref().filter(|g| !g.replies.is_empty()).map(|g| SuggestedReplies { replies: g.replies.clone(), note: g.note.clone(), by: g.by_title.clone() }),
                 emblem: s.emblem.as_ref().map(Emblem::from),
                 id: s.id.clone(),
@@ -1700,22 +1723,78 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
 /// it, its session was archived, or it ended before its Mac saw it running.
 fn count_runs(rows: &mut [SessionRow]) {
     let keys: std::collections::HashSet<String> = rows.iter().map(|r| r.key.clone()).collect();
-    let mut runs: std::collections::HashMap<String, (u32, u32)> = std::collections::HashMap::new();
+    // How many, how many at work, and how many wait on you.
+    let mut runs: std::collections::HashMap<String, (u32, u32, u32)> = std::collections::HashMap::new();
     for r in rows.iter_mut().filter(|r| r.headless) {
         match r.origin.as_ref().map(|o| o.key.clone()).filter(|k| keys.contains(k)) {
             Some(parent) => {
                 let c = runs.entry(parent).or_default();
                 c.0 += 1;
                 c.1 += u32::from(r.status == Status::Working);
+                c.2 += u32::from(matches!(r.status, Status::Needs | Status::Error));
             }
             None => r.unattended = false,
         }
     }
     for r in rows.iter_mut() {
-        if let Some(&(count, working)) = runs.get(&r.key) {
-            r.runs = count;
-            r.runs_working = working;
+        if let Some(&(count, working, waiting)) = runs.get(&r.key) {
+            r.runs = runs_words(count, working, waiting);
         }
+    }
+}
+
+/// What a session's row says of the headless runs its commands started, as the Mac's chip does
+/// (LaneRow.tsx `RunsChip`): none while none of them is at work or waits on you (rowSignal.ts
+/// `hasActiveRuns`), since one that's done says nothing you need. The Mac's chip turns the color
+/// that asks for you while one waits; the words say it here.
+fn runs_words(count: u32, working: u32, waiting: u32) -> Option<String> {
+    if working == 0 && waiting == 0 {
+        return None;
+    }
+    let mut words = if count == 1 { "1 run".to_string() } else { format!("{count} runs") };
+    if working > 0 {
+        words += &format!(", {working} at work");
+    }
+    if waiting > 0 {
+        words += &format!(", {waiting} {} on you", if waiting == 1 { "waits" } else { "wait" });
+    }
+    Some(words)
+}
+
+/// What a session's row calls its worktree, in a list of one project and in a list of every
+/// project, as the Mac's worktree chip says it on a row (rowSignal.ts `worktreeChipParts`, short,
+/// and ProjectSaid.tsx `ProjectPrefix`): a reusable worktree (`Lane::reuse`) by its own name,
+/// else its repo, since a worktree made for one piece of work has a made-up name, and a main
+/// checkout is its repo's; in a list of every project, after its project, or as the project
+/// where the repo has the project's name.
+fn place_words(lane: &Lane, project: &str) -> (String, String) {
+    let own = lane.origin != codealong_peer::model::Origin::Main && lane.reuse.is_some() && lane.callsign != lane.repo;
+    let name = if own { lane.callsign.clone() } else { lane.repo.clone() };
+    let across = if project.is_empty() || name.eq_ignore_ascii_case(project) {
+        // A repo named as its project is said once, as the project.
+        if own || project.is_empty() { name.clone() } else { project.to_string() }
+    } else {
+        format!("{project} / {name}")
+    };
+    (name, across)
+}
+
+/// A working session's detail without the time it leads with (`{for:<ms>} · …`), which its row's
+/// time says (the Mac's rowSignal.ts `stripWorkingFor`); none where nothing else is left.
+fn without_working_for(detail: Option<&str>) -> Option<String> {
+    let d = detail?;
+    let rest = d
+        .strip_prefix("{for:")
+        .and_then(|r| {
+            let end = r.find('}')?;
+            let digits = r[..end].strip_prefix('-').unwrap_or(&r[..end]);
+            (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())).then(|| &r[end + 1..])
+        })
+        .map(|r| r.strip_prefix(" \u{b7} ").unwrap_or(r));
+    match rest {
+        Some("") => None,
+        Some(r) => Some(r.to_string()),
+        None => Some(d.to_string()),
     }
 }
 
@@ -4675,6 +4754,7 @@ mod order_tests {
             title: key.into(),
             headline: String::new(),
             detail: None,
+            list_detail: None,
             status,
             stalled: false,
             waits_in_background: false,
@@ -4683,12 +4763,15 @@ mod order_tests {
             project: String::new(),
             repo: String::new(),
             worktree: String::new(),
+            place: String::new(),
+            place_across: String::new(),
             worktree_id: String::new(),
             pinned: None,
             branch: None,
             last_prompt_at,
             last_activity: since,
             status_since: Some(since),
+            since,
             hosted: false,
             section: section(status, snoozed_until, false),
             snoozed_until,
@@ -4722,8 +4805,7 @@ mod order_tests {
             quiet: false,
             unattended: false,
             headless: false,
-            runs: 0,
-            runs_working: 0,
+            runs: None,
             suggestions: None,
             emblem: None,
             id: key.into(),
@@ -4767,11 +4849,71 @@ mod order_tests {
         ];
         count_runs(&mut rows);
         let by = |k: &str| rows.iter().find(|r| r.key == k).unwrap().clone();
-        assert_eq!((by("boss").runs, by("boss").runs_working), (4, 2));
+        assert_eq!(by("boss").runs.as_deref(), Some("4 runs, 2 at work, 1 waits on you"));
         assert!(by("a").unattended && by("c").unattended);
         assert!(!by("asks").unattended, "one that needs you waits on you");
         assert!(!by("lone").unattended && !by("gone").unattended, "listed as sessions of their own");
-        assert_eq!(by("lone").runs, 0);
+        assert_eq!(by("lone").runs, None);
+    }
+
+    #[test]
+    fn runs_show_on_their_sessions_row_only_while_one_is_at_work_or_waits_on_you() {
+        assert_eq!(runs_words(3, 0, 0), None, "every one done");
+        assert_eq!(runs_words(1, 1, 0).as_deref(), Some("1 run, 1 at work"));
+        assert_eq!(runs_words(3, 0, 2).as_deref(), Some("3 runs, 2 wait on you"));
+        let run = |key: &str, status: Status| SessionRow {
+            headless: true,
+            unattended: true,
+            origin: Some(SessionOrigin { key: "boss".into(), title: None, words: "Started by another session".into() }),
+            ..row(key, status, 0, None, 0)
+        };
+        let mut rows = vec![row("boss", Status::Idle, 0, None, 0), run("a", Status::Idle), run("b", Status::Stopped)];
+        count_runs(&mut rows);
+        assert_eq!(rows[0].runs, None);
+    }
+
+    #[test]
+    fn a_row_calls_a_worktree_made_for_one_piece_of_work_by_its_repo() {
+        use codealong_peer::model::{Origin, Reuse};
+        let lane = |callsign: &str, origin: Origin, reuse: Option<Reuse>| Lane { callsign: callsign.into(), origin, reuse, ..Lane::new("/src/app-x", "Northwind", "app") };
+        // One made for a piece of work goes by its repo, as its made-up name says little.
+        let made = lane("brave-otter", Origin::ClaudeApp, None);
+        assert_eq!(place_words(&made, "Northwind"), ("app".into(), "Northwind / app".into()));
+        // A reusable one keeps its own name.
+        let slot = lane("slot-2", Origin::Script, Some(Reuse::Free));
+        assert_eq!(place_words(&slot, "Northwind"), ("slot-2".into(), "Northwind / slot-2".into()));
+        // A main checkout is its repo, even while it's left for new work.
+        let main = lane("app", Origin::Main, Some(Reuse::Free));
+        assert_eq!(place_words(&main, "Northwind"), ("app".into(), "Northwind / app".into()));
+        // A repo named as its project is said once, as the project.
+        let named = Lane { repo: "northwind".into(), ..lane("brave-otter", Origin::ClaudeApp, None) };
+        assert_eq!(place_words(&named, "Northwind"), ("northwind".into(), "Northwind".into()));
+        assert_eq!(place_words(&made, ""), ("app".into(), "app".into()), "in no project");
+    }
+
+    #[test]
+    fn a_working_rows_time_is_how_long_it_has_worked_which_its_detail_doesnt_say_again() {
+        assert_eq!(without_working_for(Some("{for:1700} \u{b7} running `yarn test`")).as_deref(), Some("running `yarn test`"));
+        assert_eq!(without_working_for(Some("{for:1700}")), None);
+        assert_eq!(without_working_for(Some("Stuck on `make` for {for:1700}")).as_deref(), Some("Stuck on `make` for {for:1700}"), "only the time it leads with");
+        assert_eq!(without_working_for(Some("{for:soon} \u{b7} x")).as_deref(), Some("{for:soon} \u{b7} x"));
+
+        use codealong_peer::client::Device;
+        use codealong_peer::feed::Replica;
+        let mac = Device { key: "m".into(), short: "m".into(), name: "Mac".into(), online: true, since: None, last_seen: None, remote_control: true, app: String::new(), loading: false, linked_back: true };
+        let mut lane = Lane::new("/src/app", "Northwind", "app");
+        lane.callsign = "app".into();
+        // A message sent while it works is a new ask, which its time counts from.
+        let working = Session { status: PeerStatus::Working, status_since: Some(1_000), last_prompt_at: 5_000, last_activity: 9_000, detail: Some("{for:5000} \u{b7} running `yarn test`".into()), ..Session::new(Harness::Claude, "claude", "working") };
+        let idle = Session { status: PeerStatus::Idle, status_since: Some(2_000), last_activity: 3_000, detail: Some("{for:5000} \u{b7} as it was".into()), ..Session::new(Harness::Claude, "claude", "idle") };
+        lane.sessions = vec![working, idle];
+        let replica = Replica { lanes: vec![lane], ..Replica::default() };
+        let rows = all_rows(&[(mac, &replica)]);
+        let by = |k: &str| rows.iter().find(|r| r.key.ends_with(&format!(":{k}"))).unwrap();
+        assert_eq!((by("working").since, by("working").list_detail.as_deref()), (5_000, Some("running `yarn test`")));
+        assert_eq!(by("working").detail.as_deref(), Some("{for:5000} \u{b7} running `yarn test`"), "kept whole where no time is beside it");
+        assert_eq!((by("idle").since, by("idle").list_detail.as_deref()), (2_000, Some("{for:5000} \u{b7} as it was")));
+        assert_eq!((by("idle").place.as_str(), by("idle").place_across.as_str()), ("app", "Northwind / app"));
     }
 
     #[test]
@@ -5341,7 +5483,7 @@ mod order_tests {
         // The run is listed as a session of its own either way, and the archived one counts none.
         assert_eq!(every[..2], listed[..]);
         assert!(!every[1].unattended);
-        assert_eq!(every[2].runs, 0);
+        assert_eq!(every[2].runs, None);
     }
 
     #[test]
