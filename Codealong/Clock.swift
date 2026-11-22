@@ -45,6 +45,19 @@ enum Clock {
         return brief(secs)
     }
 
+    /// How long running work has gone, as briefly as the Mac's list says it beside a working
+    /// session (format.ts `elapsedShort`): `<1m`, `14m`, `2h`, `3d`, then weeks past 100 days.
+    static func elapsed(_ ms: Int64, now: Date) -> String {
+        let secs = max(0, now.timeIntervalSince1970 - Double(ms) / 1000)
+        switch secs {
+        case ..<60: return "<1m"
+        case ..<3600: return "\(Int(secs / 60))m"
+        case ..<86400: return "\(Int(secs / 3600))h"
+        case ..<(100 * 86400): return "\(Int(secs / 86400))d"
+        default: return "\(Int(secs / (7 * 86400)))w"
+        }
+    }
+
     /// How long running work has gone, as the Mac's format.ts `duration` says it: `<1m`, `14m`,
     /// `2h 5m`, `1d 3h`.
     static func duration(_ ms: Int64, now: Date) -> String {

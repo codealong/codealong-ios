@@ -1257,6 +1257,7 @@ pub(crate) mod tests {
             last_activity: at,
             status_since: Some(at),
             since: at,
+            at_work: false,
             hosted: false,
             section: crate::section(status, None, false),
             snoozed_until: None,

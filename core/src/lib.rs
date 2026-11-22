@@ -226,6 +226,9 @@ pub struct SessionRow {
     /// began on what you last asked (the Mac's lanes.ts `workingSince`, which its row's time says
     /// since 2026-11-21); else when its state began.
     pub since: i64,
+    /// `since` is when it began on what you last asked, so its time says how long it has worked
+    /// (`<1m` at first, format.ts `elapsedShort`) rather than how long ago something happened.
+    pub at_work: bool,
     /// Codealong runs it on its Mac (over ACP): its reply streams, and a turn can be stopped.
     pub hosted: bool,
     pub section: InboxSection,
@@ -1637,6 +1640,7 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 last_activity: s.last_activity,
                 status_since: s.status_since,
                 since: working_since.or(s.status_since).unwrap_or(s.last_activity),
+                at_work: working_since.is_some(),
                 hosted: s.hosted,
                 section: section(status, snoozed_until, aside),
                 snoozed_until,
@@ -1770,7 +1774,8 @@ fn runs_words(count: u32, working: u32, waiting: u32) -> Option<String> {
 fn place_words(lane: &Lane, project: &str) -> (String, String) {
     let own = lane.origin != codealong_peer::model::Origin::Main && lane.reuse.is_some() && lane.callsign != lane.repo;
     let name = if own { lane.callsign.clone() } else { lane.repo.clone() };
-    let across = if project.is_empty() || name.eq_ignore_ascii_case(project) {
+    // As the Mac's `toLowerCase` compares them, past ASCII too.
+    let across = if project.is_empty() || name.to_lowercase() == project.to_lowercase() {
         // A repo named as its project is said once, as the project.
         if own || project.is_empty() { name.clone() } else { project.to_string() }
     } else {
@@ -4772,6 +4777,7 @@ mod order_tests {
             last_activity: since,
             status_since: Some(since),
             since,
+            at_work: false,
             hosted: false,
             section: section(status, snoozed_until, false),
             snoozed_until,
@@ -4889,6 +4895,8 @@ mod order_tests {
         let named = Lane { repo: "northwind".into(), ..lane("brave-otter", Origin::ClaudeApp, None) };
         assert_eq!(place_words(&named, "Northwind"), ("northwind".into(), "Northwind".into()));
         assert_eq!(place_words(&made, ""), ("app".into(), "app".into()), "in no project");
+        let accented = Lane { repo: "élan".into(), ..lane("brave-otter", Origin::ClaudeApp, None) };
+        assert_eq!(place_words(&accented, "Élan").1, "Élan", "past ASCII too");
     }
 
     #[test]
@@ -4910,9 +4918,9 @@ mod order_tests {
         let replica = Replica { lanes: vec![lane], ..Replica::default() };
         let rows = all_rows(&[(mac, &replica)]);
         let by = |k: &str| rows.iter().find(|r| r.key.ends_with(&format!(":{k}"))).unwrap();
-        assert_eq!((by("working").since, by("working").list_detail.as_deref()), (5_000, Some("running `yarn test`")));
+        assert_eq!((by("working").since, by("working").at_work, by("working").list_detail.as_deref()), (5_000, true, Some("running `yarn test`")));
         assert_eq!(by("working").detail.as_deref(), Some("{for:5000} \u{b7} running `yarn test`"), "kept whole where no time is beside it");
-        assert_eq!((by("idle").since, by("idle").list_detail.as_deref()), (2_000, Some("{for:5000} \u{b7} as it was")));
+        assert_eq!((by("idle").since, by("idle").at_work, by("idle").list_detail.as_deref()), (2_000, false, Some("{for:5000} \u{b7} as it was")));
         assert_eq!((by("idle").place.as_str(), by("idle").place_across.as_str()), ("app", "Northwind / app"));
     }
 

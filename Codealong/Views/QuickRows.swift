@@ -50,6 +50,10 @@ struct QuickSessionRow: View {
                             // at work or waiting on you has that for its mark.
                             Label(Clock.ago(row.since, now: context.date), systemImage: "archivebox")
                                 .accessibilityLabel("Archived, \(Clock.ago(row.since, now: context.date))")
+                        } else if row.atWork {
+                            // How long it has worked, which its line under the title leaves out.
+                            Text(Clock.elapsed(row.since, now: context.date))
+                                .accessibilityLabel("Working for \(Clock.elapsed(row.since, now: context.date))")
                         } else {
                             Text(Clock.ago(row.since, now: context.date))
                         }
@@ -144,15 +148,14 @@ struct QuickSessionRow: View {
     private var place: String {
         var parts: [String] = []
         if showDevice { parts.append(Names.short(row.deviceName)) }
+        parts.append(row.account)
         // An orchestrator's session keeps watch from a chat of its own, so it says what it keeps
         // watch over where another's says its project and worktree.
         if let o = row.orchestrator {
-            parts.append(row.account)
             parts.append(o.words)
-            return parts.joined(separator: " · ")
+        } else {
+            parts.append(showProject ? row.placeAcross : row.place)
         }
-        parts.append(row.account)
-        parts.append(showProject ? row.placeAcross : row.place)
         if let runs = row.runs { parts.append(runs) }
         if row.headless { parts.append("headless") }
         return parts.joined(separator: " · ")
