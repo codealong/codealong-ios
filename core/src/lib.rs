@@ -4158,11 +4158,12 @@ fn start_place(a: &api::StartAccount, among: &[api::Place]) -> Option<String> {
     first_place(a, among, [api::Place::Codealong, api::Place::Background])
 }
 
-/// Where one of its sessions goes on from the phone unless you pick another: its harness's own
-/// background service first, where it stays the harness's session, to attach a terminal to later;
-/// then Codealong; then as a start goes.
+/// Where one of its sessions goes on from the phone unless you pick another: in Codealong where
+/// its account offers that, as a Mac resumes one when no place is named (its start.rs
+/// `default_resume_place`, since 0.30); then its harness's own background service, since a locked
+/// Mac opens no terminal; then as a start goes.
 fn resume_place(a: &api::StartAccount) -> Option<String> {
-    first_place(a, &a.resumes, [api::Place::Background, api::Place::Codealong])
+    first_place(a, &a.resumes, [api::Place::Codealong, api::Place::Background])
 }
 
 /// The first of `order` among `among` that needs nobody at the Mac, else the account's usual
@@ -5688,9 +5689,31 @@ mod start_tests {
         assert_eq!((c.accounts[0].models[0].id.as_str(), by(&c.accounts[0])), ("opus", vec![Some("Claude Code".into()), Some("Claude Code".into()), None]));
         assert_eq!((c.accounts[1].models[0].id.as_str(), by(&c.accounts[1])), ("gpt-5.5", vec![None]));
         assert_eq!(c.accounts[0].resumes.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["terminal", "background", "codealong"]);
-        // A start from the phone goes to Codealong; a session going on stays its harness's.
-        assert_eq!((c.accounts[0].place.as_deref(), c.accounts[0].resume.as_deref()), (Some("codealong"), Some("background")));
+        // A start from the phone goes to Codealong, and so does a session going on.
+        assert_eq!((c.accounts[0].place.as_deref(), c.accounts[0].resume.as_deref()), (Some("codealong"), Some("codealong")));
         assert!(c.accounts[1].resumes.is_empty() && c.accounts[1].resume.is_none());
+    }
+
+    #[test]
+    fn a_session_goes_on_in_codealong_where_its_account_offers_it() {
+        use api::Place::*;
+        let at = |resumes: &[api::Place], chosen| {
+            let mut a = account(&[Terminal, Background, ClaudeApp, Codealong], chosen);
+            a.resumes = resumes.to_vec();
+            resume_place(&a)
+        };
+        // As a Mac of 0.30 lists them, and as an older one did: Codealong either way.
+        assert_eq!(at(&[Codealong, Terminal, Background, ClaudeApp], None).as_deref(), Some("codealong"));
+        assert_eq!(at(&[Terminal, Background, ClaudeApp, Codealong], Some(Terminal)).as_deref(), Some("codealong"));
+        // Without its adapter there, the harness's background service, then where it usually starts.
+        assert_eq!(at(&[Terminal, Background], Some(Terminal)).as_deref(), Some("background"));
+        assert_eq!(at(&[Terminal, ClaudeApp], Some(ClaudeApp)).as_deref(), Some("claude-app"));
+        assert_eq!(at(&[], None), None);
+        // A background that's a terminal behind the Mac's windows is a terminal all the same.
+        let mut behind = account(&[Terminal, Background], Some(Terminal));
+        behind.resumes = vec![Terminal, Background];
+        behind.places[1].behind = true;
+        assert_eq!(resume_place(&behind).as_deref(), Some("terminal"));
     }
 
     #[test]

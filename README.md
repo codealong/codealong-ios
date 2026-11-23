@@ -146,7 +146,8 @@ need you, as on the Mac.
   told what it printed once it ends, as Run on the Mac does; a message that starts with `!` runs
   the same way. A block with no language gets Run when each of its lines starts with a command
   that Mac has. Needs a Mac newer than 0.22;
-- resume one that isn't running, where and on what model you pick;
+- resume one that isn't running, where and on what model you pick: in Codealong where its account
+  offers that, as its Mac does, unless you pick another place;
 - fork it, go on from before one of your prompts with an edit of it (hold the prompt, *Edit from
   here*), or mark it done (closing it where its Mac can);
 - ask a Claude Code, Codex or Antigravity session something on the side (*Ask on the side* in its menu, or
