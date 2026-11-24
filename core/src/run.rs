@@ -43,9 +43,10 @@ pub(crate) fn code_run(lang: &str, text: &str, closed: bool) -> CodeRun {
     }
 }
 
-/// A fence's language, as the first word after its backticks says, in lower case: "" for none.
+/// A fence's language, as the first word after its backticks (three or more) says, in lower case:
+/// "" for none.
 pub(crate) fn fence_lang(line: &str) -> String {
-    line.trim().get(3..).unwrap_or_default().split_whitespace().next().unwrap_or_default().to_lowercase()
+    line.trim().trim_start_matches('`').split_whitespace().next().unwrap_or_default().to_lowercase()
 }
 
 /// Whether what's in a session's box is a command led by `!`, which runs on its Mac for the
@@ -230,6 +231,7 @@ mod tests {
         assert_eq!(code_run("bash", "npm test", false), CodeRun::No);
         assert_eq!(fence_lang("```Bash title=\"x\""), "bash");
         assert_eq!(fence_lang("  ```"), "");
+        assert_eq!(fence_lang("````md"), "md");
     }
 
     #[test]

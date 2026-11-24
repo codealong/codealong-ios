@@ -67,6 +67,10 @@ struct SessionView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var conversation: Conversation?
     @State private var items: [Item] = []
+    /// The conversation's rows as the core lays them out (`ConversationRows`), and the finished
+    /// turns opened from their lines.
+    @State private var laid = RowsMemo()
+    @State private var turnsOpen: Set<String> = []
     @State private var hasOlder = false
     @State private var loadingOlder = false
     /// Your prompt before the pages read, when the first doesn't start with one.
@@ -394,9 +398,8 @@ struct SessionView: View {
                     }
                     // The call the card below shows has no line here: the card stands in its place
                     // at the conversation's end.
-                    ForEach(Entry.of(items.filter { $0.id != cardLine })) { entry in
-                        switch entry {
-                        case .said(let item) where item.kind == .you:
+                    ConversationRows(shown: laid.rows(items, status: row?.status ?? .idle, inCard: cardLine), open: $turnsOpen) { item in
+                        if item.kind == .you {
                             ItemView(item: item, putBack: canAct ? { putBack($0) } : nil, editFrom: canAct && item.editable && row?.edits == true ? { editing = item } : nil)
                                 .onGeometryChange(for: PromptPlace.self) { [viewTop] geo in
                                     PromptPlace(geo.frame(in: .global), top: viewTop)
@@ -404,10 +407,9 @@ struct SessionView: View {
                                     promptPlaces[item.id] = place
                                 }
                                 .id(item.id)
-                        // A message the session took back can go back in the box, whoever sent it.
-                        case .said(let item): ItemView(item: item, putBack: canAct && item.withdrawn ? { putBack($0) } : nil)
-                        case .tools(let calls):
-                            ToolRun(calls: calls)
+                        } else {
+                            // A message the session took back can go back in the box, whoever sent it.
+                            ItemView(item: item, putBack: canAct && item.withdrawn ? { putBack($0) } : nil)
                         }
                     }
                     // A reply being written, or what it works on while it only waits on a command,
@@ -571,11 +573,14 @@ struct SessionView: View {
             Button("Ask on the side", systemImage: "bubble.left.and.text.bubble.right") { aside = SideAsk() }
                 .disabled(!online)
         }
-        Button("Rename…", systemImage: "pencil") {
-            newName = row?.name ?? row?.title ?? ""
-            renaming = true
+        // Where its harness keeps a name Codealong can set, as the Mac's menu offers it.
+        if row?.renames == true {
+            Button("Rename…", systemImage: "pencil") {
+                newName = row?.name ?? row?.title ?? ""
+                renaming = true
+            }
+            .disabled(!online)
         }
-        .disabled(!online)
         Button("Fork", systemImage: "arrow.triangle.branch") { Task { await fork("") } }
             .disabled(!canAct)
         // A running Claude Code session the Claude app reaches through its Remote Control: what
@@ -698,7 +703,7 @@ struct SessionView: View {
         VStack(spacing: 8) {
             if let pending {
                 if pending.questions.isEmpty || pending.cannot != nil {
-                    ApprovalCard(pending: pending, hosted: row?.hosted == true, canAct: canAct, why: whyNot, answering: answering) { choice in
+                    ApprovalCard(pending: pending, hosted: row?.hosted == true, answerWhere: row?.answerWhere, canAct: canAct, why: whyNot, answering: answering) { choice in
                         Task { await answer(pending, choice) }
                     }
                 } else {
@@ -1751,6 +1756,11 @@ struct SessionView: View {
         // Stop on the first command still running, said under the notes as the list says it.
         case "taskstop":
             if let first = row?.background?.commands.first(where: \.running) { said = await store.stopTask(key, id: first.id) }
+        // A tap on the newest finished turn's "Worked for …" line, which opens it.
+        case "turn":
+            if let turn = laid.rows(items, status: row?.status ?? .idle, inCard: cardLine).last(where: { $0.row.kind == .turn }) {
+                withAnimation(.snappy) { _ = turnsOpen.insert(turn.id) }
+            }
         default: break
         }
     }
@@ -2019,6 +2029,9 @@ private struct ApprovalCard: View {
     let pending: Pending
     /// Codealong runs it on its Mac.
     let hosted: Bool
+    /// Where to go to answer it when it can't be answered from here (the core's
+    /// `SessionRow::answer_where`): "Answer in Ghostty on MacBook Pro".
+    let answerWhere: String?
     let canAct: Bool
     let why: String?
     /// The answer on its way, if one is.
@@ -2047,7 +2060,14 @@ private struct ApprovalCard: View {
                 }
             }
             if let cannot = pending.cannot {
-                Text(cannot).font(.footnote).foregroundStyle(.secondary)
+                // Where to go, as the Mac's composer says it for another device's session, then
+                // why its Mac can't answer it for you.
+                VStack(alignment: .leading, spacing: 2) {
+                    if let answerWhere {
+                        Text(answerWhere).font(.footnote.weight(.medium))
+                    }
+                    Text(cannot).font(.footnote).foregroundStyle(.secondary)
+                }
             } else if canAct {
                 HStack {
                     Button(answering == .deny ? "Denying…" : "Deny", role: .destructive) { answer(.deny) }
@@ -2972,42 +2992,115 @@ private struct PinnedPrompt: View {
     }
 }
 
-/// A piece of the conversation: something said, or a run of tool calls.
-private enum Entry: Identifiable {
-    case said(Item)
-    case tools([Item])
+extension ThreadRow: Identifiable {}
 
-    /// The conversation as it reads: what was said, and each run of tool calls between as one. A
-    /// call that made a page is one to open: the calls around it fold, and it stays in view.
-    static func of(_ items: [Item]) -> [Entry] {
-        var out: [Entry] = []
-        var run: [Item] = []
-        for item in items {
-            // A call that made a page, handed you files or asked you questions stays in view, as
-            // the Mac's thread keeps it (SessionThread.tsx `rowsOf`): the line of the questions the
-            // card below shows is then one of its own.
-            if item.kind == .tool && item.link == nil && item.files.isEmpty && item.questions.isEmpty {
-                run.append(item)
-                continue
+/// A row of the conversation as the page draws it: a finished turn's line with the rows folded
+/// into it, by the ids the core gave them (`ThreadRow::turn`), or any other row alone.
+private struct Shown: Identifiable {
+    let row: ThreadRow
+    var inner: [ThreadRow] = []
+    var id: String { row.id }
+
+    static func of(_ rows: [ThreadRow]) -> [Shown] {
+        var out: [Shown] = []
+        for row in rows {
+            if let turn = row.turn, out.last?.id == turn {
+                out[out.count - 1].inner.append(row)
+            } else {
+                out.append(Shown(row: row))
             }
-            if item.kind == .tool {
-                if !run.isEmpty { out.append(.tools(run)) }
-                run = []
-                out.append(.tools([item]))
-                continue
-            }
-            if !run.isEmpty { out.append(.tools(run)) }
-            run = []
-            out.append(.said(item))
         }
-        if !run.isEmpty { out.append(.tools(run)) }
         return out
     }
+}
 
-    var id: String {
-        switch self {
-        case .said(let item): item.id
-        case .tools(let calls): "run:" + (calls.first?.id ?? "")
+/// The conversation laid out as the Mac's thread lays it out (the core's `thread_rows`), read
+/// again only when what it's laid out from changes, not each time the page draws.
+@MainActor
+private final class RowsMemo {
+    private var from: (items: [Item], status: Status, inCard: String?)?
+    private var shown: [Shown] = []
+
+    func rows(_ items: [Item], status: Status, inCard: String?) -> [Shown] {
+        if let from, from.status == status, from.inCard == inCard, from.items == items { return shown }
+        shown = Shown.of(threadRows(items: items, status: status, inCard: inCard))
+        from = (items, status, inCard)
+        return shown
+    }
+}
+
+/// The rows of a conversation: what's said as `said` draws it, calls as quiet lines, a run of them
+/// as one that says what they did, and each finished turn's work as one "Worked for 2m · Ran 19
+/// commands" line that opens to it, as the Mac's thread folds them since 2026-11-23. `open` holds
+/// the turns opened.
+private struct ConversationRows<Said: View>: View {
+    let shown: [Shown]
+    @Binding var open: Set<String>
+    @ViewBuilder let said: (Item) -> Said
+
+    var body: some View {
+        ForEach(shown) { s in
+            if s.row.kind == .turn {
+                TurnFold(label: s.row.label, open: open.contains(s.id)) {
+                    if open.contains(s.id) { open.remove(s.id) } else { open.insert(s.id) }
+                } inner: {
+                    ForEach(s.inner) { row in
+                        flat(row).foregroundStyle(.secondary)
+                    }
+                }
+            } else {
+                flat(s.row)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func flat(_ row: ThreadRow) -> some View {
+        switch row.kind {
+        case .said: if let item = row.items.first { said(item) }
+        case .tool: if let item = row.items.first { ToolLine(item: item) }
+        case .tools: ToolRun(row: row)
+        case .turn: EmptyView()
+        }
+    }
+}
+
+/// A finished turn's work as one quiet line, a rule under it while it's shut, that opens to what
+/// it holds, set in under a line down its side (SessionThread.tsx `TurnFoldView`).
+private struct TurnFold<Inner: View>: View {
+    let label: String
+    let open: Bool
+    let toggle: () -> Void
+    @ViewBuilder let inner: () -> Inner
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                withAnimation(.snappy) { toggle() }
+            } label: {
+                HStack(spacing: 5) {
+                    Text(label).lineLimit(1)
+                    Image(systemName: open ? "chevron.down" : "chevron.right").imageScale(.small)
+                    Spacer(minLength: 0)
+                }
+                .font(.caption)
+                .foregroundStyle(open ? .secondary : .tertiary)
+                .padding(.bottom, open ? 0 : 6)
+                .overlay(alignment: .bottom) {
+                    if !open { Divider() }
+                }
+                .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(label)
+            .accessibilityValue(open ? "Open" : "Folded")
+            if open {
+                VStack(alignment: .leading, spacing: 14) { inner() }
+                    .padding(.leading, 11)
+                    .overlay(alignment: .leading) {
+                        Rectangle().fill(.quaternary).frame(width: 1.5)
+                    }
+            }
         }
     }
 }
@@ -3378,52 +3471,57 @@ struct PromptText: View {
     }
 }
 
-/// A run of tool calls between what was said: the latest as a line, the ones before it folded
-/// into one that says how many and which tools, as the Mac's panel does. Plain text, no icons:
-/// the calls are the quiet part of the conversation.
+/// A run of tool calls between what was said as one quiet line that says what they did ("Edited 2
+/// files and ran 3 commands", the core's words), with an icon for what they mostly did, that opens
+/// to them, as the Mac's thread draws one since 2026-11-23 (SessionThread.tsx `ToolRunView`,
+/// compact). The call the session is running, or waits on you for, shows under it on its own.
 private struct ToolRun: View {
-    let calls: [Item]
+    let row: ThreadRow
     @State private var open = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // Folding one line into one saves nothing, so two calls show as two.
-            if calls.count > 2 {
-                Button {
-                    withAnimation(.snappy) { open.toggle() }
-                } label: {
-                    Text(open ? "Hide \(calls.count - 1) tool calls" : summary)
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(.rect)
+            Button {
+                withAnimation(.snappy) { open.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: icon).imageScale(.small).frame(width: 16)
+                    Text(row.label).lineLimit(1)
+                    Image(systemName: open ? "chevron.down" : "chevron.right").imageScale(.small)
+                    Spacer(minLength: 0)
                 }
-                .buttonStyle(.plain)
-                if open {
-                    ForEach(calls.dropLast(), id: \.id) { ToolLine(item: $0) }
-                }
-            } else {
-                ForEach(calls.dropLast(), id: \.id) { ToolLine(item: $0) }
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .contentShape(.rect)
             }
-            if let last = calls.last {
+            .buttonStyle(.plain)
+            .accessibilityLabel(row.label)
+            .accessibilityValue(open ? "Open" : "Folded")
+            if open {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(row.lastShown ? Array(row.items.dropLast()) : row.items, id: \.id) { ToolLine(item: $0) }
+                }
+                .padding(.leading, 12)
+                .overlay(alignment: .leading) {
+                    Rectangle().fill(.quaternary).frame(width: 1).padding(.leading, 7)
+                }
+            }
+            if row.lastShown, let last = row.items.last {
                 ToolLine(item: last)
             }
         }
     }
 
-    /// "4 tool calls · Bash, Read · 1 failed" for the ones before the latest.
-    private var summary: String {
-        let earlier = calls.dropLast()
-        var names: [String] = []
-        for call in earlier {
-            let name = call.text.components(separatedBy: " · ").first ?? call.text
-            if !names.contains(name) { names.append(name) }
+    /// The Mac's icons for what a run mostly did (turnFolds.ts `summaryIcon`).
+    private var icon: String {
+        switch row.icon {
+        case .edit: "chevron.left.forwardslash.chevron.right"
+        case .command: "terminal"
+        case .agent: "sparkles"
+        case .search: "magnifyingglass"
+        case .read: "doc"
+        case .other: "bolt"
         }
-        var parts = ["\(earlier.count) tool calls", names.prefix(4).joined(separator: ", ")]
-        let failed = earlier.filter(\.failed).count
-        if failed > 0 { parts.append("\(failed) failed") }
-        return parts.joined(separator: " · ")
     }
 }
 
@@ -3725,6 +3823,8 @@ struct SessionGlance: View {
     @ScaledMetric(relativeTo: .body) private var sendSize: CGFloat = 32
     /// More than a screen of the conversation's end: what's above it is off the top.
     private let shown = 40
+    /// Its rows as the core lays them out, as its screen has them.
+    @State private var laid = RowsMemo()
 
     private var row: SessionRow? { store.row(key) }
     private var why: String? { store.cannotReach(row) }
@@ -3745,7 +3845,7 @@ struct SessionGlance: View {
     private var glance: some View {
         // The call the card below shows has no line, as on its screen (`cardLine`).
         let cardLine = kept.pending.flatMap { p in kept.items.last.flatMap { cardShows(last: $0, pending: p) ? $0.id : nil } }
-        let entries = Entry.of(kept.items.filter { $0.id != cardLine })
+        let entries = laid.rows(kept.items, status: row?.status ?? .idle, inCard: cardLine)
         // Its newest at the foot, what doesn't fit going off the top: laid over a screen's worth of
         // nothing, so it's a screen high however long the conversation is (a frame that fills the
         // screen grows to fit what's in it, and pushed the screen beside it down).
@@ -3760,11 +3860,9 @@ struct SessionGlance: View {
                             .frame(maxWidth: .infinity)
                     }
                 }
-                ForEach(entries.suffix(shown)) { entry in
-                    switch entry {
-                    case .said(let item): ItemView(item: item, putBack: why == nil && item.kind == .you ? { _ in } : nil)
-                    case .tools(let calls): ToolRun(calls: calls)
-                    }
+                // Its turns folded, as its screen first draws them.
+                ConversationRows(shown: Array(entries.suffix(shown)), open: .constant([])) { item in
+                    ItemView(item: item, putBack: why == nil && item.kind == .you ? { _ in } : nil)
                 }
                 ForEach(store.outgoing[key] ?? []) { o in
                     OutgoingView(outgoing: o) {}
@@ -3806,7 +3904,7 @@ struct SessionGlance: View {
         return VStack(spacing: 8) {
             if let pending {
                 if pending.questions.isEmpty || pending.cannot != nil {
-                    ApprovalCard(pending: pending, hosted: row?.hosted == true, canAct: canAct, why: why, answering: nil) { _ in }
+                    ApprovalCard(pending: pending, hosted: row?.hosted == true, answerWhere: row?.answerWhere, canAct: canAct, why: why, answering: nil) { _ in }
                 } else {
                     QuestionsCard(key: key, pending: pending, canAct: canAct, why: why, answering: nil, open: .constant(false)) { _ in } decline: {}
                 }

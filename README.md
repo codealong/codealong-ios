@@ -66,11 +66,17 @@ either off in the Macs sheet; neither plays with the phone silenced, nor while a
 your Macs is listening to a meeting).
 
 **Read any conversation.** Each session's conversation shows as it does on the Mac: replies as
-formatted text with tables, nested lists and code you can copy, your prompts with their images
+formatted text with tables, nested lists, code you can copy and slides to go through (an
+Antigravity artifact's carousel), your prompts with their images
 and their Markdown drawn too (kept as you typed them), the commands that ran and
-what they printed, and the questions an agent asked with what you picked. What Codealong sent a
+what they printed, and the questions an agent asked with what you picked. Calls in a row are one
+line that says what they did ("Edited 2 files and ran 3 commands"), and each finished turn's work
+folds into one "Worked for 2m · Ran 19 commands" line above the reply that ended it, as the Mac
+draws them by default: a tap opens either, and a turn still going, one where a call failed, and a
+call that made a page, handed you files or asked you questions stay in view. What Codealong sent a
 session by itself (a PR's news, a helper's, a schedule's run, a review handed back) is a card that
-says it in a line, the PR and each helper it names a link, and a tap opens it to the whole message;
+says it in a line ("ana asked for changes on #397", the PR and each helper it names a link), and a
+tap opens it to the whole message;
 another session's message is a card that names who sent it, as a link to that session, over its
 first lines (one its own side conversation sent links to that side conversation). A session moved
 to another account on its Mac says *Moved to* and the account on its row, and at the end of its
@@ -129,7 +135,8 @@ need you, as on the Mac.
   sent;
 - allow or deny what it wants to run (or deny it and say what to do instead), deliver or drop
   another session's message it holds for you, and answer its
-  questions, folded to a line over the box while you read and brought up from that line: the card
+  questions (what its Mac can't answer for you says where to go: "Answer in Ghostty on MacBook
+  Pro", and why), folded to a line over the box while you read and brought up from that line: the card
   over the box stands in for the call's line in the conversation until it's answered. A dialog of
   Claude Code's own (its offer to make auto mode the default, a command's list of choices), which
   a Mac of 0.26 or later reads off a session's terminal where it can read it (Rex, tmux or

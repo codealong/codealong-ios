@@ -24,6 +24,10 @@ pub enum MdBlock {
     /// Rows have as many cells as the header, as GitHub pads or trims them.
     Table { align: Vec<MdAlign>, head: Vec<String>, rows: Vec<Vec<String>> },
     Rule,
+    /// Slides to go through one at a time, as Antigravity's artifacts write them (a `carousel`
+    /// fence, `<!-- slide -->` between slides: light and dark mocks, a walkthrough's steps), each
+    /// its own Markdown, for `markdown` to read in turn (the Mac's Markdown.tsx `Carousel`).
+    Carousel { slides: Vec<String> },
 }
 
 /// How a table's column lines up, as its delimiter row says (`:--`, `:-:`, `--:`).
@@ -321,8 +325,44 @@ fn starts_block(line: &str) -> bool {
     item(line).is_some() || is_fence(line) || heading(line.trim_start()).is_some() || is_quote(line) || is_rule(line)
 }
 
+/// A line that opens a fenced code block: three backticks or more.
 fn is_fence(line: &str) -> bool {
-    line.trim_start().starts_with("```")
+    fence_ticks(line).is_some()
+}
+
+/// How many backticks open a fence on this line, three or more (the Mac's since 2026-11-23): a
+/// fence of four can hold one of three, as a reply that shows Markdown writes it.
+fn fence_ticks(line: &str) -> Option<usize> {
+    let ticks = line.trim_start().chars().take_while(|&c| c == '`').count();
+    (ticks >= 3).then_some(ticks)
+}
+
+/// A line that closes a fence `ticks` backticks opened: at least as many, and nothing after them.
+fn closes_fence(line: &str, ticks: usize) -> bool {
+    let t = line.trim();
+    t.len() >= ticks && t.chars().all(|c| c == '`')
+}
+
+/// A `carousel` fence's slides: what's between its `<!-- slide -->` lines, each trimmed, empty
+/// ones left out.
+fn slides(text: &str) -> Vec<String> {
+    let divider = |l: &str| {
+        let t = l.trim();
+        t.strip_prefix("<!--").and_then(|r| r.strip_suffix("-->")).is_some_and(|w| w.trim() == "slide")
+    };
+    let mut out = vec![String::new()];
+    for l in text.split('\n') {
+        if divider(l) {
+            out.push(String::new());
+        } else {
+            let last = out.last_mut().expect("never empty");
+            if !last.is_empty() {
+                last.push('\n');
+            }
+            last.push_str(l);
+        }
+    }
+    out.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
 }
 
 /// A heading's level and text: one to six hashes at the line's start, then whitespace.
@@ -438,13 +478,13 @@ fn read_blocks(src: &str, depth: u8, written: bool, out: &mut Vec<(u8, MdBlock)>
             i += 1;
             continue;
         }
-        if is_fence(line) {
+        if let Some(ticks) = fence_ticks(line) {
             // A fence in a list is indented with the list, and so are the lines inside it.
             let indent = line.len() - line.trim_start_matches(' ').len();
             let lang = fence_lang(line);
             let mut body = Vec::new();
             i += 1;
-            while i < lines.len() && !is_fence(lines[i]) {
+            while i < lines.len() && !closes_fence(lines[i], ticks) {
                 let l = lines[i];
                 let spaces = (l.len() - l.trim_start_matches(' ').len()).min(indent);
                 body.push(&l[spaces..]);
@@ -454,6 +494,13 @@ fn read_blocks(src: &str, depth: u8, written: bool, out: &mut Vec<(u8, MdBlock)>
             let closed = i < lines.len();
             i += 1;
             let text = body.join("\n");
+            if closed && lang == "carousel" {
+                let slides = slides(&text);
+                if !slides.is_empty() {
+                    out.push((depth, MdBlock::Carousel { slides }));
+                    continue;
+                }
+            }
             let run = code_run(&lang, &text, closed);
             out.push((depth, MdBlock::Code { text, run }));
             continue;
@@ -519,18 +566,21 @@ fn read_blocks(src: &str, depth: u8, written: bool, out: &mut Vec<(u8, MdBlock)>
                 }
                 items.push(own);
                 let mut under: Vec<&str> = Vec::new();
-                let mut fenced = false;
+                // How many backticks opened the fence it's in, while it's in one.
+                let mut fence = 0;
                 while i < lines.len() {
                     let m = lines[i];
-                    if fenced {
-                        fenced = !is_fence(m);
+                    if fence > 0 {
+                        if closes_fence(m, fence) {
+                            fence = 0;
+                        }
                     } else if m.trim().is_empty() {
                         match (i..lines.len()).find(|&j| !lines[j].trim().is_empty()) {
                             Some(j) if indent_of(lines[j]) > at => {}
                             _ => break,
                         }
                     } else if indent_of(m) > at {
-                        fenced = is_fence(m);
+                        fence = fence_ticks(m).unwrap_or(0);
                     } else {
                         break;
                     }
@@ -940,6 +990,14 @@ mod tests {
         // A reply still being written has no closing fence yet, so it doesn't run until it has.
         assert_eq!(blocks("```\nhalf"), [MdBlock::Code { text: "half".into(), run: CodeRun::No }]);
         assert_eq!(blocks("```sh\nnpm test\n```"), [MdBlock::Code { text: "npm test".into(), run: CodeRun::Block }]);
+        // Antigravity's carousel: its slides, each its own Markdown; one not closed yet is code.
+        let carousel = "Mocks:\n\n````carousel\n![Light](/a/light.png)\n<!-- slide -->\n\n## Dark\n![Dark](/a/dark.png)\n  <!--slide-->\n````";
+        assert_eq!(blocks(carousel), [MdBlock::Paragraph { text: "Mocks:".into() }, MdBlock::Carousel { slides: vec!["![Light](/a/light.png)".into(), "## Dark\n![Dark](/a/dark.png)".into()] }]);
+        assert!(matches!(blocks("```carousel\none\n<!-- slide -->\ntwo").as_slice(), [MdBlock::Code { .. }]));
+        assert!(matches!(blocks("```carousel\n<!-- slide -->\n```").as_slice(), [MdBlock::Code { .. }]));
+        // A fence of four backticks holds one of three, and closes only on four or more.
+        assert_eq!(blocks("````md\nSee:\n```\nls\n```\n````\nAfter"), [MdBlock::Code { text: "See:\n```\nls\n```".into(), run: CodeRun::No }, MdBlock::Paragraph { text: "After".into() }]);
+        assert_eq!(blocks("- Show it:\n  ````\n  ```\n  x\n  ```\n  ````\n- Next"), [MdBlock::List { ordered: false, start: 1, items: vec!["Show it:".into()] }, MdBlock::Code { text: "```\nx\n```".into(), run: CodeRun::IfCommands }, MdBlock::List { ordered: false, start: 1, items: vec!["Next".into()] }]);
         // A hash without a space, or seven of them, isn't a heading.
         assert_eq!(blocks("#hashtag"), [para("#hashtag")]);
         assert_eq!(blocks("####### seven"), [para("####### seven")]);

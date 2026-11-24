@@ -59,12 +59,49 @@ struct MarkdownText: View {
             TableView(align: align, head: head, rows: rows, onPage: written)
         case .rule:
             Divider().padding(.vertical, 4)
+        case .carousel(let slides):
+            CarouselView(slides: slides)
         }
     }
 
     static func inline(_ s: String) -> AttributedString {
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         return (try? AttributedString(markdown: s, options: options)) ?? AttributedString(s)
+    }
+}
+
+/// Slides to go through one at a time, as an Antigravity artifact writes them (light and dark
+/// mocks, a walkthrough's steps) and the Mac's Markdown.tsx `Carousel` shows them: which slide of
+/// how many, with arrows to the one before and after, over the slide, each its own Markdown.
+private struct CarouselView: View {
+    let slides: [String]
+    @State private var at = 0
+
+    var body: some View {
+        let index = min(at, max(slides.count - 1, 0))
+        VStack(alignment: .leading, spacing: 8) {
+            if slides.count > 1 {
+                HStack(spacing: 14) {
+                    Text(verbatim: "Slide \(index + 1) of \(slides.count)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                    Spacer()
+                    Button("Previous slide", systemImage: "chevron.left") { at = max(0, index - 1) }
+                        .disabled(index == 0)
+                    Button("Next slide", systemImage: "chevron.right") { at = min(slides.count - 1, index + 1) }
+                        .disabled(index >= slides.count - 1)
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+            }
+            if slides.indices.contains(index) {
+                MarkdownText(text: slides[index])
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.quaternary))
     }
 }
 

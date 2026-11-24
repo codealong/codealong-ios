@@ -19,7 +19,8 @@
 # label on it, or takes it off where it wears it, PRESS=link:<url> opens that link as a tap on
 # it in the conversation does (a `codealong://session/…` one, named as that session's Mac names
 # its sessions), PRESS=box opens its reply box as a tap on it does, and PRESS=mode:<id> picks
-# that mode (`acceptEdits`, say) in the menu beside Send. NEW_WORKTREE=1 turns the start capsule's
+# that mode (`acceptEdits`, say) in the menu beside Send; PRESS=turn opens the newest finished turn's
+# "Worked for …" line, as a tap on it does. NEW_WORKTREE=1 turns the start capsule's
 # New worktree on, where the account and place picked (`start.account`, `start.place`) take one.
 set -euo pipefail
 cd "$(dirname "$0")/.."

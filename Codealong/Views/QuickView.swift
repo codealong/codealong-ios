@@ -912,11 +912,14 @@ struct QuickView: View {
                 .disabled(store.cannotReach(r) != nil || asking.contains("fork:" + r.key))
         }
         Section {
-            Button("Rename…", systemImage: "pencil") {
-                newName = r.name ?? r.title
-                renaming = r
+            // Where its harness keeps a name Codealong can set, as the Mac's menu offers it.
+            if r.renames {
+                Button("Rename…", systemImage: "pencil") {
+                    newName = r.name ?? r.title
+                    renaming = r
+                }
+                .disabled(!online)
             }
-            .disabled(!online)
             if r.seenable {
                 Button("Mark as seen", systemImage: "eye") { store.markSeen(r.key) }
             }

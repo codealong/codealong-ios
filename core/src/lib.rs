@@ -27,11 +27,13 @@ mod quick;
 mod review;
 mod run;
 mod sounds;
+mod turns;
 pub use lists::*;
 pub use md::*;
 pub use quick::*;
 pub use run::{bang_command, CodeRun};
 pub use sounds::Sound;
+pub use turns::*;
 
 /// Changes reach Swift at most this often: a busy Mac sends a feed a second, and each can come
 /// with several connections' worth of changes.
@@ -239,6 +241,12 @@ pub struct SessionRow {
     pub live: bool,
     /// It's in an app (the Claude or Codex app), not a terminal.
     pub in_app: bool,
+    /// Where to go to answer what it asks when that can't be answered from here
+    /// (`Pending::cannot`), as the Mac's composer says it of a session on another device
+    /// (SessionReply.tsx `remoteAnswerWhere`, since 2026-11-23): "Answer in Ghostty on MacBook
+    /// Pro", in the app it's in, or "Answer on MacBook Pro" where its Mac doesn't say what it runs
+    /// in or Codealong runs it.
+    pub answer_where: String,
     /// Its reply asks you something, so what's typed next is its answer.
     pub asks: bool,
     /// Its worktree's PR, as "#12 Title", for the quick search to find it by.
@@ -291,6 +299,10 @@ pub struct SessionRow {
     /// Claude Code, Codex and Antigravity can, as the Mac's slash.ts `side` has it. A Mac before
     /// 0.28 refuses an Antigravity session's, saying it has none.
     pub sides: bool,
+    /// Its harness keeps a name for it that Codealong can set (Rename…), as the Mac's harness.ts
+    /// `renames` has it: Claude Code, Codex (not an archived thread), OpenCode and Antigravity. A
+    /// Mac before 0.31 refuses an Antigravity session's, saying why.
+    pub renames: bool,
     /// The name you gave it, where its harness keeps one.
     pub name: Option<String>,
     /// The session it came from, when its harness or Codealong wrote that down.
@@ -1574,6 +1586,39 @@ pub(crate) fn in_inbox(s: &SessionRow, now: i64) -> bool {
     matches!(s.status, Status::Needs | Status::Error | Status::Working | Status::Unread) || s.pinned.is_some() || now - s.last_prompt_at <= RECENT_MS
 }
 
+/// Whether Codealong can name `s` where its harness keeps names (the Mac's harness.ts `renames`,
+/// harness.rs `rename`): Cursor keeps none, and Codex none for an archived thread.
+fn renames(s: &Session) -> bool {
+    match s.harness {
+        Harness::Claude | Harness::Opencode | Harness::Antigravity => true,
+        Harness::Codex => !s.archived,
+        Harness::Cursor => false,
+    }
+}
+
+/// Where to answer what `s` asks on `mac` when it can't be answered from here (SessionReply.tsx
+/// `remoteAnswerWhere`): the app it's in (harness.ts `HARNESS_APP`), else the terminal its Mac
+/// says it runs in; just the Mac for one Codealong runs, or one in no terminal its Mac names.
+fn answer_where(s: &Session, mac: &str) -> String {
+    let place = if s.hosted {
+        None
+    } else if s.surface == codealong_peer::model::Surface::App {
+        Some(match s.harness {
+            Harness::Claude => "Claude app",
+            Harness::Codex => "Codex",
+            Harness::Opencode => "OpenCode",
+            Harness::Antigravity => "Antigravity",
+            Harness::Cursor => "Cursor",
+        })
+    } else {
+        s.terminal.as_deref().filter(|t| !t.trim().is_empty())
+    };
+    match place {
+        Some(place) => format!("Answer in {place} on {mac}"),
+        None => format!("Answer on {mac}"),
+    }
+}
+
 /// Every session on the linked Macs once, archived ones left out, in the projects the Macs line
 /// up; unsorted.
 pub(crate) fn all_rows(feeds: &Feeds) -> Vec<SessionRow> {
@@ -1647,6 +1692,7 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 started_at: s.started_at,
                 live: s.live,
                 in_app: s.surface == codealong_peer::model::Surface::App,
+                answer_where: answer_where(s, &d.name),
                 asks: s.asks,
                 pr: lane.pr.as_ref().map(|p| format!("#{} {}", p.number, p.title)),
                 // Keyed as the PRs listed key a worktree's (quick.rs `all_prs`), so its page is found.
@@ -1667,6 +1713,7 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 remote_control: s.remote_control.as_deref().filter(|_| s.live).map(remote_control_url),
                 edits: matches!(s.harness, Harness::Claude | Harness::Codex | Harness::Opencode),
                 sides: matches!(s.harness, Harness::Claude | Harness::Codex | Harness::Antigravity),
+                renames: renames(s),
                 name: s.name.clone(),
                 origin: s.origin.as_ref().map(|o| {
                     let from = by_key.get(o.key.as_str()).copied();
@@ -2053,6 +2100,9 @@ pub struct Item {
     pub input: Option<String>,
     pub output: Option<String>,
     pub failed: bool,
+    /// A tool call's result is in, or it says what came of it itself: one that isn't is what the
+    /// session runs, or waits on you for, at the conversation's end. Always for what isn't a call.
+    pub done: bool,
     /// A prompt of yours the session took back before its agent answered, so the agent never saw
     /// it.
     pub withdrawn: bool,
@@ -2152,31 +2202,84 @@ fn session_link(key: &str) -> String {
 }
 
 /// What Codealong's message comes to, as its card's head reads (the Mac's MessageCard.tsx
-/// `GlanceLine`): the PR, a link to it where its address is a PR's, then each part, the session
-/// it's about before its words, the parts apart by " · ". A session listed here is a link under
-/// its title now (a helper renamed since reads as it's called now); one that isn't is the title
-/// the message gave it, as words.
+/// `GlanceLine`, since 2026-11-23): about a PR, `#<number>` (a link to it where its address is a
+/// PR's; the card's icon already says it's a PR, and its page has the title) woven into the first
+/// happening ("ken approved #430", "#430 conflicts with main"), each happening said short
+/// (`concise_pr_part`), then the rest; otherwise each part, the session it's about before its
+/// words. Parts are apart by " · ". A session listed here is a link under its title now (a helper
+/// renamed since reads as it's called now); one that isn't is the title the message gave it, as
+/// words.
 fn glance_title(g: &codealong_peer::glance::Glance, named: Named) -> String {
-    let mut out = String::new();
-    if let Some(pr) = &g.pr {
-        let named = md::escaped(&format!("#{} {}", pr.number, pr.title));
-        match pr.url.as_deref().filter(|u| md::pr_label(u).is_some()) {
-            Some(url) => out.push_str(&format!("[{named}]({url})")),
-            None => out.push_str(&named),
-        }
-        if !g.parts.is_empty() {
-            out.push(' ');
-        }
-    }
-    let part = |p: &codealong_peer::glance::Part| match &p.session {
+    let part = |p: &codealong_peer::glance::Part, line: &str| match &p.session {
         Some(n) => match named(&n.key) {
-            Some(now) => format!("[“{}”]({}) {}", md::escaped(&now), session_link(&n.key), md::escaped(&p.line)),
-            None => format!("“{}” {}", md::escaped(&n.title), md::escaped(&p.line)),
+            Some(now) => format!("[“{}”]({}) {}", md::escaped(&now), session_link(&n.key), md::escaped(line)),
+            None => format!("“{}” {}", md::escaped(&n.title), md::escaped(line)),
         },
-        None => md::escaped(&p.line),
+        None => md::escaped(line),
     };
-    out.push_str(&g.parts.iter().map(part).collect::<Vec<_>>().join(" · "));
-    out
+    let Some(pr) = &g.pr else {
+        return g.parts.iter().map(|p| part(p, &p.line)).collect::<Vec<_>>().join(" · ");
+    };
+    let number = format!("#{}", pr.number);
+    let pr_said = match pr.url.as_deref().filter(|u| md::pr_label(u).is_some()) {
+        Some(url) => format!("[{number}]({url})"),
+        None => number,
+    };
+    match g.parts.split_first() {
+        None => pr_said,
+        Some((first, rest)) if first.session.is_none() => {
+            let (before, after) = place_pr(&concise_pr_part(&first.line));
+            let mut out = format!("{}{pr_said}{}", md::escaped(&before), md::escaped(&after));
+            for p in rest {
+                out.push_str(" · ");
+                out.push_str(&part(p, &concise_pr_part(&p.line)));
+            }
+            out
+        }
+        Some(_) => format!("{pr_said} · {}", g.parts.iter().map(|p| part(p, &p.line)).collect::<Vec<_>>().join(" · ")),
+    }
+}
+
+/// A PR's happening as its card's head says it, short (MessageCard.tsx `concisePrPart`, which the
+/// Mac's nudges.rs `glance` writes so since 2026-11-23): what a Mac before that wrote in full
+/// ("Its branch now conflicts with main, its base", "It was merged") reads as a newer one's.
+fn concise_pr_part(line: &str) -> String {
+    if let Some(base) = line.strip_prefix("Its branch now conflicts with ").and_then(|r| r.strip_suffix(", its base")).filter(|b| !b.is_empty()) {
+        return format!("conflicts with {base}");
+    }
+    if line == "It was closed without being merged" {
+        return "closed".into();
+    }
+    if line == "Changes were asked for" {
+        return "changes asked for".into();
+    }
+    ["Its branch now ", "Its ", "It was "].iter().find_map(|p| line.strip_prefix(p)).unwrap_or(line).to_string()
+}
+
+/// Where `#<number>` goes in a PR card's first happening (MessageCard.tsx `placePr`), as the words
+/// before it and after it: in place of "it" ("ken approved #430"), after an action ("ana asked
+/// for changes on #430", "ana commented on src/a.ts in #430"), ahead of a state ("#430 conflicts
+/// with main", "#430 merged"), or ahead of the rest, apart by " · ".
+fn place_pr(line: &str) -> (String, String) {
+    if let Some(who) = line.strip_suffix(" approved it").map(|w| format!("{w} approved ")).or_else(|| line.strip_suffix(" reviewed it").map(|w| format!("{w} reviewed "))) {
+        return (who, String::new());
+    }
+    if let Some(at) = line.find(" reviewed it,") {
+        return (line[..at + " reviewed ".len()].to_string(), line[at + " reviewed it".len()..].to_string());
+    }
+    if [" asked for changes", " commented", " had a review dismissed"].iter().any(|end| line.ends_with(end)) {
+        return (format!("{line} on "), String::new());
+    }
+    if line.contains(" commented on ") {
+        return (format!("{line} in "), String::new());
+    }
+    if line == "changes asked for" {
+        return ("Changes asked for on ".into(), String::new());
+    }
+    if matches!(line, "approved" | "merged" | "closed") || line.starts_with("conflicts with ") || line.starts_with("checks failed") {
+        return (String::new(), format!(" {line}"));
+    }
+    (String::new(), format!(" · {line}"))
 }
 
 /// Who another session's message is from, as its card's head reads (the Mac's MessageCard.tsx
@@ -2634,6 +2737,7 @@ impl Thread {
                     input: i.input.clone(),
                     output: result.and_then(|r| r.output.clone()).or_else(|| i.output.clone()),
                     failed: i.failed || result.is_some_and(|r| r.failed),
+                    done: kind != ItemKind::Tool || result.is_some() || i.output.is_some(),
                     withdrawn: i.withdrawn,
                     questions: i.questions.iter().map(|q| question_of(q, answers)).collect(),
                     link: i.link.as_ref().or(result.and_then(|r| r.link.as_ref())).map(|l| WebLink { url: l.url.clone(), title: l.title.clone(), note: l.note.clone() }),
@@ -2736,6 +2840,7 @@ fn prompt_in(page: &api::Page) -> Option<Item> {
         input: None,
         output: None,
         failed: false,
+        done: true,
         withdrawn: i.withdrawn,
         questions: Vec::new(),
         link: None,
@@ -2807,6 +2912,7 @@ fn fold_quiet_runs(items: Vec<Item>, from_start: bool) -> Vec<Item> {
                     input: None,
                     output: None,
                     failed: false,
+                    done: true,
                     withdrawn: false,
                     questions: Vec::new(),
                     link: None,
@@ -3262,6 +3368,28 @@ impl From<api::Way> for Way {
 mod tests {
     use super::*;
 
+    /// Where to answer what can't be answered from here names its Mac, and the app or terminal
+    /// it's in where there's one, as the Mac's composer does for another device's session.
+    #[test]
+    fn rename_is_offered_where_its_harness_keeps_a_name() {
+        let s = |h: Harness| Session::new(h, "a", "1");
+        assert!(renames(&s(Harness::Claude)) && renames(&s(Harness::Opencode)) && renames(&s(Harness::Antigravity)) && renames(&s(Harness::Codex)));
+        assert!(!renames(&s(Harness::Cursor)));
+        assert!(!renames(&Session { archived: true, ..s(Harness::Codex) }));
+        assert!(renames(&Session { archived: true, ..s(Harness::Claude) }));
+    }
+
+    #[test]
+    fn what_cant_be_answered_here_says_where_to_answer_it() {
+        let s = Session::new(Harness::Claude, "claude", "a");
+        assert_eq!(answer_where(&Session { terminal: Some("Ghostty".into()), ..s.clone() }, "MacBook Pro"), "Answer in Ghostty on MacBook Pro");
+        assert_eq!(answer_where(&s, "MacBook Pro"), "Answer on MacBook Pro");
+        let app = Session { surface: codealong_peer::model::Surface::App, ..s.clone() };
+        assert_eq!(answer_where(&app, "Mac mini"), "Answer in Claude app on Mac mini");
+        assert_eq!(answer_where(&Session { harness: Harness::Codex, ..app }, "Mac mini"), "Answer in Codex on Mac mini");
+        assert_eq!(answer_where(&Session { hosted: true, terminal: Some("Ghostty".into()), ..s }, "Mac mini"), "Answer on Mac mini");
+    }
+
     #[test]
     fn a_session_pinned_in_a_worktree_in_no_project_stays_listed() {
         use codealong_peer::client::Device;
@@ -3313,6 +3441,48 @@ mod tests {
         api::Item { at: cursor as i64, kind: kind.into(), text: format!("{kind} {cursor}"), from: None, from_key: None, from_side: None, glance: None, id: id.map(String::from), input: None, output: output.map(String::from), failed: false, withdrawn: false, stop: false, questions: vec![], answers: Default::default(), link: None, sent: None, cursor, n: 0 }
     }
 
+    /// A PR's card says `#<number>` in its first happening, each happening short, as the Mac's
+    /// MessageCard.tsx `GlanceLine` does since 2026-11-23, older Macs' words included.
+    #[test]
+    fn a_pr_cards_head_weaves_its_number_into_what_happened() {
+        use codealong_peer::glance::{About, Glance, Part, Pr};
+        let none = |_: &str| None;
+        let said = |parts: &[&str], number: u64, about: About| {
+            let url = format!("https://github.com/o/r/pull/{number}");
+            let g = Glance { about, pr: Some(Pr { number, title: "Fix the parser".into(), url: Some(url.clone()) }), parts: parts.iter().map(|l| Part { session: None, line: l.to_string() }).collect() };
+            glance_title(&g, &none).replace(&format!("[#{number}]({url})"), &format!("#{number}"))
+        };
+        let cases: &[(&[&str], &str)] = &[
+            (&["ken approved it", "conflicts with main"], "ken approved #430 · conflicts with main"),
+            (&["ken approved it", "Its branch now conflicts with main, its base"], "ken approved #430 · conflicts with main"),
+            (&["ana asked for changes"], "ana asked for changes on #430"),
+            (&["ana asked for changes", "ana commented on src/a.ts"], "ana asked for changes on #430 · ana commented on src/a.ts"),
+            (&["ana commented"], "ana commented on #430"),
+            (&["ana commented on src/a.ts"], "ana commented on src/a.ts in #430"),
+            (&["ana reviewed it"], "ana reviewed #430"),
+            (&["ana had a review dismissed"], "ana had a review dismissed on #430"),
+            (&["approved"], "#430 approved"),
+            (&["It was approved"], "#430 approved"),
+            (&["merged"], "#430 merged"),
+            (&["It was merged"], "#430 merged"),
+            (&["closed"], "#430 closed"),
+            (&["It was closed without being merged"], "#430 closed"),
+            (&["changes asked for"], "Changes asked for on #430"),
+            (&["Changes were asked for"], "Changes asked for on #430"),
+            (&["checks failed: lint, test"], "#430 checks failed: lint, test"),
+            (&["Its checks failed: lint, test"], "#430 checks failed: lint, test"),
+            (&["conflicts with main"], "#430 conflicts with main"),
+            (&["Its branch now conflicts with its base"], "#430 conflicts with its base"),
+            (&["something unexpected"], "#430 · something unexpected"),
+            (&[], "#430"),
+        ];
+        for (parts, want) in cases {
+            assert_eq!(said(parts, 430, About::Pr), *want, "{parts:?}");
+        }
+        assert_eq!(said(&["Codex, gpt-5.5 reviewed it"], 7, About::Review), "Codex, gpt-5.5 reviewed #7");
+        assert_eq!(said(&["Codex, gpt-5.5 reviewed it, with 2 comments on lines"], 7, About::Review), "Codex, gpt-5.5 reviewed #7, with 2 comments on lines");
+    }
+
     /// What's neither yours nor the agent's is a card, as the Mac's MessageCard.tsx draws it:
     /// Codealong's with its line its head alone, the PR and each helper it names a link; another
     /// session's by who it's from, the sender a link to its session.
@@ -3340,14 +3510,14 @@ mod tests {
         };
         let card = shown(api::Item { glance: Some(news.clone()), ..item("codealong", 1, None, None) }).unwrap();
         assert_eq!(card.icon, CardIcon::Pr);
-        assert_eq!(card.title, "[#397 Cursor \\*file\\* tools](https://github.com/acme/web/pull/397) ana asked for changes · [“Check staging again”](codealong://session/claude:work:k1) ended its turn");
+        assert_eq!(card.title, "ana asked for changes on [#397](https://github.com/acme/web/pull/397) · [“Check staging again”](codealong://session/claude:work:k1) ended its turn");
         assert!(card.head_only);
         // A session not listed here is the title the message gave it, as words.
         let gone = Glance { about: About::Helper, pr: None, parts: vec![Part { session: Some(Named { key: "claude:work:gone".into(), title: "Old *helper*".into() }), line: "ended its turn".into() }] };
         assert_eq!(shown(api::Item { glance: Some(gone), ..item("codealong", 1, None, None) }).unwrap().title, "“Old \\*helper\\*” ended its turn");
         // A PR whose address isn't a PR's is named without a link; one with no parts is its name.
         let unlinked = Glance { pr: Some(Pr { number: 4, title: "Fix it".into(), url: None }), parts: vec![], ..news.clone() };
-        assert_eq!(shown(api::Item { glance: Some(unlinked), ..item("codealong", 1, None, None) }).unwrap().title, "#4 Fix it");
+        assert_eq!(shown(api::Item { glance: Some(unlinked), ..item("codealong", 1, None, None) }).unwrap().title, "#4");
         let helper = Glance { about: About::Helper, pr: None, parts: news.parts[1..].to_vec() };
         assert_eq!(shown(api::Item { glance: Some(helper), ..item("codealong", 1, None, None) }).unwrap().icon, CardIcon::Helper);
         // One from a Mac before the line is Codealong's by its first lines, as is one whose line
@@ -3672,7 +3842,7 @@ mod tests {
 
     #[test]
     fn an_orchestrators_runs_that_found_nothing_fold_into_a_line() {
-        let said = |kind: ItemKind, at: i64, text: &str| Item { id: at.to_string(), at, kind, text: text.into(), from: None, input: None, output: None, failed: false, withdrawn: false, questions: vec![], link: None, files: vec![], caption: None, editable: false, card: None };
+        let said = |kind: ItemKind, at: i64, text: &str| Item { id: at.to_string(), at, kind, text: text.into(), from: None, input: None, output: None, failed: false, done: true, withdrawn: false, questions: vec![], link: None, files: vec![], caption: None, editable: false, card: None };
         let first = "Look over the sessions.\n\nThis comes from the schedule \u{201c}Orchestrator\u{201d}: its 8:00 run.";
         let items = vec![
             // The run that started it, from the start of the conversation: nothing found.
@@ -3752,7 +3922,7 @@ mod tests {
 
     #[test]
     fn a_message_sent_shows_once_the_record_has_a_prompt_after_it() {
-        let said = |kind: ItemKind, at: i64, text: &str| Item { id: at.to_string(), at, kind, text: text.into(), from: None, input: None, output: None, failed: false, withdrawn: false, questions: vec![], link: None, files: vec![], caption: None, editable: false, card: None };
+        let said = |kind: ItemKind, at: i64, text: &str| Item { id: at.to_string(), at, kind, text: text.into(), from: None, input: None, output: None, failed: false, done: true, withdrawn: false, questions: vec![], link: None, files: vec![], caption: None, editable: false, card: None };
         let items = vec![said(ItemKind::You, 1_000, "old"), said(ItemKind::Agent, 9_000, "reply"), said(ItemKind::You, 10_000, "first"), said(ItemKind::Note, 12_000, "From another session: second")];
         // A message from Codealong comes as another session's: whole from Macs since 2026-10-14,
         // as a note of its first line from those before.
@@ -4785,6 +4955,7 @@ mod order_tests {
             started_at: None,
             live: true,
             in_app: false,
+            answer_where: String::new(),
             asks: false,
             pr: None,
             worktree_pr: None,
@@ -4802,6 +4973,7 @@ mod order_tests {
             cut_off: None,
             remote_control: None,
             edits: false,
+            renames: false,
             sides: false,
             name: None,
             origin: None,
