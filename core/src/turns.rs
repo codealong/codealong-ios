@@ -75,15 +75,37 @@ pub fn thread_rows(items: Vec<Item>, status: Status, in_card: Option<String>) ->
     fold_turns(rows, active)
 }
 
-/// What Codealong tells a session it has asked to listen in on a meeting (listening.ts `toldIn`):
-/// that it began, what was heard, that it ended. A conversation with any is a listening one.
+/// What Codealong tells a session it has asked to listen in on a meeting, as listening.ts
+/// `toldIn` reads it: that it began; what was heard ("Heard, lines 3 to 5 of <file>:" and the
+/// lines, or ", too much to put here: read it there."); that it ended ("Your user ended the
+/// listening." or "The listening has ended: …", then "Finish up as you were asked to."). A
+/// conversation with any is a listening one.
 fn told(text: &str) -> bool {
     let t = text.trim();
-    t.starts_with("Your user asked you to listen in on a meeting through Codealong.")
-        || t.starts_with("Heard, line ")
-        || t.starts_with("Heard, lines ")
-        || t.starts_with("Your user ended the listening.")
-        || t.starts_with("The listening has ended: ")
+    if t.starts_with("Your user asked you to listen in on a meeting through Codealong.") {
+        return true;
+    }
+    let ends = (t.starts_with("Your user ended the listening. ") || t.starts_with("The listening has ended: ")) && t.ends_with(" Finish up as you were asked to.");
+    ends || heard(t)
+}
+
+/// "Heard, line 3 of <file>:" then a new line, or "Heard, lines 3 to 5 of <file>, too much to put
+/// here: read it there." (listening.ts `HEARD`).
+fn heard(t: &str) -> bool {
+    let Some(rest) = t.strip_prefix("Heard, lines ").or_else(|| t.strip_prefix("Heard, line ")) else { return false };
+    let number = |s: &str| -> Option<usize> {
+        let n = s.chars().take_while(char::is_ascii_digit).count();
+        (n > 0).then_some(n)
+    };
+    let Some(n) = number(rest) else { return false };
+    let mut rest = &rest[n..];
+    if let Some(to) = rest.strip_prefix(" to ") {
+        let Some(n) = number(to) else { return false };
+        rest = &to[n..];
+    }
+    let Some(file) = rest.strip_prefix(" of ") else { return false };
+    let first = file.split('\n').next().unwrap_or("");
+    (first.len() > 1 && first.ends_with(':') && file.contains('\n')) || file.find(", too much to put here: read it there.").is_some_and(|at| at > 0)
 }
 
 /// An item, and where it is in the items given.
@@ -115,8 +137,9 @@ enum Base<'a> {
 /// The items as rows: runs of two or more calls one line each, calls you need to see on their own
 /// (`stays_out`), and the rest as they are (turnFolds.ts `rowsOf`, folded). A run's last call shows
 /// under it while it's `pending`; the one `in_card` shows nowhere, nor, in a conversation that
-/// `listened`, a reply that says nothing (`undrawn`). Where you answered a call's questions is a
-/// row of its own (`Base::Answered`), before the first row that came after the answer.
+/// `listened`, a reply that says nothing (`undrawn`), which still ends a run as it did. Where you
+/// answered a call's questions is a row of its own (`Base::Answered`), where the answer comes in
+/// the conversation: before the first item that came at or after it, which ends a run too.
 fn rows_of<'a>(items: &'a [Item], pending: Option<&str>, in_card: Option<&str>, listened: bool) -> Vec<Base<'a>> {
     let mut rows = Vec::new();
     let mut run: Vec<At> = Vec::new();
@@ -129,9 +152,30 @@ fn rows_of<'a>(items: &'a [Item], pending: Option<&str>, in_card: Option<&str>, 
             rows.extend(calls.into_iter().map(Base::Tool));
         }
     };
+    // Answers given to calls read so far and not yet placed: when, earliest first.
+    let mut answers: Vec<i64> = Vec::new();
     for (n, item) in items.iter().enumerate() {
         let it = At { n: n as u32, item };
+        if it.at > 0 {
+            while answers.first().is_some_and(|&t| t <= it.at) {
+                flush(&mut run, &mut rows);
+                rows.push(Base::Answered(answers.remove(0)));
+            }
+        }
         if listened && undrawn(&it) {
+            flush(&mut run, &mut rows);
+            continue;
+        }
+        if it.kind == ItemKind::Tool && it.questions.iter().any(|q| q.answered) {
+            flush(&mut run, &mut rows);
+            rows.push(Base::Tool(it));
+            // Where its Mac didn't say when, right after the call.
+            if it.result_at > 0 {
+                answers.push(it.result_at);
+                answers.sort_unstable();
+            } else {
+                rows.push(Base::Answered(it.at));
+            }
             continue;
         }
         if it.kind != ItemKind::Tool {
@@ -145,11 +189,11 @@ fn rows_of<'a>(items: &'a [Item], pending: Option<&str>, in_card: Option<&str>, 
         }
     }
     flush(&mut run, &mut rows);
+    rows.extend(answers.into_iter().map(Base::Answered));
     // The call the card shows stands in its place at the end, as the last of a run or on its own:
     // a run keeps its line for the calls before it.
     let in_card = |c: &At| Some(c.id.as_str()) == in_card;
-    let rows: Vec<Base> = rows
-        .into_iter()
+    rows.into_iter()
         .filter_map(|r| match r {
             Base::Tool(c) if in_card(&c) => None,
             Base::Tools { mut calls, .. } if calls.last().is_some_and(in_card) => {
@@ -158,30 +202,7 @@ fn rows_of<'a>(items: &'a [Item], pending: Option<&str>, in_card: Option<&str>, 
             }
             r => Some(r),
         })
-        .collect();
-    // Each answer goes before the first row that came at or after it, or right after its call
-    // where its Mac didn't say when.
-    let answers: Vec<(usize, i64)> = rows
-        .iter()
-        .enumerate()
-        .filter_map(|(at, r)| match r {
-            Base::Tool(c) if c.questions.iter().any(|q| q.answered) => Some(if c.result_at > 0 {
-                let place = rows[at + 1..].iter().position(|r| ids(r).first().is_some_and(|i| i.at > 0 && i.at >= c.result_at)).map_or(rows.len(), |p| at + 1 + p);
-                (place, c.result_at)
-            } else {
-                (at + 1, c.at)
-            }),
-            _ => None,
-        })
-        .collect();
-    let len = rows.len();
-    let mut out = Vec::with_capacity(len + answers.len());
-    for (at, r) in rows.into_iter().enumerate() {
-        out.extend(answers.iter().filter(|(place, _)| *place == at).map(|(_, when)| Base::Answered(*when)));
-        out.push(r);
-    }
-    out.extend(answers.iter().filter(|(place, _)| *place >= len).map(|(_, when)| Base::Answered(*when)));
-    out
+        .collect()
 }
 
 /// A call that stays on its own line, out of runs and folds: one that made a page, handed you
@@ -397,16 +418,22 @@ fn phrase(a: Action, count: usize) -> String {
 }
 
 /// The file a call reads or changes, as far as what its Mac wrote of it says: the Mac goes by
-/// each call's file (`TranscriptItem::file`), which the feed doesn't carry, so here the path its
-/// input starts with (Claude Code's Read, Write and Edit: a full one, or one ending in the name
-/// its label gives), else that name.
-fn file_of(c: &Item) -> &str {
-    let first = c.input.as_deref().and_then(|i| i.lines().next()).map(str::trim).unwrap_or("");
+/// each call's file (`TranscriptItem::file`, a full path), which the feed doesn't carry, so here
+/// the path its input gives, as the arguments' path where its input is them as JSON (OpenCode's
+/// `filePath`), or as the line it starts with (Claude Code's Read, Write and Edit: a full one, or
+/// one ending in the name its label gives), with any `./` off its folders; else that name.
+fn file_of(c: &Item) -> String {
+    let input = c.input.as_deref().unwrap_or("").trim();
     let name = c.text.split_once(" · ").map(|(_, named)| named.trim().trim_matches('`')).filter(|n| !n.is_empty());
-    if first.starts_with('/') || first.starts_with("~/") || name.is_some_and(|n| first.ends_with(n)) {
-        return first;
+    let argued = serde_json::from_str::<serde_json::Value>(input).ok().and_then(|v| {
+        ["filePath", "file_path", "path", "notebook_path", "TargetFile", "AbsolutePath"].iter().find_map(|k| v.get(k).and_then(|p| p.as_str()).map(str::to_string))
+    });
+    let first = input.lines().next().unwrap_or("").trim();
+    let path = argued.or_else(|| (first.starts_with('/') || first.starts_with("~/") || name.is_some_and(|n| first.ends_with(n))).then(|| first.to_string()));
+    match path {
+        Some(p) => p.split('/').filter(|part| *part != ".").collect::<Vec<_>>().join("/"),
+        None => name.unwrap_or(c.text.as_str()).to_string(),
     }
-    name.unwrap_or(c.text.as_str())
 }
 
 /// What calls did, in words (`summarizeTools`): the two kinds of most weight among them, in the
@@ -570,6 +597,11 @@ mod tests {
         let elsewhere = items[1..].to_vec();
         assert_eq!(laid(&thread_rows(elsewhere, Status::Idle, None)), ["Turn turn:a1 “Worked for 2s · Ran 1 command”", "Tool c1 in turn:a1", "Said a1 in turn:a1", "Said a2"]);
         assert!(told("Your user asked you to listen in on a meeting through Codealong. …") && told("The listening has ended: the call ended. Finish up as you were asked to.") && !told("On your PR #4"));
+        assert!(told("Heard, line 3 of /m/notes.md, too much to put here: read it there."));
+        assert!(!told("Heard, line 12 needs a correction.") && !told("Heard, lines 3 of x") && !told("The listening has ended: soon."));
+        // A dash between calls still keeps them apart, as the Mac's rows do.
+        let apart = vec![heard, call("A", 2_000, "Bash · `ls`"), agent("d", 2_500, "-"), call("B", 3_000, "Bash · `pwd`"), agent("r", 4_000, "Done.")];
+        assert_eq!(laid(&thread_rows(apart, Status::Idle, None)), ["Said h", "Turn turn:B “Worked for 3s · Ran 2 commands”", "Tool A in turn:B", "Tool B in turn:B", "Said r"]);
     }
 
     /// A fold keeps its id as older pages are read in above it, so one you opened stays open.
@@ -597,6 +629,9 @@ mod tests {
         let said = |calls: &[Item]| summarize(&calls.iter().collect::<Vec<_>>());
         assert_eq!(said(&[edit("Edit · `index.ts`", "/app/client/index.ts\n- a\n+ b"), edit("Edit · `index.ts`", "/app/server/index.ts\n- a\n+ b")]), "Edited 2 files");
         assert_eq!(said(&[edit("Edit · `index.ts`", "client/index.ts\n- a\n+ b"), edit("Edit · `index.ts`", "server/index.ts\n- a\n+ b")]), "Edited 2 files");
+        assert_eq!(said(&[edit("Write · `index.ts`", "src/index.ts"), edit("Edit · `index.ts`", "./src/index.ts\n- a\n+ b")]), "Edited 1 file");
+        let json = |path: &str| edit("edit · `index.ts`", &format!("{{\n  \"filePath\": \"{path}\",\n  \"oldString\": \"a\"\n}}"));
+        assert_eq!(said(&[json("client/index.ts"), json("server/index.ts")]), "Edited 2 files");
         assert_eq!(said(&[edit("Write · `a.rs`", "/app/a.rs"), edit("Edit · `a.rs`", "/app/a.rs\n- x\n+ y")]), "Edited 1 file");
         assert_eq!(said(&[edit("apply_patch · `a.rs`", "*** Begin Patch"), edit("Edit · `a.rs`", "{}")]), "Edited 1 file");
     }
@@ -625,6 +660,10 @@ mod tests {
         // the Mac's answers row is where the call's result is.
         let beside = vec![you("p", 1_000), agent("a1", 2_000, "Asking."), Item { questions: vec![asked.clone()], result_at: 5_000, ..call("q", 3_000, "AskUserQuestion") }, call("c1", 3_500, "Bash · `ls`"), agent("a2", 9_000, "Done.")];
         assert_eq!(laid(&thread_rows(beside, Status::Idle, None)), ["Said p", "Said a1", "Tool q", "Tool c1", "Said a2"]);
+        // A run doesn't cross the answer: the call before it is the turn before, the one after the
+        // turn after.
+        let across = vec![you("p", 1_000), agent("a1", 2_000, "Asking."), Item { questions: vec![asked.clone()], result_at: 5_000, ..call("q", 3_000, "AskUserQuestion") }, call("A", 4_000, "Bash · `ls`"), call("B", 6_000, "Bash · `pwd`"), agent("a2", 9_000, "Done.")];
+        assert_eq!(laid(&thread_rows(across, Status::Idle, None)), ["Said p", "Said a1", "Tool q", "Tool A", "Turn turn:B “Worked for 4s · Ran 1 command”", "Tool B in turn:B", "Said a2"]);
         // Answered an hour on, the turn after goes from the answer, which is on the call's result.
         let later = vec![you("p", 1_000), Item { questions: vec![asked], result_at: 3_602_000, ..call("q", 2_000, "AskUserQuestion") }, call("c1", 3_603_000, "Bash · `ls`"), agent("a", 3_607_000, "Done.")];
         assert_eq!(laid(&thread_rows(later, Status::Idle, None))[2], "Turn turn:c1 “Worked for 5s · Ran 1 command”");
