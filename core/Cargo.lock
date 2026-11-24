@@ -415,7 +415,7 @@ dependencies = [
 [[package]]
 name = "codealong-peer"
 version = "0.1.0"
-source = "git+https://github.com/codealong/codealong.git?rev=47db4f134dc2f42463ae45e285608641087797af#47db4f134dc2f42463ae45e285608641087797af"
+source = "git+https://github.com/codealong/codealong.git?rev=2101aeabe7667779d39473b0a1b4354186a8cad7#2101aeabe7667779d39473b0a1b4354186a8cad7"
 dependencies = [
  "anyhow",
  "data-encoding",
