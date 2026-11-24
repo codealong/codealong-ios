@@ -332,13 +332,13 @@ fn is_fence(line: &str) -> bool {
 
 /// How many backticks open a fence on this line, three or more (the Mac's since 2026-11-23): a
 /// fence of four can hold one of three, as a reply that shows Markdown writes it.
-fn fence_ticks(line: &str) -> Option<usize> {
+pub(crate) fn fence_ticks(line: &str) -> Option<usize> {
     let ticks = line.trim_start().chars().take_while(|&c| c == '`').count();
     (ticks >= 3).then_some(ticks)
 }
 
 /// A line that closes a fence `ticks` backticks opened: at least as many, and nothing after them.
-fn closes_fence(line: &str, ticks: usize) -> bool {
+pub(crate) fn closes_fence(line: &str, ticks: usize) -> bool {
     let t = line.trim();
     t.len() >= ticks && t.chars().all(|c| c == '`')
 }

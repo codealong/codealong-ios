@@ -2103,6 +2103,9 @@ pub struct Item {
     /// A tool call's result is in, or it says what came of it itself: one that isn't is what the
     /// session runs, or waits on you for, at the conversation's end. Always for what isn't a call.
     pub done: bool,
+    /// When a call's result came, where its Mac records it as a line of its own (when you
+    /// answered the questions it asked, say); 0 where it didn't, or hasn't.
+    pub result_at: i64,
     /// A prompt of yours the session took back before its agent answered, so the agent never saw
     /// it.
     pub withdrawn: bool,
@@ -2738,6 +2741,7 @@ impl Thread {
                     output: result.and_then(|r| r.output.clone()).or_else(|| i.output.clone()),
                     failed: i.failed || result.is_some_and(|r| r.failed),
                     done: kind != ItemKind::Tool || result.is_some() || i.output.is_some(),
+                    result_at: result.map_or(0, |r| r.at),
                     withdrawn: i.withdrawn,
                     questions: i.questions.iter().map(|q| question_of(q, answers)).collect(),
                     link: i.link.as_ref().or(result.and_then(|r| r.link.as_ref())).map(|l| WebLink { url: l.url.clone(), title: l.title.clone(), note: l.note.clone() }),
@@ -2841,6 +2845,7 @@ fn prompt_in(page: &api::Page) -> Option<Item> {
         output: None,
         failed: false,
         done: true,
+        result_at: 0,
         withdrawn: i.withdrawn,
         questions: Vec::new(),
         link: None,
@@ -2913,6 +2918,7 @@ fn fold_quiet_runs(items: Vec<Item>, from_start: bool) -> Vec<Item> {
                     output: None,
                     failed: false,
                     done: true,
+                    result_at: 0,
                     withdrawn: false,
                     questions: Vec::new(),
                     link: None,
@@ -3842,7 +3848,7 @@ mod tests {
 
     #[test]
     fn an_orchestrators_runs_that_found_nothing_fold_into_a_line() {
-        let said = |kind: ItemKind, at: i64, text: &str| Item { id: at.to_string(), at, kind, text: text.into(), from: None, input: None, output: None, failed: false, done: true, withdrawn: false, questions: vec![], link: None, files: vec![], caption: None, editable: false, card: None };
+        let said = |kind: ItemKind, at: i64, text: &str| Item { id: at.to_string(), at, kind, text: text.into(), from: None, input: None, output: None, failed: false, done: true, result_at: 0, withdrawn: false, questions: vec![], link: None, files: vec![], caption: None, editable: false, card: None };
         let first = "Look over the sessions.\n\nThis comes from the schedule \u{201c}Orchestrator\u{201d}: its 8:00 run.";
         let items = vec![
             // The run that started it, from the start of the conversation: nothing found.
@@ -3922,7 +3928,7 @@ mod tests {
 
     #[test]
     fn a_message_sent_shows_once_the_record_has_a_prompt_after_it() {
-        let said = |kind: ItemKind, at: i64, text: &str| Item { id: at.to_string(), at, kind, text: text.into(), from: None, input: None, output: None, failed: false, done: true, withdrawn: false, questions: vec![], link: None, files: vec![], caption: None, editable: false, card: None };
+        let said = |kind: ItemKind, at: i64, text: &str| Item { id: at.to_string(), at, kind, text: text.into(), from: None, input: None, output: None, failed: false, done: true, result_at: 0, withdrawn: false, questions: vec![], link: None, files: vec![], caption: None, editable: false, card: None };
         let items = vec![said(ItemKind::You, 1_000, "old"), said(ItemKind::Agent, 9_000, "reply"), said(ItemKind::You, 10_000, "first"), said(ItemKind::Note, 12_000, "From another session: second")];
         // A message from Codealong comes as another session's: whole from Macs since 2026-10-14,
         // as a note of its first line from those before.

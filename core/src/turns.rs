@@ -40,11 +40,13 @@ pub enum RunIcon {
 /// A row of the conversation, as `thread_rows` lays it out.
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
 pub struct ThreadRow {
-    /// Unique in the conversation, and the same as it goes on: what's open stays open by it.
+    /// Unique in the conversation, and the same as it goes on, older pages read in included: what's
+    /// open stays open by it.
     pub id: String,
     pub kind: RowKind,
-    /// What's said, the one call, or a run's calls; none for a turn.
-    pub items: Vec<Item>,
+    /// Where in the items given what it shows is: what's said, the one call, or a run's calls; none
+    /// for a turn. Places, not the items, so a long conversation isn't copied back each time.
+    pub items: Vec<u32>,
     /// A run's words ("Ran 3 commands · 1 failed"), or a turn's ("Worked for 2m · Ran 19
     /// commands"); empty otherwise.
     pub label: String,
@@ -67,26 +69,40 @@ const FOLD_AT: usize = 2;
 pub fn thread_rows(items: Vec<Item>, status: Status, in_card: Option<String>) -> Vec<ThreadRow> {
     let active = matches!(status, Status::Working | Status::Needs);
     // The last call with no answer yet is what's running, or what the session waits on you for.
-    let pending = items.last().filter(|i| i.kind == ItemKind::Tool && !i.done).map(|i| i.id.clone()).filter(|_| active);
-    let rows = rows_of(items, pending.as_deref(), in_card.as_deref());
+    let pending = items.last().filter(|i| i.kind == ItemKind::Tool && !i.done).map(|i| i.id.as_str()).filter(|_| active);
+    let rows = rows_of(&items, pending, in_card.as_deref());
     fold_turns(rows, active)
+}
+
+/// An item, and where it is in the items given.
+#[derive(Clone, Copy, Debug)]
+struct At<'a> {
+    n: u32,
+    item: &'a Item,
+}
+
+impl std::ops::Deref for At<'_> {
+    type Target = Item;
+    fn deref(&self) -> &Item {
+        self.item
+    }
 }
 
 /// A row before turns fold.
 #[derive(Clone, Debug)]
-enum Base {
-    Said(Item),
-    Tool(Item),
-    Tools { calls: Vec<Item>, last_shown: bool },
+enum Base<'a> {
+    Said(At<'a>),
+    Tool(At<'a>),
+    Tools { calls: Vec<At<'a>>, last_shown: bool },
 }
 
 /// The items as rows: runs of two or more calls one line each, calls you need to see on their own
 /// (`stays_out`), and the rest as they are (turnFolds.ts `rowsOf`, folded). A run's last call shows
 /// under it while it's `pending`; the one `in_card` shows nowhere.
-fn rows_of(items: Vec<Item>, pending: Option<&str>, in_card: Option<&str>) -> Vec<Base> {
+fn rows_of<'a>(items: &'a [Item], pending: Option<&str>, in_card: Option<&str>) -> Vec<Base<'a>> {
     let mut rows = Vec::new();
-    let mut run: Vec<Item> = Vec::new();
-    let flush = |run: &mut Vec<Item>, rows: &mut Vec<Base>| {
+    let mut run: Vec<At> = Vec::new();
+    let flush = |run: &mut Vec<At<'a>>, rows: &mut Vec<Base<'a>>| {
         let calls = std::mem::take(run);
         if calls.len() >= FOLD_AT {
             let last_shown = calls.last().is_some_and(|c| Some(c.id.as_str()) == pending);
@@ -95,7 +111,8 @@ fn rows_of(items: Vec<Item>, pending: Option<&str>, in_card: Option<&str>) -> Ve
             rows.extend(calls.into_iter().map(Base::Tool));
         }
     };
-    for it in items {
+    for (n, item) in items.iter().enumerate() {
+        let it = At { n: n as u32, item };
         if it.kind != ItemKind::Tool {
             flush(&mut run, &mut rows);
             rows.push(Base::Said(it));
@@ -109,7 +126,7 @@ fn rows_of(items: Vec<Item>, pending: Option<&str>, in_card: Option<&str>) -> Ve
     flush(&mut run, &mut rows);
     // The call the card shows stands in its place at the end, as the last of a run or on its own:
     // a run keeps its line for the calls before it.
-    let in_card = |c: &Item| Some(c.id.as_str()) == in_card;
+    let in_card = |c: &At| Some(c.id.as_str()) == in_card;
     rows.into_iter()
         .filter_map(|r| match r {
             Base::Tool(c) if in_card(&c) => None,
@@ -128,21 +145,30 @@ fn stays_out(c: &Item) -> bool {
     c.link.is_some() || !c.files.is_empty() || !c.questions.is_empty() || c.failed
 }
 
+/// A reply that says there's nothing to say, a dash, as a session hearing a meeting or an
+/// orchestrator answers most of the time: the Mac draws none in a session that listens
+/// (SessionThread.tsx `undrawn`), so it never ends a turn, nor is a fold of its own. Here in any
+/// session, since a reply of a dash alone says nothing anywhere.
+fn undrawn(i: &Item) -> bool {
+    i.kind == ItemKind::Agent && crate::says_nothing(&i.text)
+}
+
 /// What starts a turn: a prompt of yours, Codealong's or another session's message, a note, or
-/// your answers to questions it asked (turnFolds.ts `isBoundary`).
-fn starts_turn(r: &Base) -> bool {
+/// your answers to questions it asked (turnFolds.ts `isBoundary`), and when it did: answers when
+/// they were given, which is on the call's result.
+fn starts_turn(r: &Base) -> Option<i64> {
     match r {
-        Base::Said(i) => matches!(i.kind, ItemKind::You | ItemKind::Codealong | ItemKind::Peer | ItemKind::Note),
-        Base::Tool(c) => c.questions.iter().any(|q| q.answered),
-        Base::Tools { .. } => false,
+        Base::Said(i) if matches!(i.kind, ItemKind::You | ItemKind::Codealong | ItemKind::Peer | ItemKind::Note) => Some(i.at),
+        Base::Tool(c) if c.questions.iter().any(|q| q.answered) => Some(if c.result_at > 0 { c.result_at } else { c.at }),
+        _ => None,
     }
 }
 
-fn calls_in(rows: &[Base]) -> Vec<&Item> {
+fn calls_in<'a>(rows: &[Base<'a>]) -> Vec<At<'a>> {
     rows.iter()
         .flat_map(|r| match r {
-            Base::Tool(c) => vec![c],
-            Base::Tools { calls, .. } => calls.iter().collect(),
+            Base::Tool(c) => vec![*c],
+            Base::Tools { calls, .. } => calls.clone(),
             Base::Said(_) => vec![],
         })
         .collect()
@@ -157,15 +183,13 @@ fn fold_turns(rows: Vec<Base>, active: bool) -> Vec<ThreadRow> {
     let mut seg: Vec<Base> = Vec::new();
     let mut start_at = 0;
     for r in rows {
-        if starts_turn(&r) {
-            emit(std::mem::take(&mut seg), start_at, false, &mut out);
-            start_at = match &r {
-                Base::Said(i) | Base::Tool(i) => i.at,
-                Base::Tools { .. } => 0,
-            };
-            out.push(row(r, None));
-        } else {
-            seg.push(r);
+        match starts_turn(&r) {
+            Some(at) => {
+                emit(std::mem::take(&mut seg), start_at, false, &mut out);
+                start_at = at;
+                out.push(row(r, None));
+            }
+            None => seg.push(r),
         }
     }
     emit(seg, start_at, active, &mut out);
@@ -179,7 +203,7 @@ fn emit(seg: Vec<Base>, start_at: i64, going: bool, out: &mut Vec<ThreadRow>) {
         Base::Tools { calls, .. } => calls.iter().any(|c| c.failed),
         Base::Said(_) => false,
     });
-    let reply = seg.iter().rposition(|r| matches!(r, Base::Said(i) if i.kind == ItemKind::Agent));
+    let reply = seg.iter().rposition(|r| matches!(r, Base::Said(i) if i.kind == ItemKind::Agent && !undrawn(i)));
     let reply = match reply {
         Some(at) if at > 0 && !going && !failed => at,
         _ => {
@@ -212,33 +236,40 @@ fn emit(seg: Vec<Base>, start_at: i64, going: bool, out: &mut Vec<ThreadRow>) {
     out.extend(after.into_iter().map(|r| row(r, None)));
 }
 
-/// Work done between `from` and `to` (where they're known, else its own first and last times) as
-/// a turn's line, then its rows inside it (`makeTurnFold`); whether there was any.
+/// Work done between `from` and `to` (where they're known, else its own first and last times, a
+/// call's result's included) as a turn's line, then its rows inside it (`makeTurnFold`); whether
+/// it made one. Dashes alone aren't folded, but stay as they are. Its id goes by its last item,
+/// which an older page read in above doesn't change.
 fn fold(chunk: Vec<Base>, from: i64, to: i64, out: &mut Vec<ThreadRow>) -> bool {
-    let Some(first) = chunk.first() else { return false };
-    let times: Vec<i64> = chunk
-        .iter()
-        .flat_map(|r| match r {
-            Base::Said(i) | Base::Tool(i) => vec![i.at],
-            Base::Tools { calls, .. } => calls.iter().map(|c| c.at).collect(),
-        })
-        .filter(|&t| t > 0)
-        .collect();
-    let from = if from > 0 { from } else { times.first().copied().unwrap_or(0) };
-    let to = if to > 0 { to } else { times.last().copied().unwrap_or(0) };
+    if !chunk.iter().any(|r| !matches!(r, Base::Said(i) if undrawn(i))) {
+        out.extend(chunk.into_iter().map(|r| row(r, None)));
+        return false;
+    }
+    let Some(last) = chunk.last().and_then(|r| ids(r).last().copied()) else { return false };
+    let id = format!("turn:{}", last.id);
+    let times: Vec<i64> = chunk.iter().flat_map(ids).flat_map(|i| [i.at, i.result_at]).filter(|&t| t > 0).collect();
+    let from = if from > 0 { from } else { times.iter().copied().min().unwrap_or(0) };
+    let to = if to > 0 { to } else { times.iter().copied().max().unwrap_or(0) };
     let took = (from > 0 && to > from).then(|| worked(to - from)).flatten();
     let calls = calls_in(&chunk);
     let summary = if calls.is_empty() {
-        let updates = chunk.iter().filter(|r| matches!(r, Base::Said(i) if i.kind == ItemKind::Agent)).count();
+        let updates = chunk.iter().filter(|r| matches!(r, Base::Said(i) if i.kind == ItemKind::Agent && !undrawn(i))).count();
         if updates == 1 { "1 earlier update".to_string() } else { format!("{updates} earlier updates") }
     } else {
         summarize(&calls)
     };
     let head = took.map_or_else(|| "Worked".to_string(), |t| format!("Worked for {t}"));
-    let id = format!("turn:{}", row_id(first));
     out.push(ThreadRow { id: id.clone(), kind: RowKind::Turn, items: vec![], label: format!("{head} · {summary}"), icon: RunIcon::Other, last_shown: false, turn: None });
     out.extend(chunk.into_iter().map(|r| row(r, Some(id.clone()))));
     true
+}
+
+/// The items a row shows.
+fn ids<'a>(r: &Base<'a>) -> Vec<At<'a>> {
+    match r {
+        Base::Said(i) | Base::Tool(i) => vec![*i],
+        Base::Tools { calls, .. } => calls.clone(),
+    }
 }
 
 fn row_id(r: &Base) -> String {
@@ -251,11 +282,11 @@ fn row_id(r: &Base) -> String {
 fn row(r: Base, turn: Option<String>) -> ThreadRow {
     let id = row_id(&r);
     match r {
-        Base::Said(i) => ThreadRow { id, kind: RowKind::Said, items: vec![i], label: String::new(), icon: RunIcon::Other, last_shown: false, turn },
-        Base::Tool(c) => ThreadRow { id, kind: RowKind::Tool, items: vec![c], label: String::new(), icon: RunIcon::Other, last_shown: false, turn },
+        Base::Said(i) => ThreadRow { id, kind: RowKind::Said, items: vec![i.n], label: String::new(), icon: RunIcon::Other, last_shown: false, turn },
+        Base::Tool(c) => ThreadRow { id, kind: RowKind::Tool, items: vec![c.n], label: String::new(), icon: RunIcon::Other, last_shown: false, turn },
         Base::Tools { calls, last_shown } => {
-            let said: Vec<&Item> = calls.iter().take(if last_shown { calls.len() - 1 } else { calls.len() }).collect();
-            ThreadRow { id, kind: RowKind::Tools, label: summarize(&said), icon: icon_of(&said), items: calls, last_shown, turn }
+            let said = &calls[..if last_shown { calls.len() - 1 } else { calls.len() }];
+            ThreadRow { id, kind: RowKind::Tools, label: summarize(said), icon: icon_of(said), items: calls.iter().map(|c| c.n).collect(), last_shown, turn }
         }
     }
 }
@@ -295,7 +326,7 @@ fn action_of(label: &str) -> Action {
     }
 }
 
-fn icon_of(calls: &[&Item]) -> RunIcon {
+fn icon_of<C: std::ops::Deref<Target = Item>>(calls: &[C]) -> RunIcon {
     match calls.iter().map(|c| action_of(&c.text)).min().unwrap_or(Action::Other) {
         Action::Edit => RunIcon::Edit,
         Action::Command => RunIcon::Command,
@@ -320,17 +351,28 @@ fn phrase(a: Action, count: usize) -> String {
     if count == 1 { one.to_string() } else { many.replace("{}", &count.to_string()) }
 }
 
+/// The file a call reads or changes, as far as what its Mac wrote of it says: the Mac goes by
+/// each call's file (`TranscriptItem::file`), which the feed doesn't carry, so here the full path
+/// its input starts with (Claude Code's Read, Write and Edit), else the name its label gives.
+fn file_of(c: &Item) -> &str {
+    let first = c.input.as_deref().and_then(|i| i.lines().next()).map(str::trim).unwrap_or("");
+    if first.starts_with('/') || first.starts_with("~/") {
+        return first;
+    }
+    c.text.split_once(" · ").map_or(c.text.as_str(), |(_, named)| named.trim().trim_matches('`'))
+}
+
 /// What calls did, in words (`summarizeTools`): the two kinds of most weight among them, in the
 /// order they first came, then how many others, and how many failed. Edits and reads count files,
-/// not calls: the Mac goes by each call's file, which the feed doesn't carry, so here by its label,
-/// which names the file.
-fn summarize(calls: &[&Item]) -> String {
+/// not calls (`file_of`).
+fn summarize<C: std::ops::Deref<Target = Item>>(calls: &[C]) -> String {
     if calls.is_empty() {
         return String::new();
     }
     // Each kind, with when it first came and its calls.
     let mut kinds: Vec<(Action, Vec<&Item>)> = Vec::new();
-    for c in calls {
+    let calls: Vec<&Item> = calls.iter().map(|c| &**c).collect();
+    for &c in &calls {
         let a = action_of(&c.text);
         match kinds.iter_mut().find(|(k, _)| *k == a) {
             Some((_, of)) => of.push(c),
@@ -345,7 +387,7 @@ fn summarize(calls: &[&Item]) -> String {
         .iter()
         .map(|(_, a, of)| {
             let count = match a {
-                Action::Edit | Action::Read => of.iter().map(|c| c.text.as_str()).collect::<std::collections::HashSet<_>>().len(),
+                Action::Edit | Action::Read => of.iter().map(|c| file_of(c)).collect::<std::collections::HashSet<_>>().len(),
                 _ => of.len(),
             };
             phrase(*a, count)
@@ -405,7 +447,7 @@ mod tests {
     use crate::{Question, WebLink};
 
     fn item(kind: ItemKind, id: &str, at: i64, text: &str) -> Item {
-        Item { id: id.into(), at, kind, text: text.into(), from: None, input: None, output: None, failed: false, withdrawn: false, questions: vec![], link: None, files: vec![], caption: None, editable: false, card: None, done: true }
+        Item { id: id.into(), at, kind, text: text.into(), from: None, input: None, output: None, failed: false, withdrawn: false, questions: vec![], link: None, files: vec![], caption: None, editable: false, card: None, done: true, result_at: 0 }
     }
     fn you(id: &str, at: i64) -> Item {
         item(ItemKind::You, id, at, "Do it")
@@ -456,9 +498,9 @@ mod tests {
             laid(&rows),
             [
                 "Said p",
-                "Turn turn:a1 “Worked for 2m · Edited 1 file, ran 1 command and 1 other action”",
-                "Said a1 in turn:a1",
-                "Tools run:c1 “Edited 1 file, ran 1 command and 1 other action” in turn:a1",
+                "Turn turn:c3 “Worked for 2m · Edited 1 file, ran 1 command and 1 other action”",
+                "Said a1 in turn:c3",
+                "Tools run:c1 “Edited 1 file, ran 1 command and 1 other action” in turn:c3",
                 "Said a2",
             ]
         );
@@ -469,6 +511,45 @@ mod tests {
         assert_eq!(laid(&thread_rows(going, Status::Needs, Some("c4".into()))), ["Said p", "Said a1", "Tools run:c1 “Edited 1 file, ran 1 command and 1 other action”"]);
         // Done while it was working, a run is one line.
         assert_eq!(laid(&thread_rows(items[..5].to_vec(), Status::Working, None)), ["Said p", "Said a1", "Tools run:c1 “Edited 1 file, ran 1 command and 1 other action”"]);
+    }
+
+    /// A reply of a dash alone, as a session hearing a meeting gives, doesn't end a turn: the
+    /// update before it does, as the Mac draws none of it.
+    #[test]
+    fn a_dash_says_nothing_and_ends_no_turn() {
+        let items = vec![you("p", 1_000), call("c1", 2_000, "Bash · `ls`"), agent("a1", 3_000, "Something worth saying."), agent("a2", 4_000, "—")];
+        assert_eq!(laid(&thread_rows(items, Status::Idle, None)), ["Said p", "Turn turn:c1 “Worked for 2s · Ran 1 command”", "Tool c1 in turn:c1", "Said a1", "Said a2"]);
+        // Dashes alone before a reply aren't a fold.
+        let dashes = vec![you("p", 1_000), agent("a1", 2_000, "-"), agent("a2", 3_000, "Here.")];
+        assert_eq!(laid(&thread_rows(dashes, Status::Idle, None)), ["Said p", "Said a1", "Said a2"]);
+    }
+
+    /// A fold keeps its id as older pages are read in above it, so one you opened stays open.
+    #[test]
+    fn a_folds_id_holds_as_older_pages_come_in() {
+        let newest = vec![call("c2", 3_000, "Bash · `pwd`"), agent("a2", 4_000, "Done.")];
+        let all = [vec![you("p", 1_000), call("c1", 2_000, "Bash · `ls`")], newest.clone()].concat();
+        let turn = |items: Vec<Item>| thread_rows(items, Status::Idle, None).into_iter().find(|r| r.kind == RowKind::Turn).map(|r| r.id);
+        assert_eq!(turn(newest), Some("turn:c2".to_string()));
+        assert_eq!(turn(all), Some("turn:c2".to_string()));
+    }
+
+    /// Rows say where their items are, not the items: a run's calls in order, the turn none.
+    #[test]
+    fn rows_point_at_their_items() {
+        let items = vec![you("p", 1_000), call("c1", 2_000, "Bash · `ls`"), call("c2", 3_000, "Bash · `pwd`"), agent("a", 4_000, "Done.")];
+        let rows = thread_rows(items, Status::Idle, None);
+        assert_eq!(rows.iter().map(|r| r.items.clone()).collect::<Vec<_>>(), [vec![0], vec![], vec![1, 2], vec![3]]);
+    }
+
+    /// Edits count files by the path a call's input starts with, else the name its label gives.
+    #[test]
+    fn edits_count_files_by_their_paths() {
+        let edit = |label: &str, input: &str| Item { input: Some(input.into()), ..call("x", 0, label) };
+        let said = |calls: &[Item]| summarize(&calls.iter().collect::<Vec<_>>());
+        assert_eq!(said(&[edit("Edit · `index.ts`", "/app/client/index.ts\n- a\n+ b"), edit("Edit · `index.ts`", "/app/server/index.ts\n- a\n+ b")]), "Edited 2 files");
+        assert_eq!(said(&[edit("Write · `a.rs`", "/app/a.rs"), edit("Edit · `a.rs`", "/app/a.rs\n- x\n+ y")]), "Edited 1 file");
+        assert_eq!(said(&[edit("apply_patch · `a.rs`", "*** Begin Patch"), edit("Edit · `a.rs`", "{}")]), "Edited 1 file");
     }
 
     #[test]
@@ -482,7 +563,7 @@ mod tests {
         let made = vec![you("p", 1_000), call("c1", 2_000, "Bash · `ls`"), call("c2", 3_000, "Bash · `pwd`"), page, agent("a1", 5_000, "Writing."), agent("a2", 70_000, "Here.")];
         assert_eq!(
             laid(&thread_rows(made, Status::Idle, None)),
-            ["Said p", "Turn turn:run:c1 “Worked for 2s · Ran 2 commands”", "Tools run:c1 “Ran 2 commands” in turn:run:c1", "Tool c3", "Turn turn:a1 “Worked for 1m · 1 earlier update”", "Said a1 in turn:a1", "Said a2"]
+            ["Said p", "Turn turn:c2 “Worked for 2s · Ran 2 commands”", "Tools run:c1 “Ran 2 commands” in turn:c2", "Tool c3", "Turn turn:a1 “Worked for 1m · 1 earlier update”", "Said a1 in turn:a1", "Said a2"]
         );
         // Questions you answered start a turn of their own.
         let asked = Question { question: "Which?".into(), header: None, options: vec![], multi_select: false, answered: true, picked: vec!["A".into()], own: vec![] };
@@ -491,6 +572,10 @@ mod tests {
         // A reply with nothing before it, and a turn with no reply, stay as they are.
         assert_eq!(laid(&thread_rows(vec![you("p", 1), agent("a", 2, "Hi.")], Status::Idle, None)), ["Said p", "Said a"]);
         assert_eq!(laid(&thread_rows(vec![you("p", 1), call("c1", 2, "Bash · ls"), call("c2", 3, "Bash · ls")], Status::Idle, None)), ["Said p", "Tools run:c1 “Ran 2 commands”"]);
+        // Answered an hour on, the turn after goes from the answer, which is on the call's result.
+        let asked = Question { question: "Which?".into(), header: None, options: vec![], multi_select: false, answered: true, picked: vec!["A".into()], own: vec![] };
+        let later = vec![you("p", 1_000), Item { questions: vec![asked], result_at: 3_602_000, ..call("q", 2_000, "AskUserQuestion") }, call("c1", 3_603_000, "Bash · `ls`"), agent("a", 3_607_000, "Done.")];
+        assert_eq!(laid(&thread_rows(later, Status::Idle, None))[2], "Turn turn:c1 “Worked for 5s · Ran 1 command”");
         // Undated, a turn just worked.
         assert_eq!(laid(&thread_rows(vec![you("p", 0), call("c1", 0, "Bash · ls"), agent("a", 0, "Done.")], Status::Idle, None)), ["Said p", "Turn turn:c1 “Worked · Ran 1 command”", "Tool c1 in turn:c1", "Said a"]);
     }

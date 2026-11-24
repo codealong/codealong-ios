@@ -60,7 +60,7 @@ struct MarkdownText: View {
         case .rule:
             Divider().padding(.vertical, 4)
         case .carousel(let slides):
-            CarouselView(slides: slides)
+            CarouselView(slides: slides, written: written)
         }
     }
 
@@ -75,6 +75,8 @@ struct MarkdownText: View {
 /// how many, with arrows to the one before and after, over the slide, each its own Markdown.
 private struct CarouselView: View {
     let slides: [String]
+    /// In a prompt of yours, each slide is drawn as your prompt is (`MarkdownText.written`).
+    var written = false
     @State private var at = 0
 
     var body: some View {
@@ -96,7 +98,7 @@ private struct CarouselView: View {
                 .buttonStyle(.borderless)
             }
             if slides.indices.contains(index) {
-                MarkdownText(text: slides[index])
+                MarkdownText(text: slides[index], written: written)
             }
         }
         .padding(10)

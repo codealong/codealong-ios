@@ -2994,20 +2994,23 @@ private struct PinnedPrompt: View {
 
 extension ThreadRow: Identifiable {}
 
-/// A row of the conversation as the page draws it: a finished turn's line with the rows folded
-/// into it, by the ids the core gave them (`ThreadRow::turn`), or any other row alone.
+/// A row of the conversation as the page draws it, with the items it shows (the core gives their
+/// places in the items it laid out): a finished turn's line with the rows folded into it, by the
+/// ids the core gave them (`ThreadRow::turn`), or any other row alone.
 private struct Shown: Identifiable {
     let row: ThreadRow
-    var inner: [ThreadRow] = []
+    let items: [Item]
+    var inner: [Shown] = []
     var id: String { row.id }
 
-    static func of(_ rows: [ThreadRow]) -> [Shown] {
+    static func of(_ rows: [ThreadRow], in items: [Item]) -> [Shown] {
         var out: [Shown] = []
         for row in rows {
+            let shown = Shown(row: row, items: row.items.compactMap { items.indices.contains(Int($0)) ? items[Int($0)] : nil })
             if let turn = row.turn, out.last?.id == turn {
-                out[out.count - 1].inner.append(row)
+                out[out.count - 1].inner.append(shown)
             } else {
-                out.append(Shown(row: row))
+                out.append(shown)
             }
         }
         return out
@@ -3023,7 +3026,7 @@ private final class RowsMemo {
 
     func rows(_ items: [Item], status: Status, inCard: String?) -> [Shown] {
         if let from, from.status == status, from.inCard == inCard, from.items == items { return shown }
-        shown = Shown.of(threadRows(items: items, status: status, inCard: inCard))
+        shown = Shown.of(threadRows(items: items, status: status, inCard: inCard), in: items)
         from = (items, status, inCard)
         return shown
     }
@@ -3049,17 +3052,17 @@ private struct ConversationRows<Said: View>: View {
                     }
                 }
             } else {
-                flat(s.row)
+                flat(s)
             }
         }
     }
 
     @ViewBuilder
-    private func flat(_ row: ThreadRow) -> some View {
-        switch row.kind {
-        case .said: if let item = row.items.first { said(item) }
-        case .tool: if let item = row.items.first { ToolLine(item: item) }
-        case .tools: ToolRun(row: row)
+    private func flat(_ s: Shown) -> some View {
+        switch s.row.kind {
+        case .said: if let item = s.items.first { said(item) }
+        case .tool: if let item = s.items.first { ToolLine(item: item) }
+        case .tools: ToolRun(row: s.row, calls: s.items)
         case .turn: EmptyView()
         }
     }
@@ -3477,6 +3480,8 @@ struct PromptText: View {
 /// compact). The call the session is running, or waits on you for, shows under it on its own.
 private struct ToolRun: View {
     let row: ThreadRow
+    /// Its calls, in order.
+    let calls: [Item]
     @State private var open = false
 
     var body: some View {
@@ -3499,14 +3504,14 @@ private struct ToolRun: View {
             .accessibilityValue(open ? "Open" : "Folded")
             if open {
                 VStack(alignment: .leading, spacing: 8) {
-                    ForEach(row.lastShown ? Array(row.items.dropLast()) : row.items, id: \.id) { ToolLine(item: $0) }
+                    ForEach(row.lastShown ? Array(calls.dropLast()) : calls, id: \.id) { ToolLine(item: $0) }
                 }
                 .padding(.leading, 12)
                 .overlay(alignment: .leading) {
                     Rectangle().fill(.quaternary).frame(width: 1).padding(.leading, 7)
                 }
             }
-            if row.lastShown, let last = row.items.last {
+            if row.lastShown, let last = calls.last {
                 ToolLine(item: last)
             }
         }

@@ -332,17 +332,24 @@ fn peer_method(m: MergeMethod) -> pr::Method {
 /// in a line, is left as written.
 fn readable(text: &str) -> String {
     let mut out: Vec<String> = Vec::new();
-    let mut fenced = false;
+    // How many backticks opened the code block it's in, while it's in one: one of three inside one
+    // of four is code too (md.rs `fence_ticks`).
+    let mut fence = 0;
     let mut hidden = false;
     for line in text.lines() {
-        if !hidden && line.trim_start().starts_with("```") {
-            fenced = !fenced;
+        if fence > 0 {
+            if crate::md::closes_fence(line, fence) {
+                fence = 0;
+            }
             out.push(line.to_string());
             continue;
         }
-        if fenced {
-            out.push(line.to_string());
-            continue;
+        if !hidden {
+            if let Some(ticks) = crate::md::fence_ticks(line) {
+                fence = ticks;
+                out.push(line.to_string());
+                continue;
+            }
         }
         let mut kept = String::new();
         for (code, part) in code_spans(line) {
@@ -475,6 +482,9 @@ mod tests {
         // Code is as written, in a block or in a line.
         let code = "```html\n<sub>x</sub> <!-- y -->\n```";
         assert_eq!(readable(code), code);
+        // A fence of three inside one of four is the outer block's, comments and all.
+        let nested = "````md\n```\n<!-- kept -->\n```\n<!-- kept too -->\n````\n<!-- gone -->After";
+        assert_eq!(readable(nested), "````md\n```\n<!-- kept -->\n```\n<!-- kept too -->\n````\nAfter");
         assert_eq!(readable("Handle `<!--` here.\n\nThen `<sub>` and ``a ` <br> b``.<sub>x</sub>"), "Handle `<!--` here.\n\nThen `<sub>` and ``a ` <br> b``.x");
         assert_eq!(readable("An unclosed ` <sub>tick</sub>"), "An unclosed ` tick");
     }
