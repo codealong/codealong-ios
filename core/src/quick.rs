@@ -118,8 +118,11 @@ pub struct PrRow {
     pub deletions: u64,
     pub changed_files: u64,
     /// The sessions that worked on it, by their keys here (`@<device>:<key>`), its primary one
-    /// first.
+    /// first. Where a Mac sends no PR list, its worktree's sessions count.
     pub sessions: Vec<String>,
+    /// The sessions a Mac's PR card says worked on it (`PrCard::sessions`), by their keys here,
+    /// without the worktree's that `sessions` adds where a Mac sends no PR list (`pr_owners`).
+    pub worked_on: Vec<String>,
     /// The session a Mac tells of what happens on it; none from Macs before 2026-10-29.
     pub primary: Option<PrPrimary>,
     /// Its labels on GitHub, in the order of their names; none from Macs before 2026-10-17.
@@ -399,19 +402,17 @@ pub struct PrOwner {
 }
 
 /// The other sessions that own the open PRs `session` is on, two at most, as the Mac's header
-/// names them: the PRs that list it among the sessions that worked on them (`PrRow::sessions`),
-/// else its worktree's PR where it's on the worktree's branch (lanes.ts `sessionPrs`); none for a
-/// PR it owns itself, or that has no primary. A PR row counts a worktree's sessions as its own
-/// where a Mac sends no PR list, so its worktree's PR is its own only on that branch either way.
-/// The worktree's PR is found by any key its Macs name it by (`PrRow::known_as`), as `Store.pr`
-/// finds it.
+/// names them: the PRs whose cards list it among the sessions that worked on them
+/// (`PrRow::worked_on`, as the Mac's board.rs `pr_items`), else its worktree's PR where it's on
+/// the worktree's branch (lanes.ts `sessionPrs`); none for a PR it owns itself, or that has no
+/// primary. The worktree's PR is found by any key its Macs name it by (`PrRow::known_as`), as
+/// `Store.pr` finds it.
 #[uniffi::export]
 pub fn pr_owners(session: crate::SessionRow, prs: Vec<PrRow>) -> Vec<PrOwner> {
-    let worktrees = |p: &PrRow| session.worktree_pr.as_ref().is_some_and(|w| p.key == w.key || p.known_as.contains(&w.key.to_lowercase()));
-    let its = session.worktree_pr.as_ref().is_some_and(|w| w.its);
-    let worked: Vec<&PrRow> = prs.iter().filter(|p| p.sessions.contains(&session.key) && (its || !worktrees(p))).collect();
+    let worked: Vec<&PrRow> = prs.iter().filter(|p| p.worked_on.contains(&session.key)).collect();
     let on: Vec<&PrRow> = if worked.is_empty() {
-        prs.iter().filter(|p| its && worktrees(p)).take(1).collect()
+        let its = |p: &PrRow| session.worktree_pr.as_ref().is_some_and(|w| w.its && (p.key == w.key || p.known_as.contains(&w.key.to_lowercase())));
+        prs.iter().filter(|p| its(p)).take(1).collect()
     } else {
         worked
     };
@@ -877,6 +878,7 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                 // of your account has said whose move it is, it can, while the Mac it's asked of
                 // has it open.
                 if let Some(i) = place(&mut at, &key, &p.key, None) {
+                    add_sessions(&mut out[i].worked_on, sessions.clone());
                     add_sessions(&mut out[i].sessions, sessions);
                     if card_at_work(p, &replica.lanes) {
                         at_work.insert(i);
@@ -948,6 +950,7 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                 additions: p.additions,
                 deletions: p.deletions,
                 changed_files: p.changed_files,
+                worked_on: sessions.clone(),
                 sessions,
                 primary: primary_of(p, d),
                 labels: p.labels.iter().map(PrLabelRow::of).collect(),
@@ -1021,6 +1024,7 @@ pub(crate) fn all_prs(feeds: &Feeds, you: &crate::github::You) -> Vec<PrRow> {
                 additions: 0,
                 deletions: 0,
                 changed_files: 0,
+                worked_on: Vec::new(),
                 sessions,
                 primary: None,
                 labels: Vec::new(),
@@ -1500,6 +1504,7 @@ pub(crate) mod tests {
             deletions: 0,
             changed_files: 0,
             sessions: Vec::new(),
+            worked_on: Vec::new(),
             primary: None,
             labels: Vec::new(),
             stale: None,
@@ -1893,6 +1898,8 @@ pub(crate) mod tests {
         let prs = all_prs(&feeds, &crate::github::You::default());
         assert_eq!(prs.iter().map(|p| p.key.as_str()).collect::<Vec<_>>(), vec!["N/App#5", "O/App#9"]);
         assert_eq!(prs[0].sessions, vec!["@driving:claude:b:2", "@driving:claude:b:3", "@old:claude:c:4", "@old:claude:c:5"]);
+        // Only the cards say which worked on it: a worktree's sessions are its PR's by inference.
+        assert_eq!(prs[0].worked_on, vec!["@driving:claude:b:2", "@driving:claude:b:3"]);
     }
 
     #[test]
@@ -2219,6 +2226,7 @@ pub(crate) mod tests {
             state: state.into(),
             primary: primary.map(|k| PrPrimary { key: k.into(), says: String::new() }),
             sessions: sessions.iter().map(|s| s.to_string()).collect(),
+            worked_on: sessions.iter().map(|s| s.to_string()).collect(),
             ..pr_row(key, "Fix", false)
         };
         let mut me = row("@d:a", "Fix", Status::Idle, 1);
@@ -2240,10 +2248,12 @@ pub(crate) mod tests {
         me.worktree_pr.as_mut().unwrap().key = "O/r#9".into();
         assert_eq!(owners(&me, vec![renamed.clone()]), [("@d:z".to_string(), 9)]);
         // Off the worktree's branch, not its PR, though a Mac with no PR list counts the
-        // worktree's sessions as the PR's.
+        // worktree's sessions as the PR's; one its card lists the session on still is.
         me.worktree_pr.as_mut().unwrap().its = false;
         assert!(owners(&me, vec![renamed]).is_empty());
-        assert!(owners(&me, vec![pr("O/r#9", 9, "open", Some("@d:z"), &["@d:z", "@d:a"])]).is_empty());
+        let inferred = PrRow { worked_on: vec!["@d:z".into()], ..pr("O/r#9", 9, "open", Some("@d:z"), &["@d:z", "@d:a"]) };
+        assert!(owners(&me, vec![inferred]).is_empty());
+        assert_eq!(owners(&me, vec![pr("O/r#9", 9, "open", Some("@d:z"), &["@d:z", "@d:a"])]), [("@d:z".to_string(), 9)]);
         // Another PR it worked on still counts.
         assert_eq!(owners(&me, vec![pr("o/r#1", 1, "open", Some("@d:b"), &["@d:a"])]), [("@d:b".to_string(), 1)]);
     }

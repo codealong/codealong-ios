@@ -2402,13 +2402,16 @@ private struct QuestionsCard: View {
 
     /// The questions by their headers, the one showing filled, a tick on each answered.
     private func steps(showing shown: Int) -> some View {
-        ScrollView(.horizontal) {
+        // The answers worked out once for the strip, not once a step: a form can have many fields.
+        let given = Set(answers.map(\.question))
+        return ScrollView(.horizontal) {
             HStack(spacing: 6) {
                 ForEach(Array(pending.questions.enumerated()), id: \.offset) { i, q in
                     let on = i == shown
+                    let done = given.contains(q.question)
                     Button { go(i) } label: {
                         HStack(spacing: 4) {
-                            if answered(q) {
+                            if done {
                                 Image(systemName: "checkmark").font(.caption2.weight(.bold))
                             }
                             Text(q.header ?? "Question \(i + 1)").font(.caption.weight(.semibold)).lineLimit(1)
@@ -2421,7 +2424,7 @@ private struct QuestionsCard: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(q.header ?? "Question \(i + 1)")
-                    .accessibilityValue(answered(q) ? "Answered" : "")
+                    .accessibilityValue(done ? "Answered" : "")
                     .accessibilityAddTraits(on ? .isSelected : [])
                 }
             }
