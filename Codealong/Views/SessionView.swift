@@ -723,7 +723,8 @@ struct SessionView: View {
             }
             if let limit = row?.limit {
                 // Snoozed from here as from its Snooze menu: it goes on to what's next, if anything.
-                LimitNote(said: limit, suggested: row?.suggestedSnooze) { until in Task { await snooze(until: until) } }
+                // Carried on as the box sends a message, as Try again is.
+                LimitLine(note: limit, suggested: row?.suggestedSnooze, carryOn: canAct && pending == nil ? { Task { await send(text: limit.message) } } : nil, sending: !(store.outgoing[key] ?? []).isEmpty) { until in Task { await snooze(until: until) } }
             }
             if let error = row?.apiError {
                 // Sent as the box sends a message, so one that isn't running goes on where the box
@@ -732,25 +733,25 @@ struct SessionView: View {
             }
             // Its account signs in on its Mac: nothing here signs it in.
             if let out = row?.signedOut {
-                SessionNote(said: out, symbol: "person.crop.circle.badge.exclamationmark", tint: .orange)
+                SessionNote(words: out, symbol: "person.crop.circle.badge.exclamationmark", tint: .orange)
             }
             if let cut = row?.cutOff {
-                SessionNote(said: cut, symbol: "scissors", tint: .orange)
+                SessionNote(words: cut, symbol: "scissors", tint: .orange)
             }
             if row?.flagged == true {
-                SessionNote(said: SessionNote.flagged, symbol: "flag.fill", tint: .red)
+                SessionNote(words: SessionNote.flagged, symbol: "flag.fill", tint: .red)
             }
             if let raised = row?.raised {
-                SessionNote(said: Said(phrase: raised.phrase, words: raised.says), symbol: "arrow.up.to.line", tint: .orange)
+                SessionNote(words: raised.says, symbol: "arrow.up.to.line", tint: .orange)
             }
             if row?.aside == true {
-                SessionNote(said: SessionNote.aside, symbol: "bubble.left.and.bubble.right", tint: .blue)
+                SessionNote(words: SessionNote.aside, symbol: "bubble.left.and.bubble.right", tint: .blue)
             }
             if let finished = row?.finished {
-                SessionNote(said: Said(phrase: finished.label, words: finished.says), symbol: finished.sure ? "checkmark.seal.fill" : "checkmark.seal", tint: finished.sure ? .green : .secondary)
+                SessionNote(words: finished.says, symbol: finished.sure ? "checkmark.seal.fill" : "checkmark.seal", tint: finished.sure ? .green : .secondary)
             }
             if let seen = row?.agentSeen {
-                SessionNote(said: seen, symbol: "eye", tint: .secondary)
+                SessionNote(words: seen, symbol: "eye", tint: .secondary)
             }
             if let commands = row?.background {
                 BackgroundLine(background: commands) { background = BackgroundShown() }
@@ -1737,6 +1738,9 @@ struct SessionView: View {
         // Try again beside the note of an API error that ended its last turn.
         case "tryagain":
             if let error = row?.apiError, error.button != nil, canAct, pending == nil, (store.outgoing[key] ?? []).isEmpty { await send(text: error.message) }
+        // Carry on beside the note of a usage limit that stopped it, once the limit has lifted.
+        case "carryon":
+            if let limit = row?.limit, limit.button != nil, canAct, pending == nil, (store.outgoing[key] ?? []).isEmpty { await send(text: limit.message) }
         case "remove":
             if let held { await removeHeld(held) }
         case "edit":
@@ -2473,76 +2477,31 @@ private struct WaitingCard: ViewModifier {
     }
 }
 
-/// Something about the session's last turn, above the box, as the Mac's header says it: in a few
-/// words (the core's `Said`), the whole sentence under them once they're tapped, as the Mac's is
-/// under the pointer. What a command or a helper's terminal asks is said whole: it's what to
-/// answer.
+/// Something about the session's last turn, above the box, as the Mac's header says it, in a
+/// whole sentence rather than a few words with the rest a tap away: what happened and what to do
+/// read without a tap.
 private struct SessionNote: View {
-    let phrase: String
-    /// The whole of it, where there's more than the phrase.
-    var words: String?
+    let words: String
     let symbol: String
     let tint: Color
     /// Its words have code in backticks, from its Mac (what a command asks), drawn as code. Not
     /// for words an agent wrote, whose `*` and `_` would be read as emphasis.
     var code = false
-    @State private var whole = false
-
-    init(said: Said, symbol: String, tint: Color) {
-        self.phrase = said.phrase
-        self.words = said.words
-        self.symbol = symbol
-        self.tint = tint
-    }
-
-    init(words: String, symbol: String, tint: Color, code: Bool = false) {
-        self.phrase = words
-        self.symbol = symbol
-        self.tint = tint
-        self.code = code
-    }
 
     /// A session its provider flagged, as the Mac's Flagged chip says it.
-    static let flagged = Said(phrase: "Flagged", words: "Its provider flagged a message in this conversation, so by default its Mac sends it nothing by itself (Settings › Automation there). You can still reply yourself.")
+    static let flagged = "Its provider flagged a message in this conversation, so by default its Mac sends it nothing by itself (Settings › Automation there). You can still reply yourself."
 
     /// A session set aside for its side conversation, as the Mac's header says it.
-    static let aside = Said(phrase: "On the side", words: "You set it aside until its side conversation answers. It needs you again then.")
+    static let aside = "You set it aside until its side conversation answers. It needs you again then."
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Label {
-                Text(code ? Clock.text(phrase, now: .now) : AttributedString(phrase))
-                    // Its few words stay on a line, the rest a tap away; one said whole is all there is.
-                    .lineLimit(words == nil ? nil : 1)
-            } icon: {
-                Image(systemName: symbol).foregroundStyle(tint)
-            }
-            if whole, let words {
-                Text(words).foregroundStyle(.secondary).padding(.leading, 28)
-            }
+        Label {
+            Text(code ? Clock.text(words, now: .now) : AttributedString(words))
+        } icon: {
+            Image(systemName: symbol).foregroundStyle(tint)
         }
         .font(.footnote)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .modifier(SaysMore(whole: $whole, more: words != nil))
-    }
-}
-
-/// A note in a few words that a tap opens to the whole sentence, and closes again.
-private struct SaysMore: ViewModifier {
-    @Binding var whole: Bool
-    /// There's more to say than the note's words.
-    let more: Bool
-
-    func body(content: Content) -> some View {
-        if more {
-            content
-                .contentShape(.rect)
-                .onTapGesture { withAnimation(.snappy) { whole.toggle() } }
-                .accessibilityAddTraits(.isButton)
-                .accessibilityHint(whole ? "Says less" : "Says more")
-        } else {
-            content
-        }
     }
 }
 
@@ -2565,26 +2524,17 @@ private struct ApiErrorLine: View {
     /// A message to it is on its way: the button waits, so a second tap doesn't send another
     /// before its Mac says the turn is going.
     var sending = false
-    @State private var whole = false
 
     var body: some View {
         let button = tryAgain.flatMap { run in note.button.map { (label: $0, run: run) } }
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            // In a few words, the whole sentence once they're tapped, as the Mac's header says it.
-            VStack(alignment: .leading, spacing: 4) {
-                Label {
-                    // Its harness's words can run long: on a line, the rest a tap away.
-                    Text(note.phrase).lineLimit(1)
-                } icon: {
-                    Image(systemName: note.lost ? "wifi.exclamationmark" : "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                }
-                if whole {
-                    Text(button == nil ? note.saysAlone : note.says).foregroundStyle(.secondary).padding(.leading, 28)
-                }
+            Label {
+                Text(button == nil ? note.saysAlone : note.says)
+            } icon: {
+                Image(systemName: note.lost ? "wifi.exclamationmark" : "exclamationmark.triangle.fill").foregroundStyle(.orange)
             }
             .font(.footnote)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .modifier(SaysMore(whole: $whole, more: true))
             if let button {
                 Button(button.label, action: button.run)
                     .buttonStyle(.bordered)
@@ -2667,47 +2617,53 @@ private struct SnoozeSuggestionLine: View {
     }
 }
 
-/// What a usage limit that stopped it comes to (the core's `limit_words`), with Snooze until it
+/// What a usage limit that stopped it comes to (the core's `LimitNote`), with Snooze until it
 /// lifts beside it while that's offered (the Mac's SessionHeader.tsx, since 2026-11-13; the
 /// core's `SuggestedSnooze` for a limit): a tap snoozes it until the limit lifts, as the first
 /// time in its Snooze menu does. It's back then, for the minute or few until its Mac tells it to
-/// carry on, where its Mac does.
-private struct LimitNote: View {
-    /// Which limit and when it lifts, and the whole of it once that's tapped.
-    let said: Said
+/// carry on, where its Mac does. Once the limit has lifted, Carry on beside it tells it to now, in
+/// one tap rather than typing it, where this phone can act on it there.
+private struct LimitLine: View {
+    let note: LimitNote
     let suggested: SuggestedSnooze?
+    /// Sends what Carry on says; none where it can't be sent from here, when the words say to send
+    /// it something instead.
+    let carryOn: (() -> Void)?
+    /// A message to it is on its way: the button waits, so a second tap doesn't send another
+    /// before its Mac says the turn is going.
+    var sending = false
     /// A still page's (one sliding in): drawn as it is now, not kept ticking.
     var now: Date?
     let snooze: (Date) -> Void
-    @State private var whole = false
 
     var body: some View {
         if let now {
-            note(now: now)
+            line(now: now)
         } else {
             TimelineView(.periodic(from: .now, by: 30)) { context in
-                note(now: context.date)
+                line(now: context.date)
             }
         }
     }
 
-    private func note(now: Date) -> some View {
+    private func line(now: Date) -> some View {
         let lifts = suggested.flatMap { $0.why == .limit && now.ms < $0.offeredTill ? $0 : nil }
+        let button = carryOn.flatMap { run in note.button.map { (label: $0, run: run) } }
         return HStack(alignment: .firstTextBaseline, spacing: 8) {
-            VStack(alignment: .leading, spacing: 4) {
-                Label {
-                    Text(Clock.text(said.phrase, now: now)).lineLimit(1)
-                } icon: {
-                    Image(systemName: "gauge.with.dots.needle.100percent").foregroundStyle(.orange)
-                }
-                if whole {
-                    Text(Clock.text(said.words, now: now)).foregroundStyle(.secondary).padding(.leading, 28)
-                }
+            Label {
+                Text(Clock.text(button == nil ? note.saysAlone : note.says, now: now))
+            } icon: {
+                Image(systemName: "gauge.with.dots.needle.100percent").foregroundStyle(.orange)
             }
             .font(.footnote)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .modifier(SaysMore(whole: $whole, more: true))
-            if let lifts {
+            if let button {
+                Button(button.label, action: button.run)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(sending)
+                    .accessibilityHint("Sends it a message saying the limit has lifted, to carry on where it left off")
+            } else if let lifts {
                 // Checked again as it's tapped: drawn up to 30 seconds ago, the offer may have ended.
                 Button("Snooze until it lifts") {
                     if Date.now.ms < lifts.offeredTill { snooze(Date(ms: lifts.until)) }
@@ -3921,31 +3877,31 @@ struct SessionGlance: View {
                 SessionNote(words: waits, symbol: "terminal", tint: .orange)
             }
             if let limit = row?.limit {
-                LimitNote(said: limit, suggested: row?.suggestedSnooze, now: .now) { _ in }
+                LimitLine(note: limit, suggested: row?.suggestedSnooze, carryOn: canAct && pending == nil ? {} : nil, now: .now) { _ in }
             }
             if let error = row?.apiError {
                 ApiErrorLine(note: error, tryAgain: canAct && pending == nil ? {} : nil)
             }
             if let out = row?.signedOut {
-                SessionNote(said: out, symbol: "person.crop.circle.badge.exclamationmark", tint: .orange)
+                SessionNote(words: out, symbol: "person.crop.circle.badge.exclamationmark", tint: .orange)
             }
             if let cut = row?.cutOff {
-                SessionNote(said: cut, symbol: "scissors", tint: .orange)
+                SessionNote(words: cut, symbol: "scissors", tint: .orange)
             }
             if row?.flagged == true {
-                SessionNote(said: SessionNote.flagged, symbol: "flag.fill", tint: .red)
+                SessionNote(words: SessionNote.flagged, symbol: "flag.fill", tint: .red)
             }
             if let raised = row?.raised {
-                SessionNote(said: Said(phrase: raised.phrase, words: raised.says), symbol: "arrow.up.to.line", tint: .orange)
+                SessionNote(words: raised.says, symbol: "arrow.up.to.line", tint: .orange)
             }
             if row?.aside == true {
-                SessionNote(said: SessionNote.aside, symbol: "bubble.left.and.bubble.right", tint: .blue)
+                SessionNote(words: SessionNote.aside, symbol: "bubble.left.and.bubble.right", tint: .blue)
             }
             if let finished = row?.finished {
-                SessionNote(said: Said(phrase: finished.label, words: finished.says), symbol: finished.sure ? "checkmark.seal.fill" : "checkmark.seal", tint: finished.sure ? .green : .secondary)
+                SessionNote(words: finished.says, symbol: finished.sure ? "checkmark.seal.fill" : "checkmark.seal", tint: finished.sure ? .green : .secondary)
             }
             if let seen = row?.agentSeen {
-                SessionNote(said: seen, symbol: "eye", tint: .secondary)
+                SessionNote(words: seen, symbol: "eye", tint: .secondary)
             }
             if let commands = row?.background {
                 BackgroundLine(background: commands) {}

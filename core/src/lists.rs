@@ -744,7 +744,7 @@ mod tests {
 
     #[test]
     fn in_a_worktree_the_ones_moved_to_the_top_lead_their_kind() {
-        let up = SessionRow { raised: Some(crate::Raised { at: NOW, agent: false, says: String::new(), phrase: String::new() }), ..in_worktree("up", "App", "app", Status::Unread, NOW - 5 * HOUR) };
+        let up = SessionRow { raised: Some(crate::Raised { at: NOW, agent: false, says: String::new() }), ..in_worktree("up", "App", "app", Status::Unread, NOW - 5 * HOUR) };
         let rows = [in_worktree("new", "App", "app", Status::Unread, NOW - HOUR), up, in_worktree("needs", "App", "app", Status::Needs, NOW - 9 * HOUR)];
         let out = project_groups(&rows, &HashMap::new(), &HashMap::new(), "", NOW);
         // What needs you still comes first, as a lane sorts them on the Mac.

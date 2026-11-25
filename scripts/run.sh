@@ -11,7 +11,8 @@
 # presses Move to top (or Back in line) there, or Remove or Edit beside the first message it holds;
 # PRESS=send:<words> sends those to it, as the box does, PRESS=type:<words> writes them in its box
 # and presses Send (a command led by `!` runs on its Mac), PRESS=tryagain presses Try again beside an
-# API error that ended its last turn, PRESS=questions opens the questions card below, as a tap
+# API error that ended its last turn, PRESS=carryon presses Carry on beside a usage limit that
+# stopped it once the limit has lifted, PRESS=questions opens the questions card below, as a tap
 # on its folded head does, PRESS=tasks opens the list of what
 # its agent left running in the background with the first one's output shown, PRESS=taskstop
 # presses Stop on the first of those still running, PRESS=pr taps the title, which opens the

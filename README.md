@@ -92,9 +92,12 @@ read again as it runs. One whose command waits at a question in a terminal on it
 the question, to answer there, and one whose helper waits in its terminal there before it starts
 (Codex's review of a repo's hooks) says what that shows, to answer from the helper's line on the
 Mac. One whose last turn ended on an API error says so under its
-conversation, in its harness's words, with *Try again* beside it; one its account's sign-in was
-turned down for says so too, and whether Codealong carries it on once the account is signed in
-again on its Mac (`/login` in its box signs in nothing from the phone, and says so).
+conversation, in its harness's words, with *Try again* beside it; one stopped at its account's
+usage limit says which, when it lifts and whether another account has room, and once it has lifted,
+*Carry on* beside it tells it to carry on in one tap, as its Mac would a few minutes later; one its
+account's sign-in was turned down for says so too, and whether Codealong carries it on once the
+account is signed in again on its Mac (`/login` in its box signs in nothing from the phone, and
+says so).
 
 **Work through what's waiting.** Sessions that need you, PRs waiting on your review and finished
 turns come one after another, in the Mac's order: the ones moved to the top first, then each kind
@@ -121,8 +124,7 @@ a swipe away. Replies an
 agent suggested for a session (a supervisor going over what waits on you, with `codealong session
 suggest`) show above its box, in a card of suggestions' color whose sparkle says who suggested
 them: tap one to send it, or hold it to change it first. What's said of a session over its box
-(cut off, signed out, a usage limit, seen by its agent) is a few words, as on the Mac, and a tap
-on them says the rest. Helper sessions
+(cut off, signed out, a usage limit, seen by its agent) is said in a whole sentence. Helper sessions
 (ones an agent started to help it, and automatic PR reviews) stay out of your lists unless they
 need you, as on the Mac.
 

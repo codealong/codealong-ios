@@ -288,7 +288,7 @@ pub struct SessionRow {
     pub flagged: bool,
     /// Its last turn was cut off partway (its terminal closed, Codealong or the machine restarted)
     /// and nothing has been said since: what that comes to, as the Mac says it.
-    pub cut_off: Option<Said>,
+    pub cut_off: Option<String>,
     /// While it runs, the page that opens it in the Claude app, through its Remote Control: what
     /// you type there goes to it where it runs.
     pub remote_control: Option<String>,
@@ -312,8 +312,8 @@ pub struct SessionRow {
     /// to it.
     pub moved_to: Option<MovedTo>,
     /// Its last turn ended on its account's usage limit and nothing has been said since: what that
-    /// comes to, in a sentence or two, with `{in:<ms>}` for when it lifts.
-    pub limit: Option<Said>,
+    /// comes to, and Carry on once it has lifted (`limit_note`).
+    pub limit: Option<LimitNote>,
     /// Its last turn ended on an error from its API, a lost connection included, and nothing has
     /// gone on since: what that comes to, and Try again (`api_error_note`).
     pub api_error: Option<ApiErrorNote>,
@@ -321,7 +321,7 @@ pub struct SessionRow {
     /// signed out) and nothing has been said since: what that comes to, in its harness's words,
     /// and who carries it on (`signed_out_words`). A sign-in is its Mac's. None from Macs before
     /// 2026-11-17, which show such a turn as finished.
-    pub signed_out: Option<Said>,
+    pub signed_out: Option<String>,
     /// Quiet, from its Mac: a turn it ends doesn't wait on you, and it comes to you only when it
     /// needs you (its Mac has already left its turns out of Your turn).
     pub quiet: bool,
@@ -363,7 +363,7 @@ pub struct SessionRow {
     /// What's said of a turn its own agent marked seen, which needs nothing from you and so is
     /// idle rather than Your turn (`Session::agent_seen`, LaneRow.tsx `AgentSeenChip`). None from
     /// Macs before 2026-10-30, which show such a turn as Your turn.
-    pub agent_seen: Option<Said>,
+    pub agent_seen: Option<String>,
     /// The side conversation that answered last since you saw it, which its page brings up as you
     /// come to it. None from Macs before 2026-10-30.
     pub side_answer: Option<SideAnswer>,
@@ -708,15 +708,6 @@ fn mark_of(s: &Session, status: Status, snoozed: bool, aside: bool) -> Mark {
     }
 }
 
-/// Something said of a session over its box, in a few words and in full, as the Mac's header says
-/// it: the words there, the sentence under the pointer (lanes.ts `endedPhrase`, `limitPhrase`).
-/// The phone shows the words, and the sentence once they're tapped.
-#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
-pub struct Said {
-    pub phrase: String,
-    pub words: String,
-}
-
 /// That a session's work is done and nothing is left for you, as the Mac's chip says it
 /// (insights.ts `finishedLabel`): Finished when something besides its last reply says so (a PR
 /// of its merged, a todo of its done, its own status line), Looks finished when only the read of
@@ -821,15 +812,13 @@ pub struct Raised {
     /// Who moved it there, why and until when, as the Mac's Top chip says it (LaneRow.tsx
     /// `RaisedChip`).
     pub says: String,
-    /// The same in a few words, as the Mac's header says it: who moved it there.
-    pub phrase: String,
 }
 
 impl From<&codealong_peer::model::Raised> for Raised {
     fn from(r: &codealong_peer::model::Raised) -> Raised {
         let by = if r.agent { format!(" by {}", r.by_title.as_deref().filter(|t| !t.is_empty()).unwrap_or("an agent")) } else { String::new() };
         let says = format!("Moved to the top{by}{}. It\u{2019}s first in every queue until you send it something or see its finished turn.", because(r.note.as_deref()));
-        Raised { at: r.at, agent: r.agent, says, phrase: format!("Moved to the top{by}") }
+        Raised { at: r.at, agent: r.agent, says }
     }
 }
 
@@ -889,9 +878,8 @@ fn because(note: Option<&str>) -> String {
 }
 
 /// What a turn its own agent marked seen says (LaneRow.tsx `AgentSeenChip`).
-fn agent_seen_words(seen: &codealong_peer::model::AgentSeen) -> Said {
-    let words = format!("Seen by its agent, which said this turn needs nothing from you{}. Mark as unread makes it Your turn again.", because(seen.note.as_deref()));
-    Said { phrase: "Seen by its agent".into(), words }
+fn agent_seen_words(seen: &codealong_peer::model::AgentSeen) -> String {
+    format!("Seen by its agent, which said this turn needs nothing from you{}. Mark as unread makes it Your turn again.", because(seen.note.as_deref()))
 }
 
 /// The order of sessions moved to the top, ahead of the rest (the Mac's board.rs `raised_order`):
@@ -1709,7 +1697,7 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 queued: s.queued.iter().map(|m| HeldMessage { id: m.id.clone(), at: m.at, text: m.text.clone(), words: held_words(&m.text) }).collect(),
                 queued_at: s.queued_at,
                 flagged: s.flagged,
-                cut_off: s.cut_off.filter(|_| status != Status::Working).map(|_| Said { phrase: "Cut off partway".into(), words: CUT_OFF.to_string() }),
+                cut_off: s.cut_off.filter(|_| status != Status::Working).map(|_| CUT_OFF.to_string()),
                 remote_control: s.remote_control.as_deref().filter(|_| s.live).map(remote_control_url),
                 edits: matches!(s.harness, Harness::Claude | Harness::Codex | Harness::Opencode),
                 sides: matches!(s.harness, Harness::Claude | Harness::Codex | Harness::Antigravity),
@@ -1731,7 +1719,7 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                     words: format!("Moved to {}", to.account),
                     says: format!("Moved to \u{201c}{}\u{201d} on {}", to.title, to.account),
                 }),
-                limit: s.limit.as_ref().filter(|_| status != Status::Working).map(|l| limit_words(&s.account, l, now)),
+                limit: limit_note(s, status, now),
                 api_error: api_error_note(s, status),
                 signed_out: signed_out_words(s, status),
                 quiet: s.quiet,
@@ -1866,8 +1854,6 @@ fn remote_control_url(id: &str) -> String {
 /// `tryAgain`).
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
 pub struct ApiErrorNote {
-    /// What ended it in a few words, as the Mac's header says it (lanes.ts `endedPhrase`).
-    pub phrase: String,
     /// What ended it, in its harness's words where it said them, and that Codealong carries it on
     /// where it does: for beside the button.
     pub says: String,
@@ -1908,7 +1894,6 @@ fn api_error_note(s: &Session, status: Status) -> Option<ApiErrorNote> {
         (what.clone(), format!("{what} Send it something to try again."))
     };
     Some(ApiErrorNote {
-        phrase: said.map_or_else(|| "Couldn\u{2019}t reach its API".to_string(), |said| format!("API error: {said}")),
         says,
         says_alone,
         lost: s.connection_lost.is_some(),
@@ -1922,7 +1907,7 @@ fn api_error_note(s: &Session, status: Status) -> Option<ApiErrorNote> {
 /// `signedOutWords`): in its harness's words, and that Codealong carries it on once the account is
 /// signed in again where its Mac will, else that it signs in on its Mac. The phone signs nothing
 /// in, so there's no button.
-fn signed_out_words(s: &Session, status: Status) -> Option<Said> {
+fn signed_out_words(s: &Session, status: Status) -> Option<String> {
     let out = s.signed_out.as_ref().filter(|_| status != Status::Working)?;
     let said = out.said.trim().trim_end_matches(|c: char| c.is_whitespace() || c == '.');
     let what = if said.is_empty() {
@@ -1935,13 +1920,46 @@ fn signed_out_words(s: &Session, status: Status) -> Option<Said> {
     } else {
         " Sign in to it on the Mac it runs on, then send it something to go on."
     };
-    Some(Said { phrase: "Signed out".into(), words: format!("{what}{then}") })
+    Some(format!("{what}{then}"))
+}
+
+/// That a usage limit stopped a session's last turn and nothing has been said since, as the Mac's
+/// session header says it (lanes.ts `limitWords`), with Carry on beside it once the limit has
+/// lifted: a tap tells it to carry on, as its Mac does a few minutes after the limit lifts where it
+/// will (reconnect.rs), without waiting for that or typing it.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct LimitNote {
+    /// Which limit, when it lifts and whether another account has room, with `{in:<ms>}` for when
+    /// it lifts: for beside the button.
+    pub says: String,
+    /// The same where there's no button (this device can't act on it there), which ends telling
+    /// you to send it something once the limit has lifted.
+    pub says_alone: String,
+    /// "Carry on", once the limit has lifted. None before then, when it would only stop at the
+    /// limit again, where its harness didn't say when it lifts, and for an archived one.
+    pub button: Option<String>,
+    /// What Carry on sends it, as yours: what its Mac sends it once the limit lifts (reconnect.rs
+    /// `Why::Limit`).
+    pub message: String,
+}
+
+/// What Carry on sends a session its usage limit stopped, once the limit has lifted, as yours: what
+/// its Mac tells it then (reconnect.rs `Why::Limit`).
+const CARRY_ON_LIMIT: &str = "Your last turn stopped at your account's usage limit, which has lifted now, so carry on where you left off.";
+
+/// What a usage limit that stopped a session comes to (`LimitNote`), while it isn't working.
+fn limit_note(s: &Session, status: Status, now: i64) -> Option<LimitNote> {
+    let limit = s.limit.as_ref().filter(|_| status != Status::Working)?;
+    let lifted = limit.resets_at.is_some_and(|t| t <= now);
+    let (says, says_alone) = limit_words(&s.account, limit, now);
+    Some(LimitNote { says, says_alone, button: (lifted && !s.archived).then(|| "Carry on".to_string()), message: CARRY_ON_LIMIT.to_string() })
 }
 
 /// What a usage limit that stopped a session comes to, as the Mac's session header says it
-/// (lanes.ts `limitWords`): which limit, when it lifts, and whether another account has room. A
-/// move to that account is made on the Mac, which opens a terminal there.
-fn limit_words(account: &str, limit: &SessionLimit, now: i64) -> Said {
+/// (lanes.ts `limitWords`): which limit, when it lifts, and whether another account has room, for
+/// beside Carry on and where there's none. A move to that account is made on the Mac, which opens a
+/// terminal there.
+fn limit_words(account: &str, limit: &SessionLimit, now: i64) -> (String, String) {
     let lifted = limit.resets_at.is_some_and(|t| t <= now);
     let name = match limit.meter.as_deref() {
         Some("session") => "5-hour limit".to_string(),
@@ -1949,27 +1967,23 @@ fn limit_words(account: &str, limit: &SessionLimit, now: i64) -> Said {
         Some(m) if m.starts_with("model:") => format!("weekly {} limit", &m["model:".len()..]),
         _ => "usage limit".to_string(),
     };
-    // Which limit and when it lifts, as the Mac's header says it (lanes.ts `limitPhrase`).
-    let named = format!("{}{}", name[..1].to_uppercase(), &name[1..]);
-    let phrase = match limit.resets_at {
-        _ if lifted => format!("{named} · lifted"),
-        Some(t) => format!("{named} · lifts {{in:{t}}}"),
-        None => named,
-    };
     let spent = if limit.spend_capped { ", with no extra usage to carry it" } else { "" };
     let then = if limit.continues { ", and Codealong tells it to carry on then" } else { "" };
-    let when = match limit.resets_at {
-        _ if lifted && limit.continues => " It has lifted since: Codealong tells it to carry on.".to_string(),
-        _ if lifted => " It has lifted since: send it something to go on.".to_string(),
-        Some(t) => format!(" It lifts {{in:{t}}}{then}."),
-        None => String::new(),
-    };
+    let stopped = format!("It stopped at {account}\u{2019}s {name}{spent}.");
+    if lifted {
+        // Beside Carry on, that's what to do; its Mac tells it to carry on in a few minutes where
+        // it will, which the button doesn't wait for.
+        let alone = if limit.continues { " It has lifted since: Codealong tells it to carry on." } else { " It has lifted since: send it something to go on." };
+        let beside = if limit.continues { alone } else { " It has lifted since." };
+        return (format!("{stopped}{beside}"), format!("{stopped}{alone}"));
+    }
+    let when = limit.resets_at.map(|t| format!(" It lifts {{in:{t}}}{then}.")).unwrap_or_default();
     let room = match &limit.move_to {
-        _ if lifted => String::new(),
         Some(to) => format!(" {to} has room: move it there on its Mac to go on now."),
         None => " No other account has room.".to_string(),
     };
-    Said { phrase, words: format!("It stopped at {account}\u{2019}s {name}{spent}.{when}{room}") }
+    let words = format!("{stopped}{when}{room}");
+    (words.clone(), words)
 }
 
 /// Projects lined up across Macs, as a Mac lines another device's worktrees up with its own
@@ -3971,18 +3985,40 @@ mod tests {
     #[test]
     fn a_usage_limit_says_when_it_lifts_and_who_has_room() {
         let limit = SessionLimit { meter: Some("session".into()), resets_at: Some(5_000), spend_capped: false, at: 1, move_to: Some("claude2".into()), continues: false, model: None };
-        assert_eq!(limit_words("claude", &limit, 1_000).words, "It stopped at claude\u{2019}s 5-hour limit. It lifts {in:5000}. claude2 has room: move it there on its Mac to go on now.");
-        assert_eq!(limit_words("claude", &limit, 9_000).words, "It stopped at claude\u{2019}s 5-hour limit. It has lifted since: send it something to go on.");
+        let both = |w: &str| (w.to_string(), w.to_string());
+        assert_eq!(limit_words("claude", &limit, 1_000), both("It stopped at claude\u{2019}s 5-hour limit. It lifts {in:5000}. claude2 has room: move it there on its Mac to go on now."));
+        // Lifted, beside Carry on it says only that; alone, to send it something.
+        assert_eq!(
+            limit_words("claude", &limit, 9_000),
+            ("It stopped at claude\u{2019}s 5-hour limit. It has lifted since.".into(), "It stopped at claude\u{2019}s 5-hour limit. It has lifted since: send it something to go on.".into())
+        );
         let week = SessionLimit { meter: Some("model:Opus".into()), resets_at: None, spend_capped: true, move_to: None, ..limit.clone() };
-        assert_eq!(limit_words("claude", &week, 1_000).words, "It stopped at claude\u{2019}s weekly Opus limit, with no extra usage to carry it. No other account has room.");
+        assert_eq!(limit_words("claude", &week, 1_000), both("It stopped at claude\u{2019}s weekly Opus limit, with no extra usage to carry it. No other account has room."));
         // Its Mac tells it to carry on once the limit lifts.
         let carries = SessionLimit { continues: true, ..limit };
-        assert_eq!(limit_words("claude", &carries, 1_000).words, "It stopped at claude\u{2019}s 5-hour limit. It lifts {in:5000}, and Codealong tells it to carry on then. claude2 has room: move it there on its Mac to go on now.");
-        assert_eq!(limit_words("claude", &carries, 9_000).words, "It stopped at claude\u{2019}s 5-hour limit. It has lifted since: Codealong tells it to carry on.");
-        // In a few words, which limit and when it lifts, as the Mac's header says it.
-        assert_eq!(limit_words("claude", &carries, 1_000).phrase, "5-hour limit · lifts {in:5000}");
-        assert_eq!(limit_words("claude", &carries, 9_000).phrase, "5-hour limit · lifted");
-        assert_eq!(limit_words("claude", &week, 1_000).phrase, "Weekly Opus limit");
+        assert_eq!(limit_words("claude", &carries, 1_000), both("It stopped at claude\u{2019}s 5-hour limit. It lifts {in:5000}, and Codealong tells it to carry on then. claude2 has room: move it there on its Mac to go on now."));
+        assert_eq!(limit_words("claude", &carries, 9_000), both("It stopped at claude\u{2019}s 5-hour limit. It has lifted since: Codealong tells it to carry on."));
+    }
+
+    #[test]
+    fn a_lifted_limit_offers_carry_on() {
+        let limit = SessionLimit { meter: Some("session".into()), resets_at: Some(5_000), spend_capped: false, at: 1, move_to: None, continues: false, model: None };
+        let stopped = Session { limit: Some(limit.clone()), ..Session::new(Harness::Claude, "claude", "limited") };
+        // Before it lifts, carrying on would only stop at the limit again.
+        assert_eq!(limit_note(&stopped, Status::Unread, 1_000).and_then(|n| n.button), None);
+        // Once it has, Carry on sends what its Mac would, as yours.
+        let note = limit_note(&stopped, Status::Unread, 9_000).unwrap();
+        assert_eq!(note.button.as_deref(), Some("Carry on"));
+        assert_eq!(note.message, "Your last turn stopped at your account's usage limit, which has lifted now, so carry on where you left off.");
+        // Its Mac carrying it on by itself in a few minutes, the button still does it now.
+        let carries = Session { limit: Some(SessionLimit { continues: true, ..limit.clone() }), ..stopped.clone() };
+        assert_eq!(limit_note(&carries, Status::Unread, 9_000).and_then(|n| n.button).as_deref(), Some("Carry on"));
+        // Where its harness didn't say when it lifts, and archived, there's no button; at work
+        // again, no note.
+        let unsaid = Session { limit: Some(SessionLimit { resets_at: None, ..limit }), ..stopped.clone() };
+        assert_eq!(limit_note(&unsaid, Status::Unread, 9_000).and_then(|n| n.button), None);
+        assert_eq!(limit_note(&Session { archived: true, ..stopped.clone() }, Status::Unread, 9_000).and_then(|n| n.button), None);
+        assert_eq!(limit_note(&stopped, Status::Working, 9_000), None);
     }
 
     #[test]
@@ -5122,9 +5158,7 @@ mod order_tests {
         let up = row("agents").raised.clone().unwrap();
         assert_eq!((up.at, up.agent), (6, true));
         assert!(up.says.starts_with("Moved to the top by Orchestrator: The deploy waits on it. It\u{2019}s"), "{}", up.says);
-        assert_eq!(up.phrase, "Moved to the top by Orchestrator");
-        assert_eq!(row("seen").agent_seen.as_ref().map(|s| s.words.as_str()), Some("Seen by its agent, which said this turn needs nothing from you: Nothing new. Mark as unread makes it Your turn again."));
-        assert_eq!(row("mine").raised.as_ref().map(|r| r.phrase.as_str()), Some("Moved to the top"));
+        assert_eq!(row("seen").agent_seen.as_deref(), Some("Seen by its agent, which said this turn needs nothing from you: Nothing new. Mark as unread makes it Your turn again."));
         assert_eq!(row("side").side_answer, Some(SideAnswer { id: "1793-4".into(), open: true, at: 8 }));
         // From a Mac before these, a row says none of it.
         assert_eq!((row("side").raised.clone(), row("side").agent_seen.clone(), row("seen").side_answer.clone()), (None, None, None));
@@ -5376,7 +5410,6 @@ mod order_tests {
         assert_eq!(
             api_error_note(&overloaded, Status::Unread),
             Some(ApiErrorNote {
-                phrase: "API error: 529 Overloaded. This is a server-side issue, usually temporary".into(),
                 says: "Its last turn ended on an API error: 529 Overloaded. This is a server-side issue, usually temporary.".into(),
                 says_alone: "Its last turn ended on an API error: 529 Overloaded. This is a server-side issue, usually temporary. Send it something to try again.".into(),
                 lost: false,
@@ -5388,14 +5421,12 @@ mod order_tests {
         let lost = Session { api_error: Some(ApiError { at: 5, said: "No response from API".into() }), connection_lost: Some(ConnectionLost { at: 5, continues: true }), ..base.clone() };
         let note = api_error_note(&lost, Status::Unread).unwrap();
         assert_eq!(note.says, "Its last turn ended on an API error: No response from API. Codealong tells it to carry on once the API can be reached again.");
-        assert_eq!(note.phrase, "API error: No response from API");
         assert_eq!(note.says_alone, note.says);
         assert_eq!((note.lost, note.button.as_deref()), (true, Some("Try now")));
         // A Mac from before 2026-11-11 sends only the lost connection, without its words.
         let older = Session { connection_lost: Some(ConnectionLost { at: 5, continues: false }), ..base.clone() };
         let note = api_error_note(&older, Status::Idle).unwrap();
         assert_eq!(note.says, "Its last turn ended because it couldn\u{2019}t reach its API: the machine slept, or the network dropped.");
-        assert_eq!(note.phrase, "Couldn\u{2019}t reach its API");
         assert_eq!(note.says_alone, "Its last turn ended because it couldn\u{2019}t reach its API: the machine slept, or the network dropped. Send it something to try again.");
         // Words that are only spaces are none.
         let blank = Session { api_error: Some(ApiError { at: 5, said: " . ".into() }), ..older.clone() };
@@ -5412,12 +5443,12 @@ mod order_tests {
         let base = Session::new(Harness::Claude, "claude2", "out");
         let out = |continues: bool, said: &str| Session { signed_out: Some(SignedOut { at: 5, said: said.into(), continues }), ..base.clone() };
         assert_eq!(
-            signed_out_words(&out(true, "OAuth token revoked · Please run /login. "), Status::Unread).map(|s| s.words).as_deref(),
+            signed_out_words(&out(true, "OAuth token revoked · Please run /login. "), Status::Unread).as_deref(),
             Some("Its last turn ended because claude2\u{2019}s sign-in was turned down: OAuth token revoked · Please run /login. Codealong tells it to carry on once the account is signed in again, which often comes right by itself in a minute or two.")
         );
         // Where its Mac won't carry it on, it's signed in there, and sent something.
         assert_eq!(
-            signed_out_words(&out(false, " "), Status::Idle).map(|s| s.words).as_deref(),
+            signed_out_words(&out(false, " "), Status::Idle).as_deref(),
             Some("Its last turn ended because claude2\u{2019}s sign-in was turned down. Sign in to it on the Mac it runs on, then send it something to go on.")
         );
         // At work again it's past it; without one, there's nothing to say.
@@ -5499,7 +5530,7 @@ mod order_tests {
 
     #[test]
     fn moved_to_the_top_goes_first_in_its_section_and_stays_in_it() {
-        let raised = |row: SessionRow, at: i64, agent: bool| SessionRow { raised: Some(Raised { at, agent, says: String::new(), phrase: String::new() }), ..row };
+        let raised = |row: SessionRow, at: i64, agent: bool| SessionRow { raised: Some(Raised { at, agent, says: String::new() }), ..row };
         let mut rows = [
             row("older", Status::Needs, 10, None, 0),
             row("newer", Status::Needs, 20, None, 0),
@@ -5519,7 +5550,7 @@ mod order_tests {
         let mut rows = [
             finished(row("done-new", Status::Unread, 90, None, 0)),
             row("ended", Status::Unread, 50, None, 0),
-            finished(SessionRow { raised: Some(Raised { at: 1, agent: false, says: String::new(), phrase: String::new() }), ..row("done-up", Status::Unread, 10, None, 0) }),
+            finished(SessionRow { raised: Some(Raised { at: 1, agent: false, says: String::new() }), ..row("done-up", Status::Unread, 10, None, 0) }),
             row("older", Status::Unread, 20, None, 0),
         ];
         rows.sort_by(inbox_order);
