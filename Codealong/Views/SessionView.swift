@@ -601,14 +601,19 @@ struct SessionView: View {
         ForEach(row?.peers ?? [], id: \.key) { p in
             Button { follow(p.key) } label: {
                 Label(p.words, systemImage: p.pingPong ? "arrow.left.arrow.right.circle.fill" : "arrow.left.arrow.right")
-                Text(p.detail)
+                Text(Clock.text(p.detail, now: .now))
             }
             .disabled(!p.listed)
         }
-        if let pr = row?.worktreePr.flatMap({ store.pr($0.key) }), let owner = prOwner(session: key, pr: pr), let ownerRow = store.row(owner) {
-            // Verbatim: a localized number would be written #1,244.
-            let words = "#\(pr.number)’s owner: “\(ownerRow.title)”"
-            Button(words, systemImage: "person.crop.circle.badge.checkmark") { follow(owner) }
+        if let row {
+            ForEach(Array(prOwners(session: row, prs: store.prs).enumerated()), id: \.offset) { _, owner in
+                // Read from the core where the list doesn't have it (an archived one, say).
+                if let title = store.rows([owner.key]).first?.title {
+                    // Verbatim: a localized number would be written #1,244.
+                    let words = "#\(owner.number)’s owner: “\(title)”"
+                    Button(words, systemImage: "person.crop.circle.badge.checkmark") { follow(owner.key) }
+                }
+            }
         }
         // The labels its Mac's sessions wear, each checked where it wears it, as the Mac's Labels ›.
         Menu("Labels", systemImage: "tag") {
@@ -2481,17 +2486,12 @@ private struct QuestionsCard: View {
         answers.contains { $0.question == q.question }
     }
 
-    /// The next question after `at` without an answer, coming round from the first (the Mac's
-    /// `nextQuestion`); none once every other one has one.
+    /// Where Next goes from `at`, or none, where Answer takes its place (the core's
+    /// `questionAfter`): the next without an answer, coming round from the first; for a form, on
+    /// through those after it, then back only to one the form needs.
     private func nextQuestion(after at: Int) -> Int? {
         let questions = pending.questions
-        let n = questions.count
-        guard n > 1 else { return nil }
-        for k in 1..<n {
-            let i = (at + k) % n
-            if !answered(questions[i]) { return i }
-        }
-        return nil
+        return questionAfter(questions: questions, answered: questions.map(answered), at: UInt32(max(at, 0)), form: pending.form).map(Int.init)
     }
 
     /// Each question's picks: several, with your words after them, where it takes more; else your
@@ -4231,22 +4231,23 @@ private struct ReplyRules {
     /// the command would answer it, and while its turn runs where its harness would hold the
     /// command as a prompt. One whose harness runs it at once (Claude Code's,
     /// `switchesMidTurn`) goes on with the turn's next step on the new model. An app takes one
-    /// whenever, for the next turn, and so does one Codealong runs, whose Mac holds a switch made
-    /// while its turn runs or waits on you until the turn ends (`switchesNextTurn`). A Mac before
-    /// 0.32 refuses that mid-turn, saying to switch once the turn ends.
+    /// whenever, for the next turn, and so does one Codealong runs on a Mac that holds a switch
+    /// made while its turn runs or waits on you until the turn ends (the core's `queuesSwitches`,
+    /// 0.32 and later); on a Mac before, one Codealong runs takes one only between turns.
     var switchWaits: String? {
-        guard !inApp, let row, !row.hosted else { return nil }
+        guard !inApp, let row, !row.queuesSwitches else { return nil }
         if row.atAPrompt { return "once you’ve answered it" }
-        let midTurn = account?.switchesMidTurn == true
+        let midTurn = !row.hosted && account?.switchesMidTurn == true
         if !midTurn && (row.status == .working || row.stalled) { return "once its turn ends" }
         return nil
     }
 
     /// A switch of model or effort goes on with its next turn, not this one: an app's, and one
-    /// Codealong runs while its turn runs or waits on you (the Mac's SessionReply.tsx `nextTurn`).
+    /// whose Mac holds it while its turn runs or waits on you (the Mac's SessionReply.tsx
+    /// `nextTurn`).
     var switchesNextTurn: Bool {
         guard let row else { return false }
-        return inApp || (row.hosted && (row.status == .working || row.status == .needs || row.stalled))
+        return inApp || (row.queuesSwitches && (row.status == .working || row.status == .needs || row.stalled))
     }
 
     /// It says what it's on beside the box: a running one, or one an app goes on with.

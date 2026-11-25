@@ -316,6 +316,10 @@ pub struct SessionRow {
     pub peers: Vec<PeerTalk>,
     /// Its row's chip while it goes back and forth with another (`peer_talk`).
     pub chatter: Option<Chatter>,
+    /// Codealong runs it on a Mac that holds a switch of model or effort made while its turn runs
+    /// or waits on you until the turn ends (0.32 and later; send.rs `switch_model`). A Mac before
+    /// refuses one mid-turn, so the phone waits for the turn to end there, as it did.
+    pub queues_switches: bool,
     /// Its last turn ended on its account's usage limit and nothing has been said since: what that
     /// comes to, and Carry on once it has lifted (`limit_note`).
     pub limit: Option<LimitNote>,
@@ -939,6 +943,10 @@ pub struct WorktreePr {
     pub key: String,
     pub number: u64,
     pub url: String,
+    /// The session is on the worktree's branch (or its record names none), so the PR is its own
+    /// where no PR lists it among the sessions that worked on one (the Mac's lanes.ts
+    /// `sessionPrs`, `quick::pr_owners`).
+    pub its: bool,
 }
 
 /// A session's emblem, as its Mac gives it (the Mac's emblems.rs, drawn by its primitives.tsx
@@ -1052,8 +1060,9 @@ pub struct PeerTalk {
     /// What's gone between them, with its title now where its Mac lists it, else as it was:
     /// "6 messages with “Fix the build”".
     pub words: String,
-    /// Under that, what it comes to: in the last two hours, and where they've gone back and forth
-    /// (`ping_pong`), that one session could own it.
+    /// Under that, what it comes to: in the last two hours, when the latest went (`{ago:<ms>}`, as
+    /// a session's detail writes a time), and where they've gone back and forth (`ping_pong`),
+    /// how often and that one session could own it.
     pub detail: String,
     /// They've gone back and forth enough to say so: four messages or more with two changes of
     /// direction in two hours (chatter.rs `WARN_MESSAGES`, `WARN_FLIPS`).
@@ -1079,6 +1088,11 @@ fn peer_talk(peers: &[codealong_peer::model::PeerTalk], device: &str, title: imp
     let ping_pong = |p: &codealong_peer::model::PeerTalk| p.count >= WARN_MESSAGES && p.flips >= WARN_FLIPS;
     let named = |p: &codealong_peer::model::PeerTalk| title(&p.key).filter(|t| !t.is_empty()).unwrap_or_else(|| p.title.clone());
     let messages = |n: u32| if n == 1 { "1 message".to_string() } else { format!("{n} messages") };
+    let times = |n: u32| match n {
+        1 => "once".to_string(),
+        2 => "twice".to_string(),
+        n => format!("{n} times"),
+    };
     let talk = peers
         .iter()
         .take(2)
@@ -1086,14 +1100,18 @@ fn peer_talk(peers: &[codealong_peer::model::PeerTalk], device: &str, title: imp
             key: remote_key(device, &p.key),
             listed: title(&p.key).is_some(),
             words: format!("{} with \u{201c}{}\u{201d}", messages(p.count), named(p)),
-            detail: if ping_pong(p) { "Back and forth in the last 2 hours: one session could own it".into() } else { "In the last 2 hours".into() },
+            detail: if ping_pong(p) {
+                format!("In 2 hours, back and forth {}, the latest {{ago:{}}}: one session could own it", times(p.flips), p.last_at)
+            } else {
+                format!("In 2 hours, the latest {{ago:{}}}", p.last_at)
+            },
             ping_pong: ping_pong(p),
         })
         .collect();
     let hot: Vec<&codealong_peer::model::PeerTalk> = peers.iter().filter(|p| ping_pong(p)).collect();
     let chatter = hot.first().map(|top| Chatter {
         count: top.count,
-        says: hot.iter().map(|p| format!("Back and forth with \u{201c}{}\u{201d}: {} in the last 2 hours", named(p), messages(p.count))).collect::<Vec<_>>().join(". "),
+        says: hot.iter().map(|p| format!("Back and forth with \u{201c}{}\u{201d} {}: {} in the last 2 hours", named(p), times(p.flips), messages(p.count))).collect::<Vec<_>>().join(". "),
     });
     (talk, chatter)
 }
@@ -1748,7 +1766,7 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 asks: s.asks,
                 pr: lane.pr.as_ref().map(|p| format!("#{} {}", p.number, p.title)),
                 // Keyed as the PRs listed key a worktree's (quick.rs `all_prs`), so its page is found.
-                worktree_pr: lane.pr.as_ref().map(|p| WorktreePr { key: quick::pr_key(&p.url, &format!("{}#{}", lane.repo_slug.as_deref().unwrap_or(&lane.repo), p.number)), number: p.number, url: p.url.clone() }),
+                worktree_pr: lane.pr.as_ref().map(|p| WorktreePr { key: quick::pr_key(&p.url, &format!("{}#{}", lane.repo_slug.as_deref().unwrap_or(&lane.repo), p.number)), number: p.number, url: p.url.clone(), its: s.branch.as_deref().is_none_or(|b| lane.branch.as_deref() == Some(b)) }),
                 seenable: status == Status::Unread || s.asks,
                 unreadable: !s.asks && !s.archived && matches!(status, Status::Idle | Status::Stopped),
                 // Macs before 2026-09-29 don't say, and stop only the sessions Codealong runs.
@@ -1785,6 +1803,7 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 }),
                 peers: talk.0,
                 chatter: talk.1,
+                queues_switches: s.hosted && builds_since(&d.app, QUEUES_SWITCHES_SINCE),
                 limit: limit_note(s, status, now),
                 api_error: api_error_note(s, status),
                 signed_out: signed_out_words(s, status),
@@ -2558,6 +2577,33 @@ pub struct Pending {
     pub says: Option<String>,
 }
 
+/// What a session waits on you for, as the card shows it; `hosted`: Codealong runs the session,
+/// whose agent's questions all come to Codealong (a form, or Codex's asked without waiting), and
+/// declining them tells it you didn't answer, and it goes on, as the Mac's SessionReply.tsx
+/// `form` goes by `Session::hosted`.
+fn pending_of(p: api::Pending, hosted: bool, named: Named) -> Pending {
+    let form = !p.questions.is_empty() && (hosted || p.questions.iter().any(|q| q.form.is_some()));
+    Pending {
+        // What an exit or a dialog of its harness's asks takes only its choices, as a form's field
+        // can say of itself.
+        questions: p.questions.iter().map(|q| Question { only_choices: p.exiting || p.dialog || q.form.as_ref().is_some_and(|f| f.choices_only), ..question_of(q, None) }).collect(),
+        form,
+        says: p.input.clone().filter(|says| form && !says.trim().is_empty()),
+        label: pending_label(&p, named),
+        id: p.id,
+        input: p.input,
+        cannot: p.cannot,
+        always: p.always,
+        always_rule: p.always_rule,
+        no_once: p.no_once,
+        plan: p.plan,
+        message: p.message,
+        unwritten: p.unwritten,
+        exiting: p.exiting,
+        dialog: p.dialog,
+    }
+}
+
 /// What a request asks, as its card says it: a held message's label with the session it's from
 /// (what's from its first quote on, “its title”) a link to that session, where its Mac named it
 /// (`api::Pending::from_key`) and this phone lists it, as the Mac's SessionReply.tsx
@@ -2611,6 +2657,27 @@ fn question_of(q: &api::Question, answers: Option<&std::collections::BTreeMap<St
     }
 }
 
+/// Which question Next goes to from the one showing (`at`), or none, where Answer takes its place,
+/// by which have an answer (`answered`): the next without one, coming round from the first, so
+/// each is asked before answering, as the Mac's QuestionList.tsx `nextQuestion` finds it. A form's
+/// fields it can go without needn't be answered, though, and coming round to them would never
+/// reach Answer (as the Mac's panel, whose ⌘⏎ goes on to them too): for a form, Next goes on to the
+/// next without an answer after this one, then to one it can't go without that has none, and
+/// otherwise Answer shows.
+#[uniffi::export]
+pub fn question_after(questions: Vec<Question>, answered: Vec<bool>, at: u32, form: bool) -> Option<u32> {
+    let n = questions.len().min(answered.len());
+    let at = at as usize;
+    if n < 2 {
+        return None;
+    }
+    let open = |i: usize| !answered[i];
+    if !form {
+        return (1..n).map(|k| (at + k) % n).find(|&i| open(i)).map(|i| i as u32);
+    }
+    (at + 1..n).find(|&i| open(i)).or_else(|| (1..n).map(|k| (at + k) % n).find(|&i| open(i) && questions[i].required)).map(|i| i as u32)
+}
+
 /// What holds Answer back for a form's questions, as a sentence, or none: the fields it can't go
 /// without (`Question::required`) that `answers` leaves unanswered, by their headers, as the Mac's
 /// Answer button says under the pointer (QuestionList.tsx `missing`). Its Mac refuses such an
@@ -2653,7 +2720,8 @@ pub fn card_shows(last: Item, pending: Pending) -> bool {
         let input = input.as_deref().unwrap_or("").trim();
         (if input.is_empty() { label.trim().to_string() } else { tool_name(label) }, input.to_string())
     }
-    let waiting = last.kind == ItemKind::Tool && last.output.is_none() && !last.failed && !last.questions.iter().any(|q| q.answered);
+    // A result with no output (Codex's carry only the call's id) still ends the call.
+    let waiting = last.kind == ItemKind::Tool && !last.done && !last.failed && !last.questions.iter().any(|q| q.answered);
     if !waiting {
         return false;
     }
@@ -3124,6 +3192,13 @@ impl Conversation {
         })
     }
 
+    /// Codealong runs it (`Session::hosted`), as its Mac's feed last said.
+    fn hosted(&self) -> bool {
+        self.client.with_feeds(|feeds| {
+            feeds.iter().filter(|(d, _)| d.short == self.device || d.key == self.device).flat_map(|(_, r)| r.lanes.iter().flat_map(|l| l.sessions.iter())).any(|s| s.key == self.key && s.hosted)
+        })
+    }
+
     /// The sessions this phone lists on its Mac, for what names one as a link (`Named`): a key as
     /// that Mac writes it, to the session's title now, as `session_named` finds it. They're read
     /// only once something asks.
@@ -3217,25 +3292,8 @@ impl Conversation {
     }
 
     pub fn pending(&self) -> Result<Option<Pending>, CoreError> {
-        Ok(self.client.pending(&self.device, &self.key)?.map(|p| Pending {
-            // What an exit or a dialog of its harness's asks takes only its choices, as a form's
-            // field can say of itself.
-            questions: p.questions.iter().map(|q| Question { only_choices: p.exiting || p.dialog || q.form.as_ref().is_some_and(|f| f.choices_only), ..question_of(q, None) }).collect(),
-            form: p.questions.iter().any(|q| q.form.is_some()),
-            says: p.input.clone().filter(|says| !says.trim().is_empty() && p.questions.iter().any(|q| q.form.is_some())),
-            label: pending_label(&p, &self.named()),
-            id: p.id,
-            input: p.input,
-            cannot: p.cannot,
-            always: p.always,
-            always_rule: p.always_rule,
-            no_once: p.no_once,
-            plan: p.plan,
-            message: p.message,
-            unwritten: p.unwritten,
-            exiting: p.exiting,
-            dialog: p.dialog,
-        }))
+        let Some(p) = self.client.pending(&self.device, &self.key)? else { return Ok(None) };
+        Ok(Some(pending_of(p, self.hosted(), &self.named())))
     }
 
     /// Answers the tool call `id`, if it's still the one the session waits on.
@@ -3938,8 +3996,10 @@ mod tests {
         // waiting at the same time: the card shows the one asked first, and the latest keeps its line.
         assert!(!card_shows(line("Bash · `npm run build`", Some("npm run build"), None), card("Bash · `npm test`", Some("npm test"))));
         assert!(!card_shows(line("mcp__linear__create_issue", Some("{\"title\":\"Second\"}"), None), card("mcp__linear__create_issue", Some("{\"title\":\"First\"}"))));
-        // Ran, it's a line like any other.
+        // Ran, it's a line like any other, though its result carries no output (Codex's carry only
+        // the call's id).
         assert!(!card_shows(line("Bash · `npm test`", Some("npm test"), Some(item("result", 30, Some("call-2"), Some("ok")))), card("Bash · `npm test`", Some("npm test"))));
+        assert!(!card_shows(line("Bash · `npm test`", Some("npm test"), Some(item("result", 30, Some("call-2"), None))), card("Bash · `npm test`", Some("npm test"))));
         // The same tool worded or cut otherwise, for the same input, is the same call (the Mac's
         // since 2026-11-24): a permission prompt's `run_command` for the record's `Run command`, a
         // shell by any of its names.
@@ -3959,6 +4019,53 @@ mod tests {
         // A line whose call asks questions is never the card's call to allow, id or not.
         by_id.questions = vec![question_of(&api::Question { question: "Which?".into(), header: None, options: vec![], multi_select: false, form: None }, None)];
         assert!(!card_shows(by_id, card("run_command", Some("cargo test"))));
+    }
+
+    /// Next goes round to each question without an answer; a form's goes on through the fields
+    /// after the one showing, then back only to one it can't go without, and else Answer shows,
+    /// so fields left blank on purpose never keep it from going.
+    #[test]
+    fn next_goes_round_the_questions_and_a_form_lets_its_optional_fields_be() {
+        let q = |required: bool| Question { question: String::new(), header: None, options: vec![], multi_select: false, answered: false, picked: vec![], own: vec![], only_choices: false, required, hint: None, secret: false };
+        let three = vec![q(true), q(false), q(false)];
+        // Not a form: round to the first without an answer.
+        assert_eq!(question_after(three.clone(), vec![false, true, false], 2, false), Some(0));
+        assert_eq!(question_after(three.clone(), vec![true, false, false], 0, false), Some(1));
+        assert_eq!(question_after(three.clone(), vec![true, false, false], 1, false), Some(2));
+        assert_eq!(question_after(three.clone(), vec![true, false, false], 2, false), Some(1));
+        // A form: on through the blank ones after this one, and then Answer, the required one answered.
+        assert_eq!(question_after(three.clone(), vec![true, false, false], 0, true), Some(1));
+        assert_eq!(question_after(three.clone(), vec![true, false, false], 1, true), Some(2));
+        assert_eq!(question_after(three.clone(), vec![true, false, false], 2, true), None);
+        // Back to the one it needs, where that has no answer.
+        assert_eq!(question_after(three.clone(), vec![false, true, false], 2, true), Some(0));
+        assert_eq!(question_after(three.clone(), vec![false, false, false], 1, true), Some(2));
+        assert_eq!(question_after(vec![q(true)], vec![false], 0, true), None);
+    }
+
+    /// Questions a session Codealong runs asks are a form for what Decline does, whether or not
+    /// they say what their fields take (Codex's asked without waiting don't), and the form's words
+    /// show above them; a terminal's are as before.
+    #[test]
+    fn questions_a_hosted_session_asks_decline_as_a_form() {
+        let asked = |form: Option<api::FormField>| api::Pending {
+            id: "q".into(),
+            label: "Asks you".into(),
+            input: Some("Pick a region for the deploy.".into()),
+            questions: vec![api::Question { question: "Where?".into(), header: None, options: vec![], multi_select: false, form }],
+            ..Default::default()
+        };
+        let none: Named = &|_| None;
+        let p = pending_of(asked(None), true, none);
+        assert!(p.form);
+        assert_eq!(p.says.as_deref(), Some("Pick a region for the deploy."));
+        let p = pending_of(asked(None), false, none);
+        assert!(!p.form && p.says.is_none());
+        // A form's fields say so wherever the feed's word on hosting stands.
+        assert!(pending_of(asked(Some(api::FormField::default())), false, none).form);
+        // A call to allow is never one.
+        let call = api::Pending { questions: vec![], ..asked(None) };
+        assert!(!pending_of(call, true, none).form);
     }
 
     #[test]
@@ -4944,6 +5051,9 @@ const DONE_HELPERS_SINCE: (u32, u32, u32) = (0, 25, 0);
 
 /// Whether a device's Codealong (`Device::app`, "0.25.0") is `since` or newer; one that doesn't
 /// say a version isn't.
+/// The first build whose Mac holds a switch made mid-turn in a session Codealong runs (c05baf18).
+const QUEUES_SWITCHES_SINCE: (u32, u32, u32) = (0, 32, 0);
+
 fn builds_since(app: &str, since: (u32, u32, u32)) -> bool {
     let mut parts = app.trim().trim_start_matches('v').split(['.', '-', '+']).map(|p| p.parse::<u32>().ok());
     match (parts.next().flatten(), parts.next().flatten(), parts.next().flatten()) {
@@ -5262,6 +5372,7 @@ mod order_tests {
             moved_to: None,
             peers: Vec::new(),
             chatter: None,
+            queues_switches: false,
             limit: None,
             api_error: None,
             signed_out: None,
@@ -5950,6 +6061,21 @@ mod order_tests {
     /// Who a session has been messaging lately shows as the Mac's header has it, the most first
     /// and two at most, by their titles now where the Mac lists them; its row's chip only while
     /// it goes back and forth with one.
+    /// A session Codealong runs takes a switch mid-turn only from a Mac that holds one for its next
+    /// turn (0.32); from one before, it waits for the turn to end, as that Mac says.
+    fn a_switch_mid_turn_is_held_only_where_its_mac_holds_it() {
+        use codealong_peer::client::Device;
+        use codealong_peer::feed::Replica;
+        let mac = |app: &str| Device { key: app.into(), short: app.into(), name: "Mac".into(), online: true, since: None, last_seen: None, remote_control: true, app: app.into(), loading: false, linked_back: true };
+        let mut lane = codealong_peer::model::Lane::new("/src/app", "App", "app");
+        lane.sessions = vec![Session { hosted: true, live: true, ..Session::new(Harness::Claude, "claude", "hosted") }, Session { live: true, ..Session::new(Harness::Claude, "claude", "terminal") }];
+        let replica = Replica { lanes: vec![lane], ..Replica::default() };
+        let queues = |app: &str| session_rows(&[(mac(app), &replica)], true).iter().map(|r| r.queues_switches).collect::<Vec<_>>();
+        assert_eq!(queues("0.32.0"), [true, false]);
+        assert_eq!(queues("0.31.1"), [false, false]);
+    }
+
+    #[test]
     fn a_session_says_who_it_has_been_messaging_and_its_row_when_back_and_forth() {
         use codealong_peer::client::Device;
         use codealong_peer::feed::Replica;
@@ -5974,9 +6100,9 @@ mod order_tests {
             lead.peers.iter().map(|p| (p.key.as_str(), p.listed, p.words.as_str(), p.ping_pong)).collect::<Vec<_>>(),
             [("@m:claude:work:docs", true, "6 messages with \u{201c}Write the docs\u{201d}", true), ("@m:claude:work:gone", false, "4 messages with \u{201c}Gone one\u{201d}", false)]
         );
-        assert_eq!(lead.peers[0].detail, "Back and forth in the last 2 hours: one session could own it");
-        assert_eq!(lead.peers[1].detail, "In the last 2 hours");
-        assert_eq!(lead.chatter.as_ref().map(|c| (c.count, c.says.as_str())), Some((6, "Back and forth with \u{201c}Write the docs\u{201d}: 6 messages in the last 2 hours")));
+        assert_eq!(lead.peers[0].detail, "In 2 hours, back and forth 3 times, the latest {ago:5}: one session could own it");
+        assert_eq!(lead.peers[1].detail, "In 2 hours, the latest {ago:5}");
+        assert_eq!(lead.chatter.as_ref().map(|c| (c.count, c.says.as_str())), Some((6, "Back and forth with \u{201c}Write the docs\u{201d} 3 times: 6 messages in the last 2 hours")));
         // A message one way isn't back and forth.
         assert_eq!(row("docs").peers.iter().map(|p| p.words.as_str()).collect::<Vec<_>>(), ["1 message with \u{201c}Coordinate\u{201d}"]);
         assert!(row("docs").chatter.is_none());

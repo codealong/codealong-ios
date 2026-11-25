@@ -387,15 +387,39 @@ pub struct PrPrimary {
     pub says: String,
 }
 
-/// Another session that owns the PR a session's worktree is on, by its key here: the PR's primary
-/// while it's open, where that isn't `session`, as the Mac's session header names it on a chip
-/// that goes to it (PeerTalkBits.tsx `OtherOwnerChips`), so which session has the PR is plain.
+/// Another session that owns a PR a session is on (the PR's primary, `PrRow::primary`), as the
+/// Mac's session header names it on a chip that goes to it (PeerTalkBits.tsx `OtherOwnerChips`),
+/// so which session has the PR is plain.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct PrOwner {
+    /// The owner's key here (`@<device>:<key>`).
+    pub key: String,
+    /// The PR's number.
+    pub number: u64,
+}
+
+/// The other sessions that own the open PRs `session` is on, two at most, as the Mac's header
+/// names them: the PRs that list it among the sessions that worked on them (`PrRow::sessions`),
+/// else its worktree's PR where it's on the worktree's branch (lanes.ts `sessionPrs`); none for a
+/// PR it owns itself, or that has no primary.
 #[uniffi::export]
-pub fn pr_owner(session: String, pr: PrRow) -> Option<String> {
-    if matches!(pr.state.as_str(), "merged" | "closed") {
-        return None;
+pub fn pr_owners(session: crate::SessionRow, prs: Vec<PrRow>) -> Vec<PrOwner> {
+    let worked: Vec<&PrRow> = prs.iter().filter(|p| p.sessions.contains(&session.key)).collect();
+    let on: Vec<&PrRow> = if worked.is_empty() {
+        session.worktree_pr.iter().filter(|w| w.its).filter_map(|w| prs.iter().find(|p| p.key == w.key)).collect()
+    } else {
+        worked
+    };
+    let mut owners: Vec<PrOwner> = Vec::new();
+    for p in on.into_iter().filter(|p| !matches!(p.state.as_str(), "merged" | "closed")) {
+        let Some(key) = p.primary.as_ref().map(|o| o.key.clone()).filter(|k| *k != session.key) else { continue };
+        let owner = PrOwner { key, number: p.number };
+        if !owners.contains(&owner) {
+            owners.push(owner);
+        }
     }
-    pr.primary.map(|p| p.key).filter(|key| *key != session)
+    owners.truncate(2);
+    owners
 }
 
 /// A PR's primary session as a Mac's card names it, in the words the Mac's tag has for another
@@ -1300,6 +1324,7 @@ pub(crate) mod tests {
             moved_to: None,
             peers: Vec::new(),
             chatter: None,
+            queues_switches: false,
             limit: None,
             api_error: None,
             signed_out: None,
@@ -2180,15 +2205,32 @@ pub(crate) mod tests {
         assert_eq!(crate::start_worktree_in(&app, &all, true, &isolates).unwrap().id, "/app");
     }
 
-    /// The session header names another session as its PR's owner while the PR is open, and not
-    /// where the session is the owner itself or no session is.
+    /// The session header names the other sessions that own the open PRs it worked on, or its
+    /// worktree's where no PR lists it and it's on that branch; not where it owns one itself.
     #[test]
-    fn another_session_owns_an_open_pr() {
-        let owned = |state: &str, primary: Option<&str>| PrRow { state: state.into(), primary: primary.map(|k| PrPrimary { key: k.into(), says: String::new() }), ..pr_row("o/r#3", "Fix", false) };
-        assert_eq!(pr_owner("@d:a".into(), owned("open", Some("@d:b"))).as_deref(), Some("@d:b"));
-        assert_eq!(pr_owner("@d:a".into(), owned("approved", Some("@d:b"))).as_deref(), Some("@d:b"));
-        assert_eq!(pr_owner("@d:a".into(), owned("open", Some("@d:a"))), None);
-        assert_eq!(pr_owner("@d:a".into(), owned("merged", Some("@d:b"))), None);
-        assert_eq!(pr_owner("@d:a".into(), owned("open", None)), None);
+    fn other_sessions_own_the_open_prs_a_session_is_on() {
+        let pr = |key: &str, number: u64, state: &str, primary: Option<&str>, sessions: &[&str]| PrRow {
+            number,
+            state: state.into(),
+            primary: primary.map(|k| PrPrimary { key: k.into(), says: String::new() }),
+            sessions: sessions.iter().map(|s| s.to_string()).collect(),
+            ..pr_row(key, "Fix", false)
+        };
+        let mut me = row("@d:a", "Fix", Status::Idle, 1);
+        me.worktree_pr = Some(crate::WorktreePr { key: "o/r#9".into(), number: 9, url: String::new(), its: true });
+        let owners = |me: &crate::SessionRow, prs: Vec<PrRow>| pr_owners(me.clone(), prs).into_iter().map(|o| (o.key, o.number)).collect::<Vec<_>>();
+        let listed = vec![
+            pr("o/r#1", 1, "open", Some("@d:b"), &["@d:b", "@d:a"]),
+            pr("o/r#2", 2, "approved", Some("@d:a"), &["@d:a"]),
+            pr("o/r#3", 3, "merged", Some("@d:c"), &["@d:a"]),
+            pr("o/r#4", 4, "open", None, &["@d:a"]),
+            pr("o/r#9", 9, "open", Some("@d:z"), &["@d:z"]),
+        ];
+        // The PRs that list it, not its worktree's, which another session worked on.
+        assert_eq!(owners(&me, listed), [("@d:b".to_string(), 1)]);
+        // Listed on none, its worktree's PR, while it's on the worktree's branch.
+        assert_eq!(owners(&me, vec![pr("o/r#9", 9, "open", Some("@d:z"), &["@d:z"])]), [("@d:z".to_string(), 9)]);
+        me.worktree_pr.as_mut().unwrap().its = false;
+        assert!(owners(&me, vec![pr("o/r#9", 9, "open", Some("@d:z"), &["@d:z"])]).is_empty());
     }
 }
