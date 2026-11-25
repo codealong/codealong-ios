@@ -607,12 +607,13 @@ struct SessionView: View {
         }
         if let row {
             ForEach(Array(prOwners(session: row, prs: store.prs).enumerated()), id: \.offset) { _, owner in
-                // Read from the core where the list doesn't have it (an archived one, say).
-                if let title = store.rows([owner.key]).first?.title {
-                    // Verbatim: a localized number would be written #1,244.
-                    let words = "#\(owner.number)’s owner: “\(title)”"
-                    Button(words, systemImage: "person.crop.circle.badge.checkmark") { follow(owner.key) }
-                }
+                // Read from the core where the list doesn't have it (an archived one, say); one its
+                // Mac doesn't list is still named, though it can't open, as the Mac's chip is.
+                let title = store.rows([owner.key]).first?.title
+                // Verbatim: a localized number would be written #1,244.
+                let words = "#\(owner.number)’s owner: \(title.map { "“\($0)”" } ?? "another session")"
+                Button(words, systemImage: "person.crop.circle.badge.checkmark") { follow(owner.key) }
+                    .disabled(title == nil)
             }
         }
         // The labels its Mac's sessions wear, each checked where it wears it, as the Mac's Labels ›.
@@ -2491,7 +2492,9 @@ private struct QuestionsCard: View {
     /// through those after it, then back only to one the form needs.
     private func nextQuestion(after at: Int) -> Int? {
         let questions = pending.questions
-        return questionAfter(questions: questions, answered: questions.map(answered), at: UInt32(max(at, 0)), form: pending.form).map(Int.init)
+        // The answers worked out once, not once a question: a form can have many fields.
+        let given = Set(answers.map(\.question))
+        return questionAfter(questions: questions, answered: questions.map { given.contains($0.question) }, at: UInt32(max(at, 0)), form: pending.form).map(Int.init)
     }
 
     /// Each question's picks: several, with your words after them, where it takes more; else your

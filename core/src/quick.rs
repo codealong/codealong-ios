@@ -401,12 +401,17 @@ pub struct PrOwner {
 /// The other sessions that own the open PRs `session` is on, two at most, as the Mac's header
 /// names them: the PRs that list it among the sessions that worked on them (`PrRow::sessions`),
 /// else its worktree's PR where it's on the worktree's branch (lanes.ts `sessionPrs`); none for a
-/// PR it owns itself, or that has no primary.
+/// PR it owns itself, or that has no primary. A PR row counts a worktree's sessions as its own
+/// where a Mac sends no PR list, so its worktree's PR is its own only on that branch either way.
+/// The worktree's PR is found by any key its Macs name it by (`PrRow::known_as`), as `Store.pr`
+/// finds it.
 #[uniffi::export]
 pub fn pr_owners(session: crate::SessionRow, prs: Vec<PrRow>) -> Vec<PrOwner> {
-    let worked: Vec<&PrRow> = prs.iter().filter(|p| p.sessions.contains(&session.key)).collect();
+    let worktrees = |p: &PrRow| session.worktree_pr.as_ref().is_some_and(|w| p.key == w.key || p.known_as.contains(&w.key.to_lowercase()));
+    let its = session.worktree_pr.as_ref().is_some_and(|w| w.its);
+    let worked: Vec<&PrRow> = prs.iter().filter(|p| p.sessions.contains(&session.key) && (its || !worktrees(p))).collect();
     let on: Vec<&PrRow> = if worked.is_empty() {
-        session.worktree_pr.iter().filter(|w| w.its).filter_map(|w| prs.iter().find(|p| p.key == w.key)).collect()
+        prs.iter().filter(|p| its && worktrees(p)).take(1).collect()
     } else {
         worked
     };
@@ -2230,7 +2235,16 @@ pub(crate) mod tests {
         assert_eq!(owners(&me, listed), [("@d:b".to_string(), 1)]);
         // Listed on none, its worktree's PR, while it's on the worktree's branch.
         assert_eq!(owners(&me, vec![pr("o/r#9", 9, "open", Some("@d:z"), &["@d:z"])]), [("@d:z".to_string(), 9)]);
+        // Found by a name its Mac had for it before the repo was renamed, in any case.
+        let renamed = PrRow { known_as: vec!["o/r#9".into(), "o/new#9".into()], ..pr("o/new#9", 9, "open", Some("@d:z"), &["@d:z"]) };
+        me.worktree_pr.as_mut().unwrap().key = "O/r#9".into();
+        assert_eq!(owners(&me, vec![renamed.clone()]), [("@d:z".to_string(), 9)]);
+        // Off the worktree's branch, not its PR, though a Mac with no PR list counts the
+        // worktree's sessions as the PR's.
         me.worktree_pr.as_mut().unwrap().its = false;
-        assert!(owners(&me, vec![pr("o/r#9", 9, "open", Some("@d:z"), &["@d:z"])]).is_empty());
+        assert!(owners(&me, vec![renamed]).is_empty());
+        assert!(owners(&me, vec![pr("O/r#9", 9, "open", Some("@d:z"), &["@d:z", "@d:a"])]).is_empty());
+        // Another PR it worked on still counts.
+        assert_eq!(owners(&me, vec![pr("o/r#1", 1, "open", Some("@d:b"), &["@d:a"])]), [("@d:b".to_string(), 1)]);
     }
 }
