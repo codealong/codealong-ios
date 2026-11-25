@@ -95,6 +95,10 @@ final class Store {
     private(set) var choices: [String: StartChoices] = [:]
     /// Why a session's last message didn't go, for its screen to say once.
     var sendProblems: [String: String] = [:]
+    /// The stop at its usage limit (`LimitNote.at`) each session was told to carry on from here:
+    /// Carry on stays pressed for it until its Mac says the limit is past, which can come after
+    /// the message shows in the conversation, whether or not its page stayed open meanwhile.
+    var carriedOn: [String: Int64] = [:]
     /// The session shown now, if one is, or a PR's page (its key after `PrView.prefix`): a message
     /// that fails elsewhere is said in an alert.
     var showing: String? {

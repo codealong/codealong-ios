@@ -1944,6 +1944,9 @@ pub struct LimitNote {
     /// When it lifts, while it hasn't yet: its page reads its row again then, so Carry on comes as
     /// it lifts rather than with whatever its Mac next sends, which may be a while from a quiet one.
     pub lifts_at: Option<i64>,
+    /// When its turn stopped at the limit, by its Mac's clock: which stop this is, so Carry on
+    /// pressed for one isn't taken as pressed for a later one that reads the same.
+    pub at: i64,
 }
 
 /// What Carry on sends a session its usage limit stopped, once the limit has lifted, as yours: what
@@ -1962,6 +1965,7 @@ fn limit_note(s: &Session, status: Status, now: i64) -> Option<LimitNote> {
         button: (lifted && !s.archived).then(|| "Carry on".to_string()),
         message: CARRY_ON_LIMIT.to_string(),
         lifts_at: limit.resets_at.filter(|t| *t > now),
+        at: limit.at,
     })
 }
 
@@ -4024,6 +4028,10 @@ mod tests {
         // Once it has, Carry on sends what its Mac would, as yours.
         let note = limit_note(&stopped, Status::Unread, 9_000).unwrap();
         assert_eq!((note.button.as_deref(), note.lifts_at), (Some("Carry on"), None));
+        // A later stop at the same limit reads the same once lifted, but isn't the same stop.
+        let again = Session { limit: Some(SessionLimit { at: 7_000, resets_at: Some(8_000), ..limit.clone() }), ..stopped.clone() };
+        let later = limit_note(&again, Status::Unread, 9_000).unwrap();
+        assert_eq!((later.says.as_str(), later.at, note.at), (note.says.as_str(), 7_000, 1));
         assert_eq!(note.message, "Your last turn stopped at your account's usage limit, which has lifted now, so carry on where you left off.");
         // Its Mac carrying it on by itself in a few minutes, the button still does it now.
         let carries = Session { limit: Some(SessionLimit { continues: true, ..limit.clone() }), ..stopped.clone() };

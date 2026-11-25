@@ -109,10 +109,6 @@ struct SessionView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var sending = false
     @State private var said: String?
-    /// The limit Carry on was pressed for: it stays pressed until its Mac says the limit is past,
-    /// as the message can show in the conversation before that does, when another would go. One
-    /// that didn't go is back in the box to send again.
-    @State private var carriedOn: LimitNote?
     /// How many commands its Mac has said its shell takes, for Run on the blocks with no language
     /// in what its agent wrote: they look again as it changes.
     @State private var commands: UInt32 = 0
@@ -728,7 +724,7 @@ struct SessionView: View {
             if let limit = row?.limit {
                 // Snoozed from here as from its Snooze menu: it goes on to what's next, if anything.
                 // Carried on as the box sends a message, as Try again is.
-                LimitLine(note: limit, suggested: row?.suggestedSnooze, carryOn: canAct && pending == nil ? { carryOn(limit) } : nil, sending: carriedOn == limit || !(store.outgoing[key] ?? []).isEmpty) { until in Task { await snooze(until: until) } }
+                LimitLine(note: limit, suggested: row?.suggestedSnooze, carryOn: canAct && pending == nil ? { carryOn(limit) } : nil, sending: store.carriedOn[key] == limit.at || !(store.outgoing[key] ?? []).isEmpty) { until in Task { await snooze(until: until) } }
                     // Its row is read again as the limit lifts, which brings Carry on then.
                     .task(id: limit.liftsAt) {
                         guard let at = limit.liftsAt else { return }
@@ -1540,9 +1536,10 @@ struct SessionView: View {
         }
     }
 
-    /// Tells it to carry on now that its limit has lifted, as the box sends a message.
+    /// Tells it to carry on now that its limit has lifted, as the box sends a message. One that
+    /// didn't go is back in the box to send again, as any message is.
     private func carryOn(_ limit: LimitNote) {
-        carriedOn = limit
+        store.carriedOn[key] = limit.at
         Task { await send(text: limit.message) }
     }
 
@@ -1756,7 +1753,7 @@ struct SessionView: View {
             if let error = row?.apiError, error.button != nil, canAct, pending == nil, (store.outgoing[key] ?? []).isEmpty { await send(text: error.message) }
         // Carry on beside the note of a usage limit that stopped it, once the limit has lifted.
         case "carryon":
-            if let limit = row?.limit, limit.button != nil, canAct, pending == nil, carriedOn != limit, (store.outgoing[key] ?? []).isEmpty { carryOn(limit) }
+            if let limit = row?.limit, limit.button != nil, canAct, pending == nil, store.carriedOn[key] != limit.at, (store.outgoing[key] ?? []).isEmpty { carryOn(limit) }
         case "remove":
             if let held { await removeHeld(held) }
         case "edit":
