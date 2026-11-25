@@ -1941,6 +1941,9 @@ pub struct LimitNote {
     /// What Carry on sends it, as yours: what its Mac sends it once the limit lifts (reconnect.rs
     /// `Why::Limit`).
     pub message: String,
+    /// When it lifts, while it hasn't yet: its page reads its row again then, so Carry on comes as
+    /// it lifts rather than with whatever its Mac next sends, which may be a while from a quiet one.
+    pub lifts_at: Option<i64>,
 }
 
 /// What Carry on sends a session its usage limit stopped, once the limit has lifted, as yours: what
@@ -1951,15 +1954,22 @@ const CARRY_ON_LIMIT: &str = "Your last turn stopped at your account's usage lim
 fn limit_note(s: &Session, status: Status, now: i64) -> Option<LimitNote> {
     let limit = s.limit.as_ref().filter(|_| status != Status::Working)?;
     let lifted = limit.resets_at.is_some_and(|t| t <= now);
-    let (says, says_alone) = limit_words(&s.account, limit, now);
-    Some(LimitNote { says, says_alone, button: (lifted && !s.archived).then(|| "Carry on".to_string()), message: CARRY_ON_LIMIT.to_string() })
+    // Only Claude Code's sessions move to another account (the Mac's harness.ts `MOVES_ACCOUNTS`).
+    let (says, says_alone) = limit_words(&s.account, limit, matches!(s.harness, Harness::Claude), now);
+    Some(LimitNote {
+        says,
+        says_alone,
+        button: (lifted && !s.archived).then(|| "Carry on".to_string()),
+        message: CARRY_ON_LIMIT.to_string(),
+        lifts_at: limit.resets_at.filter(|t| *t > now),
+    })
 }
 
 /// What a usage limit that stopped a session comes to, as the Mac's session header says it
-/// (lanes.ts `limitWords`): which limit, when it lifts, and whether another account has room, for
-/// beside Carry on and where there's none. A move to that account is made on the Mac, which opens a
-/// terminal there.
-fn limit_words(account: &str, limit: &SessionLimit, now: i64) -> (String, String) {
+/// (lanes.ts `limitWords`): which limit, when it lifts, and whether another account has room where
+/// its harness `moves` to another account, for beside Carry on and where there's none. A move to
+/// that account is made on the Mac, which opens a terminal there.
+fn limit_words(account: &str, limit: &SessionLimit, moves: bool, now: i64) -> (String, String) {
     let lifted = limit.resets_at.is_some_and(|t| t <= now);
     let name = match limit.meter.as_deref() {
         Some("session") => "5-hour limit".to_string(),
@@ -1979,6 +1989,7 @@ fn limit_words(account: &str, limit: &SessionLimit, now: i64) -> (String, String
     }
     let when = limit.resets_at.map(|t| format!(" It lifts {{in:{t}}}{then}.")).unwrap_or_default();
     let room = match &limit.move_to {
+        _ if !moves => String::new(),
         Some(to) => format!(" {to} has room: move it there on its Mac to go on now."),
         None => " No other account has room.".to_string(),
     };
@@ -3986,29 +3997,33 @@ mod tests {
     fn a_usage_limit_says_when_it_lifts_and_who_has_room() {
         let limit = SessionLimit { meter: Some("session".into()), resets_at: Some(5_000), spend_capped: false, at: 1, move_to: Some("claude2".into()), continues: false, model: None };
         let both = |w: &str| (w.to_string(), w.to_string());
-        assert_eq!(limit_words("claude", &limit, 1_000), both("It stopped at claude\u{2019}s 5-hour limit. It lifts {in:5000}. claude2 has room: move it there on its Mac to go on now."));
+        assert_eq!(limit_words("claude", &limit, true, 1_000), both("It stopped at claude\u{2019}s 5-hour limit. It lifts {in:5000}. claude2 has room: move it there on its Mac to go on now."));
         // Lifted, beside Carry on it says only that; alone, to send it something.
         assert_eq!(
-            limit_words("claude", &limit, 9_000),
+            limit_words("claude", &limit, true, 9_000),
             ("It stopped at claude\u{2019}s 5-hour limit. It has lifted since.".into(), "It stopped at claude\u{2019}s 5-hour limit. It has lifted since: send it something to go on.".into())
         );
         let week = SessionLimit { meter: Some("model:Opus".into()), resets_at: None, spend_capped: true, move_to: None, ..limit.clone() };
-        assert_eq!(limit_words("claude", &week, 1_000), both("It stopped at claude\u{2019}s weekly Opus limit, with no extra usage to carry it. No other account has room."));
+        assert_eq!(limit_words("claude", &week, true, 1_000), both("It stopped at claude\u{2019}s weekly Opus limit, with no extra usage to carry it. No other account has room."));
         // Its Mac tells it to carry on once the limit lifts.
         let carries = SessionLimit { continues: true, ..limit };
-        assert_eq!(limit_words("claude", &carries, 1_000), both("It stopped at claude\u{2019}s 5-hour limit. It lifts {in:5000}, and Codealong tells it to carry on then. claude2 has room: move it there on its Mac to go on now."));
-        assert_eq!(limit_words("claude", &carries, 9_000), both("It stopped at claude\u{2019}s 5-hour limit. It has lifted since: Codealong tells it to carry on."));
+        assert_eq!(limit_words("claude", &carries, true, 1_000), both("It stopped at claude\u{2019}s 5-hour limit. It lifts {in:5000}, and Codealong tells it to carry on then. claude2 has room: move it there on its Mac to go on now."));
+        assert_eq!(limit_words("claude", &carries, true, 9_000), both("It stopped at claude\u{2019}s 5-hour limit. It has lifted since: Codealong tells it to carry on."));
+        // A harness whose sessions can't move to another account says nothing of who has room.
+        assert_eq!(limit_words("antigravity", &week, false, 1_000), both("It stopped at antigravity\u{2019}s weekly Opus limit, with no extra usage to carry it."));
     }
 
     #[test]
     fn a_lifted_limit_offers_carry_on() {
         let limit = SessionLimit { meter: Some("session".into()), resets_at: Some(5_000), spend_capped: false, at: 1, move_to: None, continues: false, model: None };
         let stopped = Session { limit: Some(limit.clone()), ..Session::new(Harness::Claude, "claude", "limited") };
-        // Before it lifts, carrying on would only stop at the limit again.
-        assert_eq!(limit_note(&stopped, Status::Unread, 1_000).and_then(|n| n.button), None);
+        // Before it lifts, carrying on would only stop at the limit again; the page reads it again
+        // as it lifts.
+        let before = limit_note(&stopped, Status::Unread, 1_000).unwrap();
+        assert_eq!((before.button, before.lifts_at), (None, Some(5_000)));
         // Once it has, Carry on sends what its Mac would, as yours.
         let note = limit_note(&stopped, Status::Unread, 9_000).unwrap();
-        assert_eq!(note.button.as_deref(), Some("Carry on"));
+        assert_eq!((note.button.as_deref(), note.lifts_at), (Some("Carry on"), None));
         assert_eq!(note.message, "Your last turn stopped at your account's usage limit, which has lifted now, so carry on where you left off.");
         // Its Mac carrying it on by itself in a few minutes, the button still does it now.
         let carries = Session { limit: Some(SessionLimit { continues: true, ..limit.clone() }), ..stopped.clone() };

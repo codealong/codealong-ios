@@ -94,7 +94,8 @@ the question, to answer there, and one whose helper waits in its terminal there 
 Mac. One whose last turn ended on an API error says so under its
 conversation, in its harness's words, with *Try again* beside it; one stopped at its account's
 usage limit says which, when it lifts and whether another account has room, and once it has lifted,
-*Carry on* beside it tells it to carry on in one tap, as its Mac would a few minutes later; one its
+*Carry on* beside it tells it to carry on in one tap, without waiting for its Mac to (where it
+does) or typing it; one its
 account's sign-in was turned down for says so too, and whether Codealong carries it on once the
 account is signed in again on its Mac (`/login` in its box signs in nothing from the phone, and
 says so).
