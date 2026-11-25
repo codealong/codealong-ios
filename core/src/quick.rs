@@ -387,6 +387,17 @@ pub struct PrPrimary {
     pub says: String,
 }
 
+/// Another session that owns the PR a session's worktree is on, by its key here: the PR's primary
+/// while it's open, where that isn't `session`, as the Mac's session header names it on a chip
+/// that goes to it (PeerTalkBits.tsx `OtherOwnerChips`), so which session has the PR is plain.
+#[uniffi::export]
+pub fn pr_owner(session: String, pr: PrRow) -> Option<String> {
+    if matches!(pr.state.as_str(), "merged" | "closed") {
+        return None;
+    }
+    pr.primary.map(|p| p.key).filter(|key| *key != session)
+}
+
 /// A PR's primary session as a Mac's card names it, in the words the Mac's tag has for another
 /// machine's: it's that Mac's to nudge and to pick.
 fn primary_of(p: &codealong_peer::pr::PrCard, d: &codealong_peer::client::Device) -> Option<PrPrimary> {
@@ -1287,6 +1298,8 @@ pub(crate) mod tests {
             name: None,
             origin: None,
             moved_to: None,
+            peers: Vec::new(),
+            chatter: None,
             limit: None,
             api_error: None,
             signed_out: None,
@@ -2165,5 +2178,17 @@ pub(crate) mod tests {
         assert_eq!(crate::start_worktree_in(&app, &all, false, &["/busy".to_string()]).unwrap().id, "/free");
         // New worktree is still made from the checkout for it.
         assert_eq!(crate::start_worktree_in(&app, &all, true, &isolates).unwrap().id, "/app");
+    }
+
+    /// The session header names another session as its PR's owner while the PR is open, and not
+    /// where the session is the owner itself or no session is.
+    #[test]
+    fn another_session_owns_an_open_pr() {
+        let owned = |state: &str, primary: Option<&str>| PrRow { state: state.into(), primary: primary.map(|k| PrPrimary { key: k.into(), says: String::new() }), ..pr_row("o/r#3", "Fix", false) };
+        assert_eq!(pr_owner("@d:a".into(), owned("open", Some("@d:b"))).as_deref(), Some("@d:b"));
+        assert_eq!(pr_owner("@d:a".into(), owned("approved", Some("@d:b"))).as_deref(), Some("@d:b"));
+        assert_eq!(pr_owner("@d:a".into(), owned("open", Some("@d:a"))), None);
+        assert_eq!(pr_owner("@d:a".into(), owned("merged", Some("@d:b"))), None);
+        assert_eq!(pr_owner("@d:a".into(), owned("open", None)), None);
     }
 }

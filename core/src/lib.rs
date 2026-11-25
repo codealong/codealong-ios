@@ -311,6 +311,11 @@ pub struct SessionRow {
     /// board (the Mac's lineage.ts `movedTargets`): the Mac's row shows a Moved to chip that goes
     /// to it.
     pub moved_to: Option<MovedTo>,
+    /// The other sessions it has been messaging lately (`peer_talk`), each opening where it's
+    /// listed, as the Mac's header shows them.
+    pub peers: Vec<PeerTalk>,
+    /// Its row's chip while it goes back and forth with another (`peer_talk`).
+    pub chatter: Option<Chatter>,
     /// Its last turn ended on its account's usage limit and nothing has been said since: what that
     /// comes to, and Carry on once it has lifted (`limit_note`).
     pub limit: Option<LimitNote>,
@@ -1035,6 +1040,64 @@ impl Kin {
     }
 }
 
+/// Another session one has been messaging lately, either way (its Mac's chatter.rs,
+/// `Session::peers`), as the Mac's header names it on a chip that goes to it (PeerTalkBits.tsx
+/// `PeerTalkChips`).
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct PeerTalk {
+    /// Its key here (`@<device>:<key>`).
+    pub key: String,
+    /// It's on its Mac's board, so it opens.
+    pub listed: bool,
+    /// What's gone between them, with its title now where its Mac lists it, else as it was:
+    /// "6 messages with “Fix the build”".
+    pub words: String,
+    /// Under that, what it comes to: in the last two hours, and where they've gone back and forth
+    /// (`ping_pong`), that one session could own it.
+    pub detail: String,
+    /// They've gone back and forth enough to say so: four messages or more with two changes of
+    /// direction in two hours (chatter.rs `WARN_MESSAGES`, `WARN_FLIPS`).
+    pub ping_pong: bool,
+}
+
+/// A session's row's chip while it goes back and forth with another (`PeerTalk::ping_pong`), as
+/// the Mac's `PeerChatterChip` says it: "↔ 6", the first such one's messages.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct Chatter {
+    pub count: u32,
+    /// Each such one, as the Mac's chip says under the pointer: "Back and forth with “Fix the
+    /// build”: 6 messages in the last 2 hours".
+    pub says: String,
+}
+
+/// Who a session has been messaging lately, the most first, as many as the Mac's header shows
+/// (two), with titles from its Mac's board where it lists them (`titles`); and its row's chip
+/// while it goes back and forth with any. Macs before 2026-11-24 send none.
+fn peer_talk(peers: &[codealong_peer::model::PeerTalk], device: &str, title: impl Fn(&str) -> Option<String>) -> (Vec<PeerTalk>, Option<Chatter>) {
+    const WARN_MESSAGES: u32 = 4;
+    const WARN_FLIPS: u32 = 2;
+    let ping_pong = |p: &codealong_peer::model::PeerTalk| p.count >= WARN_MESSAGES && p.flips >= WARN_FLIPS;
+    let named = |p: &codealong_peer::model::PeerTalk| title(&p.key).filter(|t| !t.is_empty()).unwrap_or_else(|| p.title.clone());
+    let messages = |n: u32| if n == 1 { "1 message".to_string() } else { format!("{n} messages") };
+    let talk = peers
+        .iter()
+        .take(2)
+        .map(|p| PeerTalk {
+            key: remote_key(device, &p.key),
+            listed: title(&p.key).is_some(),
+            words: format!("{} with \u{201c}{}\u{201d}", messages(p.count), named(p)),
+            detail: if ping_pong(p) { "Back and forth in the last 2 hours: one session could own it".into() } else { "In the last 2 hours".into() },
+            ping_pong: ping_pong(p),
+        })
+        .collect();
+    let hot: Vec<&codealong_peer::model::PeerTalk> = peers.iter().filter(|p| ping_pong(p)).collect();
+    let chatter = hot.first().map(|top| Chatter {
+        count: top.count,
+        says: hot.iter().map(|p| format!("Back and forth with \u{201c}{}\u{201d}: {} in the last 2 hours", named(p), messages(p.count))).collect::<Vec<_>>().join(". "),
+    });
+    (talk, chatter)
+}
+
 /// The session one goes on as on another account, where it was moved there: the latest copy on its
 /// Mac's board, following one moved again.
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
@@ -1647,6 +1710,7 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
             // worked on what you last asked, which its detail no longer leads with.
             let working_since = s.status_since.map(|t| t.max(s.last_prompt_at)).filter(|_| status == Status::Working || aside);
             let (place, place_across) = place_words(lane, project.as_deref().unwrap_or(&lane.project));
+            let talk = peer_talk(&s.peers, &d.short, |k| by_key.get(k).map(|f| f.title.clone()));
             let row = SessionRow {
                 key: remote_key(&d.short, &s.key),
                 device: d.key.clone(),
@@ -1719,6 +1783,8 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                     words: format!("Moved to {}", to.account),
                     says: format!("Moved to \u{201c}{}\u{201d} on {}", to.title, to.account),
                 }),
+                peers: talk.0,
+                chatter: talk.1,
                 limit: limit_note(s, status, now),
                 api_error: api_error_note(s, status),
                 signed_out: signed_out_words(s, status),
@@ -2118,6 +2184,10 @@ pub enum ItemKind {
 pub struct Item {
     /// Unique in the session.
     pub id: String,
+    /// A tool call's id as its harness keeps it (`api::Item::id`), which the call the card below
+    /// shows shares where both keep the same one (ACP's `toolCallId`): `card_shows` knows the
+    /// call's line by it first.
+    pub call: Option<String>,
     pub at: i64,
     pub kind: ItemKind,
     /// Prose for you, the agent, notes and messages (Markdown); a one-line label for a tool call.
@@ -2376,6 +2446,19 @@ pub struct Question {
     pub picked: Vec<String>,
     /// Words of your own, in place of a choice or beside them.
     pub own: Vec<String>,
+    /// It takes only its choices, with no field for words of your own: a form's field that says
+    /// so (`api::FormField::choices_only`), and each question of what an exit asks or a dialog of
+    /// its harness's own (`Pending::exiting`, `::dialog`), whose Mac refuses words of your own (the
+    /// Mac's QuestionList.tsx `onlyChoices`).
+    pub only_choices: bool,
+    /// The form it's a field of doesn't go without an answer to it (`api::FormField::required`):
+    /// Answer waits until it has one (`answers_missing`).
+    pub required: bool,
+    /// What words its field takes, in the field before you write: "A whole number from 1 to 5",
+    /// "An email address" (`api::FormField::hint`).
+    pub hint: Option<String>,
+    /// What's written for it is hidden as it's typed: a key, a password (`api::FormField::secret`).
+    pub secret: bool,
 }
 
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
@@ -2464,6 +2547,15 @@ pub struct Pending {
     /// dialog; a phone older than this field shows one from a newer Mac as questions with a field
     /// for your own words, which that Mac refuses.
     pub dialog: bool,
+    /// It's a form its agent asks a session Codealong runs to fill in (the Agent Client Protocol's
+    /// form elicitation, the Mac's acp/forms.rs): its fields are `questions`, each saying what it
+    /// takes, and declining tells its agent you didn't answer, and it goes on, where declining
+    /// other questions stops the turn. Only from Macs since 0.32 (2026-11-24); before, a session
+    /// Codealong ran asked no questions.
+    pub form: bool,
+    /// What a form says it's for, in Markdown, to read above its questions, where it says more
+    /// than they do (its `input`, the Mac's SessionReply.tsx `form.says`).
+    pub says: Option<String>,
 }
 
 /// What a request asks, as its card says it: a held message's label with the session it's from
@@ -2512,7 +2604,26 @@ fn question_of(q: &api::Question, answers: Option<&std::collections::BTreeMap<St
         answered: given.is_some(),
         picked,
         own,
+        only_choices: q.form.as_ref().is_some_and(|f| f.choices_only),
+        required: q.form.as_ref().is_some_and(|f| f.required),
+        hint: q.form.as_ref().and_then(|f| f.hint.clone()).filter(|h| !h.trim().is_empty()),
+        secret: q.form.as_ref().is_some_and(|f| f.secret),
     }
+}
+
+/// What holds Answer back for a form's questions, as a sentence, or none: the fields it can't go
+/// without (`Question::required`) that `answers` leaves unanswered, by their headers, as the Mac's
+/// Answer button says under the pointer (QuestionList.tsx `missing`). Its Mac refuses such an
+/// answer too, saying the same.
+#[uniffi::export]
+pub fn answers_missing(questions: Vec<Question>, answers: Vec<QuestionAnswer>) -> Option<String> {
+    let answered = |q: &Question| answers.iter().any(|a| a.question == q.question && a.picks.iter().any(|p| !p.trim().is_empty()));
+    let missing: Vec<String> = questions
+        .iter()
+        .filter(|q| q.required && !answered(q))
+        .map(|q| format!("\u{201c}{}\u{201d}", q.header.as_deref().filter(|h| !h.is_empty()).unwrap_or(&q.question)))
+        .collect();
+    (!missing.is_empty()).then(|| format!("Answer {} first: the form needs it", missing.join(", ")))
 }
 
 /// Whether the conversation's last item is the line of the call the card below shows (`pending`),
@@ -2522,21 +2633,25 @@ fn question_of(q: &api::Question, answers: Option<&std::collections::BTreeMap<St
 /// and folded, its head still says the questions and opens them (the Mac's since 2026-11-13). Once
 /// answered, it's a line like any other.
 ///
-/// Known by what it asks, not by its id: a session can wait on two calls at once (a subagent's and
+/// A call to allow is known by its id where the card's and the line's are the same one (ACP's
+/// `toolCallId`), else by what it asks: a session can wait on two calls at once (a subagent's and
 /// its own), and the card shows the one asked first where the conversation's last is the latest,
 /// which keeps its line. Questions by their words and choices, not by headers nor by whether one
 /// takes several, which a background job's record doesn't say (the engine's claude/registry.rs
 /// `job_questions`); and only those the card can answer, since it shows the ones it can't as a
-/// call, whose line opens to them. A call to allow by its label and its input (`calledOf`), which
-/// Claude Code makes alike for the two, the input as well since an MCP tool's label is its name
-/// alone; where a harness makes them differ, the line stays.
+/// call, whose line opens to them. A call to allow by its tool and its input (`calledOf`): by the
+/// tool's name rather than the whole label, since a permission prompt and the session's record
+/// can word or cut it differently (`run_command · …` and `Run command · …`, `Bash` and `Shell`),
+/// and the input as well, since an MCP tool's label is its name alone; one with no input by its
+/// whole label. Where they differ, the line stays.
 #[uniffi::export]
 pub fn card_shows(last: Item, pending: Pending) -> bool {
     fn asked(questions: &[Question]) -> Vec<(&str, Vec<&str>)> {
         questions.iter().map(|q| (q.question.trim(), q.options.iter().map(|o| o.label.trim()).collect())).collect()
     }
-    fn called<'a>(label: &'a str, input: &'a Option<String>) -> (&'a str, &'a str) {
-        (label.trim(), input.as_deref().unwrap_or("").trim())
+    fn called(label: &str, input: &Option<String>) -> (String, String) {
+        let input = input.as_deref().unwrap_or("").trim();
+        (if input.is_empty() { label.trim().to_string() } else { tool_name(label) }, input.to_string())
     }
     let waiting = last.kind == ItemKind::Tool && last.output.is_none() && !last.failed && !last.questions.iter().any(|q| q.answered);
     if !waiting {
@@ -2545,7 +2660,41 @@ pub fn card_shows(last: Item, pending: Pending) -> bool {
     if !pending.questions.is_empty() {
         return pending.cannot.is_none() && asked(&last.questions) == asked(&pending.questions);
     }
-    last.questions.is_empty() && called(&last.text, &last.input) == called(&pending.label, &pending.input)
+    if !last.questions.is_empty() {
+        return false;
+    }
+    last.call.as_deref().is_some_and(|id| !id.is_empty() && id == pending.id) || called(&last.text, &last.input) == called(&pending.label, &pending.input)
+}
+
+/// A tool's name from its line, without the summary or code after ` · `, so `run_command · …`
+/// and `Run command · …` name the same tool while `linear · create_issue` and
+/// `linear · delete_issue` stay apart; a shell's under one name, as the Mac's questionsBox.ts
+/// `toolName` has it.
+fn tool_name(label: &str) -> String {
+    let label = label.trim();
+    let word = |w: &str| !w.is_empty() && w.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    // An MCP server's tool, `server · tool`, keeps both.
+    let base = match label.split_once(" \u{b7} ") {
+        Some((server, tool)) if word(server) && word(tool) => label,
+        Some((name, _)) => name,
+        None => label,
+    };
+    let base = match base.get(..5) {
+        Some(head) if head.eq_ignore_ascii_case("mcp__") => &base[5..],
+        _ => base,
+    };
+    let mut head = String::new();
+    for c in base.replace("__", " \u{b7} ").chars() {
+        let c = if c == '_' || c == '-' || c.is_whitespace() { ' ' } else { c };
+        if !(c == ' ' && head.ends_with(' ')) {
+            head.push(c);
+        }
+    }
+    let head = head.to_lowercase();
+    match head.as_str() {
+        "bash" | "shell" | "run command" | "exec command" => "shell".into(),
+        _ => head,
+    }
 }
 
 /// How to answer what a session waits on.
@@ -2762,6 +2911,7 @@ impl Thread {
                 let answers = result.map(|r| &r.answers).filter(|a| !a.is_empty()).or(Some(&i.answers).filter(|a| !a.is_empty()));
                 Some(Item {
                     id: item_id(i),
+                    call: i.id.clone().filter(|_| kind == ItemKind::Tool),
                     at: i.at,
                     kind,
                     text: i.text.clone(),
@@ -2866,6 +3016,7 @@ fn look_back(mut at: Option<u64>, mut read: impl FnMut(u64) -> Result<api::Page,
 fn prompt_in(page: &api::Page) -> Option<Item> {
     page.items.iter().rev().find(|i| i.kind == "you").map(|i| Item {
         id: item_id(i),
+        call: None,
         at: i.at,
         kind: ItemKind::You,
         text: i.text.clone(),
@@ -2939,6 +3090,7 @@ fn fold_quiet_runs(items: Vec<Item>, from_start: bool) -> Vec<Item> {
                 fold = Some((out.len(), 1));
                 out.push(Item {
                     id: first.id.clone(),
+                    call: None,
                     at: first.at,
                     kind: ItemKind::Note,
                     text: "Looked: nothing new".into(),
@@ -3066,7 +3218,11 @@ impl Conversation {
 
     pub fn pending(&self) -> Result<Option<Pending>, CoreError> {
         Ok(self.client.pending(&self.device, &self.key)?.map(|p| Pending {
-            questions: p.questions.iter().map(|q| question_of(q, None)).collect(),
+            // What an exit or a dialog of its harness's asks takes only its choices, as a form's
+            // field can say of itself.
+            questions: p.questions.iter().map(|q| Question { only_choices: p.exiting || p.dialog || q.form.as_ref().is_some_and(|f| f.choices_only), ..question_of(q, None) }).collect(),
+            form: p.questions.iter().any(|q| q.form.is_some()),
+            says: p.input.clone().filter(|says| !says.trim().is_empty() && p.questions.iter().any(|q| q.form.is_some())),
             label: pending_label(&p, &self.named()),
             id: p.id,
             input: p.input,
@@ -3675,6 +3831,7 @@ mod tests {
             header: Some("Pick".into()),
             options: vec![api::Choice { label: "Red".into(), description: None }, api::Choice { label: "Blue".into(), description: Some("Calm".into()) }],
             multi_select: true,
+            form: None,
         };
         let mut call = item("tool", 20, Some("q1"), None);
         call.questions = vec![q.clone()];
@@ -3703,6 +3860,7 @@ mod tests {
             header: header.map(String::from),
             options: labels.iter().map(|l| api::Choice { label: l.to_string(), description: None }).collect(),
             multi_select: multi,
+            form: None,
         };
         let card = |qs: &[api::Question]| Pending {
             id: "call-1".into(),
@@ -3718,6 +3876,8 @@ mod tests {
             unwritten: false,
             exiting: false,
             dialog: false,
+            form: false,
+            says: None,
         };
         let line = |qs: &[api::Question], result: Option<api::Item>| {
             let mut call = item("tool", 20, Some("call-2"), None);
@@ -3760,6 +3920,8 @@ mod tests {
             unwritten: false,
             exiting: false,
             dialog: false,
+            form: false,
+            says: None,
         };
         let line = |label: &str, input: Option<&str>, result: Option<api::Item>| {
             let mut call = item("tool", 20, Some("call-2"), None);
@@ -3778,8 +3940,63 @@ mod tests {
         assert!(!card_shows(line("mcp__linear__create_issue", Some("{\"title\":\"Second\"}"), None), card("mcp__linear__create_issue", Some("{\"title\":\"First\"}"))));
         // Ran, it's a line like any other.
         assert!(!card_shows(line("Bash · `npm test`", Some("npm test"), Some(item("result", 30, Some("call-2"), Some("ok")))), card("Bash · `npm test`", Some("npm test"))));
-        // Another label for the same input is another call's.
-        assert!(!card_shows(line("Bash · `npm test`", Some("npm test"), None), card("Bash", Some("npm test"))));
+        // The same tool worded or cut otherwise, for the same input, is the same call (the Mac's
+        // since 2026-11-24): a permission prompt's `run_command` for the record's `Run command`, a
+        // shell by any of its names.
+        assert!(card_shows(line("Bash · `npm test`", Some("npm test"), None), card("Bash", Some("npm test"))));
+        assert!(card_shows(line("Run command · `cargo test`", Some("cargo test"), None), card("run_command · `cargo test`", Some("cargo test"))));
+        assert!(card_shows(line("Shell · `ls`", Some("ls"), None), card("Bash · `ls`", Some(" ls "))));
+        // Another tool on the same MCP server, or another tool for the same input, is another call's.
+        assert!(!card_shows(line("linear · delete_issue", Some("{}"), None), card("linear · create_issue", Some("{}"))));
+        assert!(!card_shows(line("Read · `src/a.ts`", Some("src/a.ts"), None), card("Edit · `src/a.ts`", Some("src/a.ts"))));
+        // With no input, the whole label.
+        assert!(!card_shows(line("Fetch · `a`", None, None), card("Fetch · `b`", None)));
+        // The same call's id on both, though they're worded and given otherwise (ACP's `rawInput`
+        // as JSON beside the record's command).
+        let mut by_id = line("Run command · `cargo test`", Some("cargo test"), None);
+        by_id.call = Some("call-1".into());
+        assert!(card_shows(by_id.clone(), card("run_command", Some("{\"CommandLine\":\"cargo test\"}"))));
+        // A line whose call asks questions is never the card's call to allow, id or not.
+        by_id.questions = vec![question_of(&api::Question { question: "Which?".into(), header: None, options: vec![], multi_select: false, form: None }, None)];
+        assert!(!card_shows(by_id, card("run_command", Some("cargo test"))));
+    }
+
+    #[test]
+    fn tools_are_named_as_the_mac_names_them_to_match_a_card() {
+        assert_eq!(tool_name("run_command · `cargo test`"), "shell");
+        assert_eq!(tool_name(" Run command · `cargo test` "), "shell");
+        assert_eq!(tool_name("exec_command"), "shell");
+        assert_eq!(tool_name("linear · create_issue"), "linear \u{b7} create issue");
+        assert_eq!(tool_name("mcp__linear__create_issue"), "linear \u{b7} create issue");
+        assert_eq!(tool_name("MCP__Linear__Create-Issue"), "linear \u{b7} create issue");
+        assert_eq!(tool_name("Edit · `src/a.ts`"), "edit");
+    }
+
+    /// A form's fields say what each takes: only its choices, a hint, hidden typing, or that the
+    /// form needs it, which holds Answer back by its header; and the form says what it's for.
+    #[test]
+    fn a_forms_fields_say_what_they_take_and_what_it_needs() {
+        let field = |question: &str, header: Option<&str>, form: Option<api::FormField>| api::Question {
+            question: question.into(),
+            header: header.map(String::from),
+            options: vec![],
+            multi_select: false,
+            form,
+        };
+        let region = question_of(&field("Where?", Some("Region"), Some(api::FormField { choices_only: true, required: true, ..Default::default() })), None);
+        let token = question_of(&field("Your token", None, Some(api::FormField { required: true, secret: true, hint: Some("A key".into()), ..Default::default() })), None);
+        let seats = question_of(&field("How many?", Some(""), Some(api::FormField { hint: Some("A whole number from 1 to 5".into()), ..Default::default() })), None);
+        let plain = question_of(&field("Which?", None, None), None);
+        assert_eq!((region.only_choices, region.required, region.secret), (true, true, false));
+        assert_eq!((token.only_choices, token.secret, token.hint.as_deref()), (false, true, Some("A key")));
+        assert_eq!((seats.required, seats.hint.as_deref()), (false, Some("A whole number from 1 to 5")));
+        assert!(!plain.only_choices && !plain.required && !plain.secret && plain.hint.is_none());
+        let all = vec![region, token, seats, plain];
+        let answer = |q: &str, picks: &[&str]| QuestionAnswer { question: q.into(), multi_select: false, picks: picks.iter().map(|p| p.to_string()).collect() };
+        // Each required one left unanswered is named, by its header, else its words.
+        assert_eq!(answers_missing(all.clone(), vec![answer("How many?", &["2"])]).as_deref(), Some("Answer \u{201c}Region\u{201d}, \u{201c}Your token\u{201d} first: the form needs it"));
+        assert_eq!(answers_missing(all.clone(), vec![answer("Where?", &["Europe"]), answer("Your token", &[" "])]).as_deref(), Some("Answer \u{201c}Your token\u{201d} first: the form needs it"));
+        assert_eq!(answers_missing(all, vec![answer("Where?", &["Europe"]), answer("Your token", &["abc"])]), None);
     }
 
     #[test]
@@ -3877,7 +4094,7 @@ mod tests {
 
     #[test]
     fn an_orchestrators_runs_that_found_nothing_fold_into_a_line() {
-        let said = |kind: ItemKind, at: i64, text: &str| Item { id: at.to_string(), at, kind, text: text.into(), from: None, input: None, output: None, failed: false, done: true, result_at: 0, withdrawn: false, questions: vec![], link: None, files: vec![], caption: None, editable: false, card: None };
+        let said = |kind: ItemKind, at: i64, text: &str| Item { id: at.to_string(), call: None, at, kind, text: text.into(), from: None, input: None, output: None, failed: false, done: true, result_at: 0, withdrawn: false, questions: vec![], link: None, files: vec![], caption: None, editable: false, card: None };
         let first = "Look over the sessions.\n\nThis comes from the schedule \u{201c}Orchestrator\u{201d}: its 8:00 run.";
         let items = vec![
             // The run that started it, from the start of the conversation: nothing found.
@@ -3912,7 +4129,7 @@ mod tests {
         assert_eq!(lines(fold_quiet_runs(items[..3].to_vec(), false)).len(), 3);
         // A run that asked you something stays, its questions in view.
         let mut asked = said(ItemKind::Tool, 12, "AskUserQuestion");
-        asked.questions = vec![Question { question: "Which?".into(), header: None, options: vec![], multi_select: false, answered: false, picked: vec![], own: vec![] }];
+        asked.questions = vec![Question { question: "Which?".into(), header: None, options: vec![], multi_select: false, answered: false, picked: vec![], own: vec![], only_choices: false, required: false, hint: None, secret: false }];
         let run = vec![said(ItemKind::Codealong, 11, "Look again."), asked, said(ItemKind::Agent, 13, "-")];
         assert_eq!(fold_quiet_runs(run.clone(), false), run);
         assert!(says_nothing(" **.** ") && !says_nothing("- one thing"));
@@ -3957,7 +4174,7 @@ mod tests {
 
     #[test]
     fn a_message_sent_shows_once_the_record_has_a_prompt_after_it() {
-        let said = |kind: ItemKind, at: i64, text: &str| Item { id: at.to_string(), at, kind, text: text.into(), from: None, input: None, output: None, failed: false, done: true, result_at: 0, withdrawn: false, questions: vec![], link: None, files: vec![], caption: None, editable: false, card: None };
+        let said = |kind: ItemKind, at: i64, text: &str| Item { id: at.to_string(), call: None, at, kind, text: text.into(), from: None, input: None, output: None, failed: false, done: true, result_at: 0, withdrawn: false, questions: vec![], link: None, files: vec![], caption: None, editable: false, card: None };
         let items = vec![said(ItemKind::You, 1_000, "old"), said(ItemKind::Agent, 9_000, "reply"), said(ItemKind::You, 10_000, "first"), said(ItemKind::Note, 12_000, "From another session: second")];
         // A message from Codealong comes as another session's: whole from Macs since 2026-10-14,
         // as a note of its first line from those before.
@@ -5043,6 +5260,8 @@ mod order_tests {
             name: None,
             origin: None,
             moved_to: None,
+            peers: Vec::new(),
+            chatter: None,
             limit: None,
             api_error: None,
             signed_out: None,
@@ -5725,6 +5944,43 @@ mod order_tests {
         assert_eq!(every[..2], listed[..]);
         assert!(!every[1].unattended);
         assert_eq!(every[2].runs, None);
+    }
+
+    #[test]
+    /// Who a session has been messaging lately shows as the Mac's header has it, the most first
+    /// and two at most, by their titles now where the Mac lists them; its row's chip only while
+    /// it goes back and forth with one.
+    fn a_session_says_who_it_has_been_messaging_and_its_row_when_back_and_forth() {
+        use codealong_peer::client::Device;
+        use codealong_peer::feed::Replica;
+        use codealong_peer::model::PeerTalk as Talk;
+        let mac = Device { key: "m".into(), short: "m".into(), name: "Mac".into(), online: true, since: None, last_seen: None, remote_control: true, app: String::new(), loading: false, linked_back: true };
+        let talk = |key: &str, title: &str, count: u32, flips: u32| Talk { key: key.into(), title: title.into(), count, flips, last_at: 5 };
+        let mut lane = codealong_peer::model::Lane::new("/src/app", "App", "app");
+        lane.sessions = vec![
+            Session {
+                title: "Coordinate".into(),
+                peers: vec![talk("claude:work:docs", "Docs (old)", 6, 3), talk("claude:work:gone", "Gone one", 4, 1), talk("claude:work:third", "Third", 1, 0)],
+                ..Session::new(Harness::Claude, "claude", "lead")
+            },
+            Session { title: "Write the docs".into(), peers: vec![talk("claude:claude:lead", "Coordinate", 1, 0)], ..Session::new(Harness::Claude, "work", "docs") },
+            Session { title: "Quiet".into(), ..Session::new(Harness::Claude, "work", "quiet") },
+        ];
+        let replica = Replica { lanes: vec![lane], ..Replica::default() };
+        let rows = session_rows(&[(mac, &replica)], true);
+        let row = |id: &str| rows.iter().find(|r| r.key.ends_with(&format!(":{id}"))).unwrap();
+        let lead = row("lead");
+        assert_eq!(
+            lead.peers.iter().map(|p| (p.key.as_str(), p.listed, p.words.as_str(), p.ping_pong)).collect::<Vec<_>>(),
+            [("@m:claude:work:docs", true, "6 messages with \u{201c}Write the docs\u{201d}", true), ("@m:claude:work:gone", false, "4 messages with \u{201c}Gone one\u{201d}", false)]
+        );
+        assert_eq!(lead.peers[0].detail, "Back and forth in the last 2 hours: one session could own it");
+        assert_eq!(lead.peers[1].detail, "In the last 2 hours");
+        assert_eq!(lead.chatter.as_ref().map(|c| (c.count, c.says.as_str())), Some((6, "Back and forth with \u{201c}Write the docs\u{201d}: 6 messages in the last 2 hours")));
+        // A message one way isn't back and forth.
+        assert_eq!(row("docs").peers.iter().map(|p| p.words.as_str()).collect::<Vec<_>>(), ["1 message with \u{201c}Coordinate\u{201d}"]);
+        assert!(row("docs").chatter.is_none());
+        assert!(row("quiet").peers.is_empty() && row("quiet").chatter.is_none());
     }
 
     #[test]

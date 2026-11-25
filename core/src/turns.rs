@@ -521,7 +521,7 @@ mod tests {
     use crate::{Question, WebLink};
 
     fn item(kind: ItemKind, id: &str, at: i64, text: &str) -> Item {
-        Item { id: id.into(), at, kind, text: text.into(), from: None, input: None, output: None, failed: false, withdrawn: false, questions: vec![], link: None, files: vec![], caption: None, editable: false, card: None, done: true, result_at: 0 }
+        Item { id: id.into(), call: None, at, kind, text: text.into(), from: None, input: None, output: None, failed: false, withdrawn: false, questions: vec![], link: None, files: vec![], caption: None, editable: false, card: None, done: true, result_at: 0 }
     }
     fn you(id: &str, at: i64) -> Item {
         item(ItemKind::You, id, at, "Do it")
@@ -650,7 +650,7 @@ mod tests {
             ["Said p", "Turn turn:c2 “Worked for 2s · Ran 2 commands”", "Tools run:c1 “Ran 2 commands” in turn:c2", "Tool c3", "Turn turn:a1 “Worked for 1m · 1 earlier update”", "Said a1 in turn:a1", "Said a2"]
         );
         // Questions you answered start a turn of their own.
-        let asked = Question { question: "Which?".into(), header: None, options: vec![], multi_select: false, answered: true, picked: vec!["A".into()], own: vec![] };
+        let asked = Question { question: "Which?".into(), header: None, options: vec![], multi_select: false, answered: true, picked: vec!["A".into()], own: vec![], only_choices: false, required: false, hint: None, secret: false };
         let answered = vec![you("p", 1_000), agent("a1", 2_000, "Asking."), Item { questions: vec![asked.clone()], ..call("q", 3_000, "AskUserQuestion") }, call("c1", 4_000, "Bash · `ls`"), agent("a2", 9_000, "Done.")];
         assert_eq!(laid(&thread_rows(answered, Status::Idle, None)), ["Said p", "Said a1", "Tool q", "Turn turn:c1 “Worked for 6s · Ran 1 command”", "Tool c1 in turn:c1", "Said a2"]);
         // A reply with nothing before it, and a turn with no reply, stay as they are.

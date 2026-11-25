@@ -80,7 +80,10 @@ tap opens it to the whole message;
 another session's message is a card that names who sent it, as a link to that session, over its
 first lines (one its own side conversation sent links to that side conversation). A session moved
 to another account on its Mac says *Moved to* and the account on its row, and at the end of its
-conversation a tap goes to the copy that carries it on, which says what it was moved from. Scroll up to read
+conversation a tap goes to the copy that carries it on, which says what it was moved from. One
+that's been going back and forth with another session lately (four messages or more, the turn
+passing between them twice, in two hours) says how many on its row (↔ 6), and its menu lists the
+sessions it has been messaging and another that owns its PR, each a tap away. Scroll up to read
 further back, with the prompt you're reading the answer to pinned at the top and a button at the
 foot that goes back down to the newest. A session running
 inside Codealong on your Mac streams its reply as it's written, and one that only waits on a command
@@ -144,11 +147,17 @@ need you, as on the Mac.
   Claude Code's own (its offer to make auto mode the default, a command's list of choices), which
   a Mac of 0.26 or later reads off a session's terminal where it can read it (Rex, tmux or
   Codealong's own terminal; in another terminal app it's answered there), is a card of its choices
-  alone, picked there as you'd pick one, with *Cancel* pressing Escape;
+  alone, picked there as you'd pick one, with *Cancel* pressing Escape. A form an agent asks a
+  session Codealong runs to fill in (a Mac of 0.32 or later: an MCP server's form, or the
+  harness's own questions there) is its questions, each asking for what its field takes: only its
+  choices, words its field names ("A whole number from 1 to 5"), or a key or password, hidden as
+  you type it; what the form is for shows above them, *Answer* waits for the fields it can't go
+  without, and *Decline* tells the agent, which goes on;
 - stop its turn, with the square that takes send's place while it runs, or a command its agent
   left running in the background, from the list above its box;
 - switch a running session's model, effort or mode (a Claude Code background job's too, from a Mac
-  of 0.18 or later, and a Codex app thread's from its next turn): the mode of one in a terminal by
+  of 0.18 or later, and a Codex app thread's from its next turn, as one Codealong runs takes a
+  switch made while its turn runs or waits on you, from a Mac of 0.32 or later): the mode of one in a terminal by
   Shift+Tab pressed there, a background job's from a Mac of 0.21 or later, said in italics until its
   next prompt shows it took;
 - run a command its agent wrote for you to run: *Run* beside a shell block in its reply (asked

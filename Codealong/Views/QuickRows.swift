@@ -101,8 +101,8 @@ struct QuickSessionRow: View {
         .accessibilityElement(children: .combine)
     }
 
-    /// Its marks (Moved to, Top, On the side, Finished, Seen by agent), its labels with `labels`,
-    /// and where it is.
+    /// Its marks (Moved to, Top, On the side, Finished, Seen by agent, back and forth with
+    /// another), its labels with `labels`, and where it is.
     private func whereLine(labels: Bool) -> some View {
         HStack(spacing: 6) {
             // Where it went, first, as the Mac's row has it; its page goes there.
@@ -120,6 +120,11 @@ struct QuickSessionRow: View {
             }
             if row.agentSeen != nil {
                 Chip(words: "Seen by agent", symbol: "eye", tint: .secondary)
+            }
+            // Going back and forth with another session, as the Mac's ↔ chip warns.
+            if let chatter = row.chatter {
+                Chip(words: "\(chatter.count)", symbol: "arrow.left.arrow.right", tint: .orange)
+                    .accessibilityLabel(chatter.says)
             }
             if labels {
                 ForEach(row.labels, id: \.id) { SessionLabelChip(label: $0) }

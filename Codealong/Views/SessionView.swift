@@ -596,6 +596,20 @@ struct SessionView: View {
         if let moved = row?.movedTo {
             Button(moved.says, systemImage: "arrow.turn.right.up") { follow(moved.key) }
         }
+        // The sessions it has been messaging lately, and another that owns its PR, each opening
+        // over the page where its Mac lists it, as the Mac's header has them on chips.
+        ForEach(row?.peers ?? [], id: \.key) { p in
+            Button { follow(p.key) } label: {
+                Label(p.words, systemImage: p.pingPong ? "arrow.left.arrow.right.circle.fill" : "arrow.left.arrow.right")
+                Text(p.detail)
+            }
+            .disabled(!p.listed)
+        }
+        if let pr = row?.worktreePr.flatMap({ store.pr($0.key) }), let owner = prOwner(session: key, pr: pr), let ownerRow = store.row(owner) {
+            // Verbatim: a localized number would be written #1,244.
+            let words = "#\(pr.number)’s owner: “\(ownerRow.title)”"
+            Button(words, systemImage: "person.crop.circle.badge.checkmark") { follow(owner) }
+        }
         // The labels its Mac's sessions wear, each checked where it wears it, as the Mac's Labels ›.
         Menu("Labels", systemImage: "tag") {
             ForEach(store.labelChoices(key), id: \.by) { choice in
@@ -2147,7 +2161,11 @@ private struct ApprovalCard: View {
 /// ticked once answered: all at once, a few long ones filled the screen. Pick a choice, several
 /// where a question takes more, or write your own answer. A choice for a question that takes one
 /// goes on to the next without an answer, and the button says Next until none is left; your picks
-/// go back as its answer, as the Mac's panel sends them. Decline stops the turn. It starts folded
+/// go back as its answer, as the Mac's panel sends them. Decline stops the turn, or for a form its
+/// agent asks a session Codealong runs (`Pending.form`), tells the agent, which goes on. A form's
+/// fields say what each takes: only its choices, words its field names, hidden typing, or that the
+/// form needs it, which holds Answer back (`answersMissing`); what the form is for shows above its
+/// questions. It starts folded
 /// to a line of what it asks, so the conversation it came with can be read above it: open, a long
 /// question and its choices covered most of the screen. A tap opens it, and folds it again, as
 /// starting to write in the reply box does, and opening it puts the box's keyboard away. Folded, it
@@ -2283,11 +2301,6 @@ private struct QuestionsCard: View {
         return kept
     }
 
-    /// Its choices are all it takes: what an exit asks, or a dialog of its harness's own read off
-    /// its terminal, whose Mac refuses words of your own (the Mac's QuestionList.tsx
-    /// `choicesOnly`).
-    private var choicesOnly: Bool { pending.exiting || pending.dialog }
-
     /// What it asks, on the line it folds to: the question, or with several, how many and their
     /// headers when they all have one (as its line in the conversation names them).
     private var gist: AttributedString {
@@ -2307,18 +2320,36 @@ private struct QuestionsCard: View {
             // As tall as the question is, up to a point, and it scrolls past that.
             UpTo(most: 320) {
                 ScrollView {
-                    question(q)
-                        .id(q.question)
+                    VStack(alignment: .leading, spacing: 10) {
+                        // What a form says it's for, above its questions, where it says more than
+                        // they do, as the Mac's panel shows it.
+                        if let says = pending.says {
+                            MarkdownText(text: says).font(.subheadline)
+                        }
+                        question(q)
+                            .id(q.question)
+                    }
                 }
                 .scrollBounceBehavior(.basedOnSize)
             }
-            // What an exit asks, and a dialog of its harness's own, take nothing but their choices.
-            if !choicesOnly {
-                TextField(q.options.isEmpty ? "Your answer" : "Or write your own answer", text: Binding(get: { own[q.question] ?? "" }, set: { type(q, $0) }), axis: .vertical)
-                    .lineLimit(1...4)
-                    .textFieldStyle(.roundedBorder)
-                    .focused($ownFocused)
-                    .disabled(!canAct || answering != nil)
+            // What an exit asks, a dialog of its harness's own, and a form's field that offers only
+            // its choices take nothing but them. A form's field may say what words it takes, in the
+            // field, and hide them as they're typed (a key, a password).
+            if !q.onlyChoices {
+                let words = Binding(get: { own[q.question] ?? "" }, set: { type(q, $0) })
+                let prompt = q.hint ?? (q.options.isEmpty ? "Your answer" : "Or write your own answer")
+                Group {
+                    if q.secret {
+                        SecureField(prompt, text: words)
+                            .textContentType(.password)
+                    } else {
+                        TextField(prompt, text: words, axis: .vertical)
+                            .lineLimit(1...4)
+                    }
+                }
+                .textFieldStyle(.roundedBorder)
+                .focused($ownFocused)
+                .disabled(!canAct || answering != nil)
             }
         }
         // Its buttons say what they do in their hints, not in a line under them.
@@ -2334,6 +2365,11 @@ private struct QuestionsCard: View {
                     Button(answering == .deny ? "Cancelling…" : "Cancel", action: decline)
                         .buttonStyle(.bordered)
                         .accessibilityHint("Presses Escape in its terminal, which closes it. Or pick one, as you would there")
+                } else if pending.form {
+                    // A form declined tells its agent you didn't answer, and it goes on.
+                    Button(answering == .deny ? "Declining…" : "Decline", action: decline)
+                        .buttonStyle(.bordered)
+                        .accessibilityHint("Doesn't answer: its agent is told, and goes on. Or write below to say something else")
                 } else {
                     Button(answering == .deny ? "Declining…" : "Decline", role: .destructive, action: decline)
                         .buttonStyle(.bordered)
@@ -2344,9 +2380,12 @@ private struct QuestionsCard: View {
                     Button("Next") { go(next) }
                         .buttonStyle(.borderedProminent)
                 } else {
+                    // A form's field it can't go without holds it back, and its hint says which.
+                    let missing = answersMissing(questions: pending.questions, answers: answers)
                     Button(answering == .allow ? "Answering…" : "Answer") { answer(answers) }
                         .buttonStyle(.borderedProminent)
-                        .disabled(answers.isEmpty)
+                        .disabled(answers.isEmpty || missing != nil)
+                        .accessibilityHint(missing ?? "")
                 }
             }
             .disabled(answering != nil)
@@ -4191,14 +4230,23 @@ private struct ReplyRules {
     /// can go now (the Mac's SessionReply.tsx `busy`): while it waits on you at a prompt, where
     /// the command would answer it, and while its turn runs where its harness would hold the
     /// command as a prompt. One whose harness runs it at once (Claude Code's,
-    /// `switchesMidTurn`) goes on with the turn's next step on the new model; Codealong's own
-    /// agents take one only between turns. An app takes one whenever, for the next turn.
+    /// `switchesMidTurn`) goes on with the turn's next step on the new model. An app takes one
+    /// whenever, for the next turn, and so does one Codealong runs, whose Mac holds a switch made
+    /// while its turn runs or waits on you until the turn ends (`switchesNextTurn`). A Mac before
+    /// 0.32 refuses that mid-turn, saying to switch once the turn ends.
     var switchWaits: String? {
-        guard !inApp, let row else { return nil }
+        guard !inApp, let row, !row.hosted else { return nil }
         if row.atAPrompt { return "once you’ve answered it" }
-        let midTurn = !row.hosted && account?.switchesMidTurn == true
+        let midTurn = account?.switchesMidTurn == true
         if !midTurn && (row.status == .working || row.stalled) { return "once its turn ends" }
         return nil
+    }
+
+    /// A switch of model or effort goes on with its next turn, not this one: an app's, and one
+    /// Codealong runs while its turn runs or waits on you (the Mac's SessionReply.tsx `nextTurn`).
+    var switchesNextTurn: Bool {
+        guard let row else { return false }
+        return inApp || (row.hosted && (row.status == .working || row.status == .needs || row.stalled))
     }
 
     /// It says what it's on beside the box: a running one, or one an app goes on with.
@@ -4335,7 +4383,7 @@ private struct ModelMenu: View {
                     label(switching ? Text("Switching…") : words, under: switching ? nil : under)
                 }
                 .accessibilityLabel(spoken)
-                .accessibilityHint(rules.inApp ? "Switches this session's model or effort, for it alone, from its next turn" : "Switches this session's model, effort or mode, for it alone")
+                .accessibilityHint(rules.switchesNextTurn ? "Switches this session's model or effort, for it alone, from its next turn" : "Switches this session's model, effort or mode, for it alone")
             } else {
                 label(words, under: under, menu: false)
                     .accessibilityLabel(spoken)
