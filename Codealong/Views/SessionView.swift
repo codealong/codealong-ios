@@ -4260,6 +4260,14 @@ private struct ReplyRules {
         return inApp || (row.queuesSwitches && (row.status == .working || row.status == .needs || row.stalled))
     }
 
+    /// What its menu switches, as words a sentence ends with: "model, effort or mode", or only
+    /// those it offers (a stopped one's model and effort; a terminal's mode alone).
+    var switchesWords: String {
+        let what = [switchesModel ? "model" : nil, switchesEffort ? "effort" : nil, switchesMode ? "mode" : nil].compactMap { $0 }
+        guard let last = what.last else { return "model" }
+        return what.count > 1 ? "\(what.dropLast().joined(separator: ", ")) or \(last)" : last
+    }
+
     /// It says what it's on beside the box: a running one, one an app goes on with, or one
     /// Codealong runs whose Mac switches it while it isn't running.
     var showsModel: Bool {
@@ -4395,7 +4403,7 @@ private struct ModelMenu: View {
                     label(switching ? Text("Switching…") : words, under: switching ? nil : under)
                 }
                 .accessibilityLabel(spoken)
-                .accessibilityHint(rules.switchesNextTurn ? "Switches this session's model or effort, for it alone, from its next turn" : "Switches this session's model, effort or mode, for it alone")
+                .accessibilityHint(rules.switchesNextTurn ? "Switches this session's model or effort, for it alone, from its next turn" : "Switches this session's \(rules.switchesWords), for it alone")
             } else {
                 label(words, under: under, menu: false)
                     .accessibilityLabel(spoken)

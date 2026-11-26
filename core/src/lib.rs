@@ -47,6 +47,10 @@ const LOOK_BACK: usize = 16;
 const ACT_WAIT: Duration = Duration::from_secs(40);
 /// How long a request that only reads waits, as the client's own do.
 const READ_WAIT: Duration = Duration::from_secs(15);
+/// How long a switch of model or effort waits for its Mac: longer than the client's own do,
+/// since a Mac of 0.33 or later first picks a session Codealong runs back up in its agent when
+/// it isn't running, which it gives 90 seconds (acp.rs `REQUEST_TIMEOUT`, `ready_options`).
+const SWITCH_WAIT: Duration = Duration::from_secs(100);
 
 /// What Swift implements to hear that `Core::snapshot` has something new.
 #[uniffi::export(callback_interface)]
@@ -3226,6 +3230,14 @@ impl Conversation {
         let items = st.shown(&self.named());
         if fold { fold_quiet_runs(items, st.before.is_none()) } else { items }
     }
+
+    /// Asks its Mac for a switch of model or effort (`method`, with its `params`), waiting as
+    /// long as a stopped session's pick-up takes (`SWITCH_WAIT`), and reads what it says
+    /// happened. One not answered in time may still be done there, as the client says.
+    fn switch(&self, method: &str, params: serde_json::Value) -> Result<String, String> {
+        let said = self.client.ask(&self.device, method, params, SWITCH_WAIT)?;
+        serde_json::from_value(said).map_err(|e| format!("The other device's answer didn't read: {e}"))
+    }
 }
 
 #[uniffi::export]
@@ -3466,13 +3478,14 @@ impl Conversation {
     /// Switches it to another of its account's models, for it alone: while it runs, or, in the
     /// Codex app, from its next turn. Says what happened.
     pub fn switch_model(&self, model: String) -> Result<String, CoreError> {
-        Ok(self.client.switch_model(&self.device, &self.key, &model)?)
+        Ok(self.switch(api::SESSION_MODEL, serde_json::to_value(params::Model { key: self.key.clone(), model }).unwrap_or_default())?)
     }
 
     /// Switches it to another of its account's effort levels, for it alone, as `switch_model`
     /// does. Says what happened. Macs before 2026-10-14 refuse it.
     pub fn switch_effort(&self, effort: String) -> Result<String, CoreError> {
-        self.client.switch_effort(&self.device, &self.key, &effort).map_err(|e| CoreError::Failed(older_mac(e, &self.client, &self.device, "switch effort from here")))
+        self.switch(api::SESSION_EFFORT, serde_json::to_value(params::Effort { key: self.key.clone(), effort }).unwrap_or_default())
+            .map_err(|e| CoreError::Failed(older_mac(e, &self.client, &self.device, "switch effort from here")))
     }
 
     /// Switches it to another of the modes it offers (`id`, one of its row's `modes`), for it

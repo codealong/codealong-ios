@@ -159,8 +159,8 @@ need you, as on the Mac.
   left running in the background, from the list above its box;
 - switch a running session's model, effort or mode (a Claude Code background job's too, from a Mac
   of 0.18 or later, and a Codex app thread's from its next turn, as one Codealong runs takes a
-  switch made while its turn runs or waits on you, from a Mac of 0.32 or later, and while it isn't
-  running, from a Mac of 0.33 or later): the mode of one in a terminal by
+  switch made while its turn runs or waits on you, from a Mac of 0.32 or later, and its model and
+  effort while it isn't running, from a Mac of 0.33 or later): the mode of one in a terminal by
   Shift+Tab pressed there, a background job's from a Mac of 0.21 or later, said in italics until its
   next prompt shows it took;
 - run a command its agent wrote for you to run: *Run* beside a shell block in its reply (asked
