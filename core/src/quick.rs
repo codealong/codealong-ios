@@ -1334,6 +1334,7 @@ pub(crate) mod tests {
             peers: Vec::new(),
             chatter: None,
             queues_switches: false,
+            switches_stopped: false,
             limit: None,
             api_error: None,
             signed_out: None,

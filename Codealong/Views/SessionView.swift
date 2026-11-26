@@ -4195,13 +4195,17 @@ private struct ReplyRules {
     /// Its app takes a switch of model or effort whenever, for its next turn (the Codex app's).
     var inApp: Bool { goesOnWithIt && account?.switchesInApp == true }
 
-    /// It's running where Codealong can switch it: one Codealong runs, or one whose box its Mac's
-    /// words land in as typed, its terminal or a background job's, which its account's service
-    /// pastes into (the Mac's SessionReply.tsx `typesCommands`). A message on a socket or to an
-    /// app would hand `/model` to the agent as a prompt. A Mac from before 2026-11-09 switches only
-    /// what it types into a terminal, and says so when asked to switch a job.
+    /// It's where Codealong can switch it: one Codealong runs, running or not where its Mac picks
+    /// it up again to (the core's `switchesStopped`, 0.33 and later), or a running one whose box
+    /// its Mac's words land in as typed, its terminal or a background job's, which its account's
+    /// service pastes into (the Mac's SessionReply.tsx `switchable`, `typesCommands`). A message on
+    /// a socket or to an app would hand `/model` to the agent as a prompt. A Mac from before
+    /// 2026-11-09 switches only what it types into a terminal, and says so when asked to switch a
+    /// job.
     private var switchable: Bool {
-        guard let row, row.live else { return false }
+        guard let row else { return false }
+        if row.switchesStopped { return true }
+        guard row.live else { return false }
         if row.hosted { return true }
         switch way {
         case .typed, .background: return true
@@ -4256,9 +4260,10 @@ private struct ReplyRules {
         return inApp || (row.queuesSwitches && (row.status == .working || row.status == .needs || row.stalled))
     }
 
-    /// It says what it's on beside the box: a running one, or one an app goes on with.
+    /// It says what it's on beside the box: a running one, one an app goes on with, or one
+    /// Codealong runs whose Mac switches it while it isn't running.
     var showsModel: Bool {
-        guard let row, !resuming, row.live || goesOnWithIt else { return false }
+        guard let row, !resuming, row.live || goesOnWithIt || row.switchesStopped else { return false }
         return switchesModel || switchesEffort || switchesMode || row.model != nil || row.effort != nil
     }
 }

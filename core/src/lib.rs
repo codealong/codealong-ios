@@ -320,6 +320,11 @@ pub struct SessionRow {
     /// or waits on you until the turn ends (0.32 and later; send.rs `switch_model`). A Mac before
     /// refuses one mid-turn, so the phone waits for the turn to end there, as it did.
     pub queues_switches: bool,
+    /// Codealong runs it on a Mac that picks it up again to switch its model or effort while it
+    /// isn't running (0.33 and later; send.rs `switch`, acp.rs `ready_options`), so its model
+    /// shows beside the box and switches there, as the Mac's reply box has it. A Mac before
+    /// refuses one, saying to pick them as it resumes, so the phone offers none there, as before.
+    pub switches_stopped: bool,
     /// Its last turn ended on its account's usage limit and nothing has been said since: what that
     /// comes to, and Carry on once it has lifted (`limit_note`).
     pub limit: Option<LimitNote>,
@@ -1023,7 +1028,8 @@ impl Kin {
     }
 
     /// For an origin its Mac no longer lists, by its key alone: a fork whose key is another
-    /// account's of the same harness was moved, as the Mac's origins.rs `is_move` reads keys.
+    /// account's, of its harness or another (a handoff to another provider, handoff.rs), was
+    /// moved, as the Mac's origins.rs `is_move` reads keys.
     fn of_key(how: OriginHow, from: &str, to: &str) -> Kin {
         let whose = |key: &str| {
             let mut parts = key.splitn(3, ':');
@@ -1031,7 +1037,7 @@ impl Kin {
         };
         let ((from_harness, from_account), (to_harness, to_account)) = (whose(from), whose(to));
         match how {
-            OriginHow::Fork if from_harness == to_harness && from_account != to_account => Kin::Moved,
+            OriginHow::Fork if [&from_harness, &from_account, &to_harness, &to_account].iter().all(|p| !p.is_empty()) && (from_harness != to_harness || from_account != to_account) => Kin::Moved,
             OriginHow::Fork => Kin::Fork,
             OriginHow::Started => Kin::Started,
         }
@@ -1804,7 +1810,8 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 peers: talk.0,
                 chatter: talk.1,
                 queues_switches: s.hosted && builds_since(&d.app, QUEUES_SWITCHES_SINCE),
-                limit: limit_note(s, status, now),
+                switches_stopped: s.hosted && builds_since(&d.app, SWITCHES_STOPPED_SINCE),
+                limit: limit_note(s, status, matches!(s.harness, Harness::Claude) || builds_since(&d.app, MOVES_ANY_SINCE), now),
                 api_error: api_error_note(s, status),
                 signed_out: signed_out_words(s, status),
                 quiet: s.quiet,
@@ -2039,11 +2046,13 @@ pub struct LimitNote {
 const CARRY_ON_LIMIT: &str = "Your last turn stopped at your account's usage limit, which has lifted now, so carry on where you left off.";
 
 /// What a usage limit that stopped a session comes to (`LimitNote`), while it isn't working.
-fn limit_note(s: &Session, status: Status, now: i64) -> Option<LimitNote> {
+/// `moves` says its Mac moves it to another account: any session on a Mac of 0.33 or later, which
+/// hands one off to another provider where its own has no account with room (start.rs
+/// `limit_moves`), and only Claude Code's on one before (its harness.ts `MOVES_ACCOUNTS`).
+fn limit_note(s: &Session, status: Status, moves: bool, now: i64) -> Option<LimitNote> {
     let limit = s.limit.as_ref().filter(|_| status != Status::Working)?;
     let lifted = limit.resets_at.is_some_and(|t| t <= now);
-    // Only Claude Code's sessions move to another account (the Mac's harness.ts `MOVES_ACCOUNTS`).
-    let (says, says_alone) = limit_words(&s.account, limit, matches!(s.harness, Harness::Claude), now);
+    let (says, says_alone) = limit_words(&s.account, limit, moves, now);
     Some(LimitNote {
         says,
         says_alone,
@@ -4347,25 +4356,25 @@ mod tests {
         let stopped = Session { limit: Some(limit.clone()), ..Session::new(Harness::Claude, "claude", "limited") };
         // Before it lifts, carrying on would only stop at the limit again; the page reads it again
         // as it lifts.
-        let before = limit_note(&stopped, Status::Unread, 1_000).unwrap();
+        let before = limit_note(&stopped, Status::Unread, true, 1_000).unwrap();
         assert_eq!((before.button, before.lifts_at), (None, Some(5_000)));
         // Once it has, Carry on sends what its Mac would, as yours.
-        let note = limit_note(&stopped, Status::Unread, 9_000).unwrap();
+        let note = limit_note(&stopped, Status::Unread, true, 9_000).unwrap();
         assert_eq!((note.button.as_deref(), note.lifts_at), (Some("Carry on"), None));
         // A later stop at the same limit reads the same once lifted, but isn't the same stop.
         let again = Session { limit: Some(SessionLimit { at: 7_000, resets_at: Some(8_000), ..limit.clone() }), ..stopped.clone() };
-        let later = limit_note(&again, Status::Unread, 9_000).unwrap();
+        let later = limit_note(&again, Status::Unread, true, 9_000).unwrap();
         assert_eq!((later.says.as_str(), later.at, note.at), (note.says.as_str(), 7_000, 1));
         assert_eq!(note.message, "Your last turn stopped at your account's usage limit, which has lifted now, so carry on where you left off.");
         // Its Mac carrying it on by itself in a few minutes, the button still does it now.
         let carries = Session { limit: Some(SessionLimit { continues: true, ..limit.clone() }), ..stopped.clone() };
-        assert_eq!(limit_note(&carries, Status::Unread, 9_000).and_then(|n| n.button).as_deref(), Some("Carry on"));
+        assert_eq!(limit_note(&carries, Status::Unread, true, 9_000).and_then(|n| n.button).as_deref(), Some("Carry on"));
         // Where its harness didn't say when it lifts, and archived, there's no button; at work
         // again, no note.
         let unsaid = Session { limit: Some(SessionLimit { resets_at: None, ..limit }), ..stopped.clone() };
-        assert_eq!(limit_note(&unsaid, Status::Unread, 9_000).and_then(|n| n.button), None);
-        assert_eq!(limit_note(&Session { archived: true, ..stopped.clone() }, Status::Unread, 9_000).and_then(|n| n.button), None);
-        assert_eq!(limit_note(&stopped, Status::Working, 9_000), None);
+        assert_eq!(limit_note(&unsaid, Status::Unread, true, 9_000).and_then(|n| n.button), None);
+        assert_eq!(limit_note(&Session { archived: true, ..stopped.clone() }, Status::Unread, true, 9_000).and_then(|n| n.button), None);
+        assert_eq!(limit_note(&stopped, Status::Working, true, 9_000), None);
     }
 
     #[test]
@@ -5049,11 +5058,20 @@ const DONE_WAIT: Duration = Duration::from_secs(75);
 /// nothing is asked of you for it.
 const DONE_HELPERS_SINCE: (u32, u32, u32) = (0, 25, 0);
 
-/// Whether a device's Codealong (`Device::app`, "0.25.0") is `since` or newer; one that doesn't
-/// say a version isn't.
 /// The first build whose Mac holds a switch made mid-turn in a session Codealong runs (c05baf18).
 const QUEUES_SWITCHES_SINCE: (u32, u32, u32) = (0, 32, 0);
 
+/// The first build whose Mac switches the model or effort of a session Codealong runs while it
+/// isn't running, picking it up again in its agent to (7c747d0a).
+const SWITCHES_STOPPED_SINCE: (u32, u32, u32) = (0, 33, 0);
+
+/// The first build whose Mac moves or hands off a session of any harness to another account,
+/// another provider's included, so a usage limit's stop says who has room whatever its harness
+/// (daf8b3b1).
+const MOVES_ANY_SINCE: (u32, u32, u32) = (0, 33, 0);
+
+/// Whether a device's Codealong (`Device::app`, "0.25.0") is `since` or newer; one that doesn't
+/// say a version isn't.
 fn builds_since(app: &str, since: (u32, u32, u32)) -> bool {
     let mut parts = app.trim().trim_start_matches('v').split(['.', '-', '+']).map(|p| p.parse::<u32>().ok());
     match (parts.next().flatten(), parts.next().flatten(), parts.next().flatten()) {
@@ -5373,6 +5391,7 @@ mod order_tests {
             peers: Vec::new(),
             chatter: None,
             queues_switches: false,
+            switches_stopped: false,
             limit: None,
             api_error: None,
             signed_out: None,
@@ -6058,9 +6077,6 @@ mod order_tests {
     }
 
     #[test]
-    /// Who a session has been messaging lately shows as the Mac's header has it, the most first
-    /// and two at most, by their titles now where the Mac lists them; its row's chip only while
-    /// it goes back and forth with one.
     /// A session Codealong runs takes a switch mid-turn only from a Mac that holds one for its next
     /// turn (0.32); from one before, it waits for the turn to end, as that Mac says.
     fn a_switch_mid_turn_is_held_only_where_its_mac_holds_it() {
@@ -6076,6 +6092,39 @@ mod order_tests {
     }
 
     #[test]
+    /// A session Codealong runs switches its model or effort while it isn't running only on a Mac
+    /// that picks it up again to (0.33); one in a terminal never does. On such a Mac a usage
+    /// limit's stop says who has room whatever its harness, as only Claude Code's did before.
+    fn a_stopped_session_codealong_runs_switches_and_any_limit_says_who_has_room_from_0_33() {
+        use codealong_peer::client::Device;
+        use codealong_peer::feed::Replica;
+        let mac = |app: &str| Device { key: app.into(), short: app.into(), name: "Mac".into(), online: true, since: None, last_seen: None, remote_control: true, app: app.into(), loading: false, linked_back: true };
+        let limit = SessionLimit { meter: Some("session".into()), resets_at: Some(i64::MAX / 2), spend_capped: false, at: 1, move_to: Some("claude2".into()), continues: false, model: None };
+        let mut lane = codealong_peer::model::Lane::new("/src/app", "App", "app");
+        lane.sessions = vec![
+            Session { hosted: true, ..Session::new(Harness::Codex, "codex", "hosted") },
+            Session::new(Harness::Claude, "claude", "terminal"),
+            Session { limit: Some(limit.clone()), ..Session::new(Harness::Codex, "codex", "limited") },
+            Session { limit: Some(limit), ..Session::new(Harness::Claude, "claude", "claude-limited") },
+        ];
+        let replica = Replica { lanes: vec![lane], ..Replica::default() };
+        let rows = |app: &str| session_rows(&[(mac(app), &replica)], true);
+        let row = |rows: &[SessionRow], id: &str| rows.iter().find(|r| r.key.ends_with(&format!(":{id}"))).cloned().unwrap();
+        let room = |rows: &[SessionRow], id: &str| row(rows, id).limit.unwrap().says.contains("claude2 has room: move it there on its Mac to go on now.");
+        let (new, old) = (rows("0.33.0"), rows("0.32.0"));
+        assert!(row(&new, "hosted").switches_stopped && !row(&new, "terminal").switches_stopped);
+        assert!(!row(&old, "hosted").switches_stopped);
+        // Another provider's account may be the one with room on a 0.33 Mac (start.rs
+        // `limit_moves`), so the words go by the Mac, not the harness.
+        assert!(room(&new, "limited") && room(&new, "claude-limited"));
+        assert!(!room(&old, "limited") && room(&old, "claude-limited"));
+        assert!(!row(&old, "limited").limit.unwrap().says.contains("No other account"));
+    }
+
+    #[test]
+    /// Who a session has been messaging lately shows as the Mac's header has it, the most first
+    /// and two at most, by their titles now where the Mac lists them; its row's chip only while
+    /// it goes back and forth with one.
     fn a_session_says_who_it_has_been_messaging_and_its_row_when_back_and_forth() {
         use codealong_peer::client::Device;
         use codealong_peer::feed::Replica;
@@ -6131,6 +6180,8 @@ mod order_tests {
             Session { origin: from("claude:claude:gone", OriginHow::Fork), ..Session::new(Harness::Claude, "work", "orphan") },
             Session { origin: from("claude:work:gone", OriginHow::Fork), ..Session::new(Harness::Claude, "work", "lost-fork") },
             Session { origin: from("claude:claude:gone", OriginHow::Started), ..Session::new(Harness::Claude, "work", "lost-start") },
+            // Handed off from another provider's session (handoff.rs) that's gone since.
+            Session { origin: from("codex:codex:gone", OriginHow::Fork), ..Session::new(Harness::Claude, "codex", "handed") },
         ];
         let replica = Replica { lanes: vec![lane], ..Replica::default() };
         let rows = session_rows(&[(mac, &replica)], true);
@@ -6151,6 +6202,8 @@ mod order_tests {
         assert_eq!(row("orphan").origin.as_ref().map(|o| o.title.clone()), Some(None));
         assert_eq!(came("lost-fork"), Some("Forked from another session"));
         assert_eq!(came("lost-start"), Some("Started by another session"));
+        // Another harness's is a move too, even under an account of the same name.
+        assert_eq!(came("handed"), Some("Moved from another session"));
     }
 
     #[test]

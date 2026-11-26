@@ -79,7 +79,8 @@ says it in a line ("ana asked for changes on #397", the PR and each helper it na
 tap opens it to the whole message;
 another session's message is a card that names who sent it, as a link to that session, over its
 first lines (one its own side conversation sent links to that side conversation). A session moved
-to another account on its Mac says *Moved to* and the account on its row, and at the end of its
+to another account on its Mac, or handed off to another provider's, says *Moved to* and the
+account on its row, and at the end of its
 conversation a tap goes to the copy that carries it on, which says what it was moved from. One
 that's been going back and forth with another session lately (four messages or more, the turn
 passing between them twice, in two hours) says how many on its row (↔ 6), and its menu lists the
@@ -96,7 +97,8 @@ the question, to answer there, and one whose helper waits in its terminal there 
 (Codex's review of a repo's hooks) says what that shows, to answer from the helper's line on the
 Mac. One whose last turn ended on an API error says so under its
 conversation, in its harness's words, with *Try again* beside it; one stopped at its account's
-usage limit says which, when it lifts and whether another account has room, and once it has lifted,
+usage limit says which, when it lifts and whether another account has room (another provider's
+too, from a Mac of 0.33 or later), and once it has lifted,
 *Carry on* beside it tells it to carry on in one tap, without waiting for its Mac to (where it
 does) or typing it; one its
 account's sign-in was turned down for says so too, and whether Codealong carries it on once the
@@ -157,7 +159,8 @@ need you, as on the Mac.
   left running in the background, from the list above its box;
 - switch a running session's model, effort or mode (a Claude Code background job's too, from a Mac
   of 0.18 or later, and a Codex app thread's from its next turn, as one Codealong runs takes a
-  switch made while its turn runs or waits on you, from a Mac of 0.32 or later): the mode of one in a terminal by
+  switch made while its turn runs or waits on you, from a Mac of 0.32 or later, and while it isn't
+  running, from a Mac of 0.33 or later): the mode of one in a terminal by
   Shift+Tab pressed there, a background job's from a Mac of 0.21 or later, said in italics until its
   next prompt shows it took;
 - run a command its agent wrote for you to run: *Run* beside a shell block in its reply (asked
