@@ -220,10 +220,7 @@ final class Store {
         tick &+= 1
         if snap.devices != devices { devices = snap.devices }
         let waits = snap.sessions != sessions || snap.prs != prs
-        if snap.sessions != sessions {
-            sessions = snap.sessions
-            forgetSnoozed()
-        }
+        if snap.sessions != sessions { sessions = snap.sessions }
         readOthers()
         settleRemovals()
         if snap.prs != prs {
@@ -443,17 +440,6 @@ final class Store {
     /// `PrView.prefix`), which GitHub takes as the review asked of you.
     func dealtWith(_ key: String) {
         if let since = waiting(key)?.since { handled[key] = since }
-    }
-
-    /// Sessions dealt with here that have since been snoozed are dealt with no more: once the
-    /// snooze ends they're back in what waits, as their Mac has them, though the time of their
-    /// status may not have moved (a turn that ended on its usage limit, woken when its account has
-    /// room), which `leftAfter` would take for the wait that was dealt with.
-    private func forgetSnoozed() {
-        let snoozed = Set(sessions.filter { $0.section == .snoozed }.map(\.key))
-        if handled.keys.contains(where: snoozed.contains) {
-            handled = handled.filter { !snoozed.contains($0.key) }
-        }
     }
 
     /// `key`, a session dealt with here, waits on you again since: it's back in what waits, as the
@@ -676,11 +662,14 @@ final class Store {
 
     /// Snoozes a session until `until`, or wakes it with none, on its Mac: off Needs you and Your
     /// turn everywhere until then. With `room`, until its account has room again, `until` at the
-    /// latest (the core's `SnoozeWhy.room`).
+    /// latest (the core's `SnoozeWhy.room`). Snoozed, it isn't kept as dealt with, so it's back in
+    /// what waits when the snooze ends though the time of its status hasn't moved (a turn that
+    /// ended on its usage limit, woken once its account has room), as the Mac's queue has it.
     func snooze(_ key: String, until: Date?, room: Bool = false) async throws {
         let core = try running()
         let ms = until.map { Int64($0.timeIntervalSince1970 * 1000) }
         try await Task.detached { try core.snooze(keys: [key], until: ms, room: room) }.value
+        if until != nil { handled[key] = nil }
     }
 
     /// Quiets a session, or makes it heard again, on its Mac: a quiet one's turns don't wait on

@@ -400,8 +400,8 @@ pub struct PrOwner {
     /// The PRs' numbers, as they came.
     pub numbers: Vec<u64>,
     /// Them in words, as the Mac's chip says what it owns: "#12", "#12 and #13", "#12, #13 and
-    /// #14"; a number two of them share is said with each one's repo ("atlas#12 and
-    /// kestrel#12").
+    /// #14"; a number two of them share is said as each one's key ("northwind/app#12 and
+    /// kestrel/app#12").
     pub what: String,
 }
 
@@ -434,10 +434,10 @@ pub fn pr_owners(session: crate::SessionRow, prs: Vec<PrRow>) -> Vec<PrOwner> {
     owners
         .into_iter()
         .map(|(key, owned)| {
-            // A number two of its PRs share (in two repos) is said with each one's repo, so
-            // neither is lost from the words.
+            // A number two of its PRs share (in two repos, or two forks of one) is said as each
+            // one's whole key, so neither is lost from the words.
             let shared = |n: u64| owned.iter().filter(|q| q.number == n).count() > 1;
-            let names: Vec<String> = owned.iter().map(|q| if shared(q.number) { format!("{}#{}", q.repo, q.number) } else { format!("#{}", q.number) }).collect();
+            let names: Vec<String> = owned.iter().map(|q| if shared(q.number) { q.key.clone() } else { format!("#{}", q.number) }).collect();
             PrOwner { key, numbers: owned.iter().map(|q| q.number).collect(), what: listed_in_words(&names) }
         })
         .collect()
@@ -2293,13 +2293,13 @@ pub(crate) mod tests {
         let named = pr_owners(me.clone(), several).into_iter().map(|o| (o.key, o.what)).collect::<Vec<_>>();
         assert_eq!(named, [("@d:b".to_string(), "#12, #14 and #15".to_string()), ("@d:c".to_string(), "#13".to_string())]);
         assert_eq!(listed_in_words(&["#1".into(), "#2".into()]), "#1 and #2");
-        // Two of its PRs with one number, in two repos, are both named, by their repos.
+        // Two of its PRs with one number, in two forks of a repo, are both named, by their keys.
         let twins = vec![
-            PrRow { repo: "atlas".into(), ..pr("o/atlas#12", 12, "open", Some("@d:b"), &["@d:a"]) },
-            PrRow { repo: "kestrel".into(), ..pr("o/kestrel#12", 12, "open", Some("@d:b"), &["@d:a"]) },
-            PrRow { repo: "kestrel".into(), ..pr("o/kestrel#3", 3, "open", Some("@d:b"), &["@d:a"]) },
+            PrRow { repo: "app".into(), ..pr("northwind/app#12", 12, "open", Some("@d:b"), &["@d:a"]) },
+            PrRow { repo: "app".into(), ..pr("kestrel/app#12", 12, "open", Some("@d:b"), &["@d:a"]) },
+            PrRow { repo: "app".into(), ..pr("kestrel/app#3", 3, "open", Some("@d:b"), &["@d:a"]) },
         ];
         let named = pr_owners(me.clone(), twins).into_iter().map(|o| o.what).collect::<Vec<_>>();
-        assert_eq!(named, ["atlas#12, kestrel#12 and #3"]);
+        assert_eq!(named, ["northwind/app#12, kestrel/app#12 and #3"]);
     }
 }

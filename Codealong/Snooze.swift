@@ -84,9 +84,11 @@ enum Snooze {
     }
 
     /// The core's words for a snooze with its time, `{at:<ms>}`, said as a clock says it (`words`):
-    /// only that, so a reader's title in them stays as it's written.
+    /// only that, the first, which the core writes ahead of anything a reader's title brings, so
+    /// the title stays as it's written.
     static func timed(_ text: String, until: Int64, now: Date = .now) -> String {
-        text.replacingOccurrences(of: "{at:\(until)}", with: words(Date(ms: until), now: now))
+        guard let token = text.range(of: "{at:\(until)}") else { return text }
+        return text.replacingCharacters(in: token, with: words(Date(ms: until), now: now))
     }
 
     /// When a session's snooze ends, as its outcome says it: its time, or "it has room" for one

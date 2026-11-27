@@ -1716,7 +1716,6 @@ struct SessionView: View {
             return
         }
         let outcome = "Snoozed “\(title)” until \(Snooze.ends(until, room: room))."
-        store.dealtWith(key)
         if let onward {
             // Left as it was: it comes back as Your turn when the snooze ends.
             moveOn(to: onward, outcome: Outcome(.snoozed, outcome), seen: false)
