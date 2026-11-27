@@ -80,7 +80,13 @@ enum Snooze {
     /// `timesMenu`, the core's `SuggestedSnooze`): "Until 10 PM, when its limit lifts", or "Until
     /// it has room".
     static func suggested(_ s: SuggestedSnooze, now: Date = .now) -> String {
-        String(Clock.text(s.label, now: now).characters)
+        timed(s.label, until: s.until, now: now)
+    }
+
+    /// The core's words for a snooze with its time, `{at:<ms>}`, said as a clock says it (`words`):
+    /// only that, so a reader's title in them stays as it's written.
+    static func timed(_ text: String, until: Int64, now: Date = .now) -> String {
+        text.replacingOccurrences(of: "{at:\(until)}", with: words(Date(ms: until), now: now))
     }
 
     /// When a session's snooze ends, as its outcome says it: its time, or "it has room" for one

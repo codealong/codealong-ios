@@ -2731,7 +2731,7 @@ private struct LimitLine: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .accessibilityHint(Text(Clock.text(lifts.does ?? "", now: now)))
+                .accessibilityHint(Snooze.timed(lifts.does ?? "", until: lifts.until, now: now))
             }
         }
     }

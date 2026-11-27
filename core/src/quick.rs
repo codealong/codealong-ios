@@ -400,7 +400,8 @@ pub struct PrOwner {
     /// The PRs' numbers, as they came.
     pub numbers: Vec<u64>,
     /// Them in words, as the Mac's chip says what it owns: "#12", "#12 and #13", "#12, #13 and
-    /// #14".
+    /// #14"; a number two of them share is said with each one's repo ("atlas#12 and
+    /// kestrel#12").
     pub what: String,
 }
 
@@ -420,20 +421,26 @@ pub fn pr_owners(session: crate::SessionRow, prs: Vec<PrRow>) -> Vec<PrOwner> {
     } else {
         worked
     };
-    let mut owners: Vec<PrOwner> = Vec::new();
+    let mut owners: Vec<(String, Vec<&PrRow>)> = Vec::new();
     for p in on.into_iter().filter(|p| !matches!(p.state.as_str(), "merged" | "closed")) {
         let Some(key) = p.primary.as_ref().map(|o| o.key.clone()).filter(|k| *k != session.key) else { continue };
-        match owners.iter_mut().find(|o| o.key == key) {
-            Some(o) if !o.numbers.contains(&p.number) => o.numbers.push(p.number),
+        match owners.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, owned)) if !owned.iter().any(|q| q.key == p.key) => owned.push(p),
             Some(_) => {}
-            None => owners.push(PrOwner { key, numbers: vec![p.number], what: String::new() }),
+            None => owners.push((key, vec![p])),
         }
     }
     owners.truncate(2);
-    for o in &mut owners {
-        o.what = listed_in_words(&o.numbers.iter().map(|n| format!("#{n}")).collect::<Vec<_>>());
-    }
     owners
+        .into_iter()
+        .map(|(key, owned)| {
+            // A number two of its PRs share (in two repos) is said with each one's repo, so
+            // neither is lost from the words.
+            let shared = |n: u64| owned.iter().filter(|q| q.number == n).count() > 1;
+            let names: Vec<String> = owned.iter().map(|q| if shared(q.number) { format!("{}#{}", q.repo, q.number) } else { format!("#{}", q.number) }).collect();
+            PrOwner { key, numbers: owned.iter().map(|q| q.number).collect(), what: listed_in_words(&names) }
+        })
+        .collect()
 }
 
 /// Things in a list as words: "a", "a and b", "a, b and c" (the Mac's `OtherOwnerChips`).
@@ -2286,5 +2293,13 @@ pub(crate) mod tests {
         let named = pr_owners(me.clone(), several).into_iter().map(|o| (o.key, o.what)).collect::<Vec<_>>();
         assert_eq!(named, [("@d:b".to_string(), "#12, #14 and #15".to_string()), ("@d:c".to_string(), "#13".to_string())]);
         assert_eq!(listed_in_words(&["#1".into(), "#2".into()]), "#1 and #2");
+        // Two of its PRs with one number, in two repos, are both named, by their repos.
+        let twins = vec![
+            PrRow { repo: "atlas".into(), ..pr("o/atlas#12", 12, "open", Some("@d:b"), &["@d:a"]) },
+            PrRow { repo: "kestrel".into(), ..pr("o/kestrel#12", 12, "open", Some("@d:b"), &["@d:a"]) },
+            PrRow { repo: "kestrel".into(), ..pr("o/kestrel#3", 3, "open", Some("@d:b"), &["@d:a"]) },
+        ];
+        let named = pr_owners(me.clone(), twins).into_iter().map(|o| o.what).collect::<Vec<_>>();
+        assert_eq!(named, ["atlas#12, kestrel#12 and #3"]);
     }
 }

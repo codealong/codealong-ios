@@ -42,7 +42,7 @@ struct QuickSessionRow: View {
                             // Until its account has room, its time is only the latest: it says so
                             // in place of the time, as the Mac's Room chip does.
                             Label("Room", systemImage: "moon.zzz")
-                                .accessibilityLabel("Snoozed until its account has room, back in \(Clock.until(until, now: context.date)) at the latest")
+                                .accessibilityLabel("Snoozed until its account has room, back by \(Snooze.words(Date(ms: until), now: context.date)) at the latest")
                         } else if let until = row.snoozedUntil {
                             Label(Clock.until(until, now: context.date), systemImage: "moon.zzz")
                                 .accessibilityLabel("Snoozed, back in \(Clock.until(until, now: context.date))")

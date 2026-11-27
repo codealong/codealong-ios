@@ -220,7 +220,10 @@ final class Store {
         tick &+= 1
         if snap.devices != devices { devices = snap.devices }
         let waits = snap.sessions != sessions || snap.prs != prs
-        if snap.sessions != sessions { sessions = snap.sessions }
+        if snap.sessions != sessions {
+            sessions = snap.sessions
+            forgetSnoozed()
+        }
         readOthers()
         settleRemovals()
         if snap.prs != prs {
@@ -440,6 +443,17 @@ final class Store {
     /// `PrView.prefix`), which GitHub takes as the review asked of you.
     func dealtWith(_ key: String) {
         if let since = waiting(key)?.since { handled[key] = since }
+    }
+
+    /// Sessions dealt with here that have since been snoozed are dealt with no more: once the
+    /// snooze ends they're back in what waits, as their Mac has them, though the time of their
+    /// status may not have moved (a turn that ended on its usage limit, woken when its account has
+    /// room), which `leftAfter` would take for the wait that was dealt with.
+    private func forgetSnoozed() {
+        let snoozed = Set(sessions.filter { $0.section == .snoozed }.map(\.key))
+        if handled.keys.contains(where: snoozed.contains) {
+            handled = handled.filter { !snoozed.contains($0.key) }
+        }
     }
 
     /// `key`, a session dealt with here, waits on you again since: it's back in what waits, as the
