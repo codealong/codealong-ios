@@ -76,11 +76,17 @@ enum Snooze {
         return calendar.date(bySettingHour: 9, minute: 0, second: 0, of: day) ?? morning.addingTimeInterval(7 * 86400)
     }
 
-    /// The time a session's usage limit lifts, or its last reply says its work goes on, as its
-    /// Snooze menu offers it first, apart from the rest, ending with why then (snooze.ts
-    /// `timesMenu`, the core's `SuggestedSnooze`): "Until 10 PM, when its limit lifts".
-    static func suggested(_ until: Date, because: String, now: Date = .now) -> String {
-        "Until \(words(until, now: now)), \(because)"
+    /// The snooze a session's Snooze menu offers first, apart from the rest (snooze.ts
+    /// `timesMenu`, the core's `SuggestedSnooze`): "Until 10 PM, when its limit lifts", or "Until
+    /// it has room".
+    static func suggested(_ s: SuggestedSnooze, now: Date = .now) -> String {
+        String(Clock.text(s.label, now: now).characters)
+    }
+
+    /// When a session's snooze ends, as its outcome says it: its time, or "it has room" for one
+    /// until its account has room, whose time is only the latest (snooze.ts `snoozedWords`).
+    static func ends(_ until: Date, room: Bool, now: Date = .now) -> String {
+        room ? "it has room" : words(until, now: now)
     }
 
     /// A choice as a phrase to go after a verb: "for 1 hour", "until tomorrow 9 AM".

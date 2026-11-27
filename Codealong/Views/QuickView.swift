@@ -945,12 +945,11 @@ struct QuickView: View {
             }
             if !r.archived, !orchestrating {
                 Menu("Snooze", systemImage: "moon.zzz") {
-                    // The time its limit lifts, or its last reply says the work goes on, first and
-                    // apart, as on the Mac.
+                    // The time its limit lifts (or until its account has room), or its last reply
+                    // says the work goes on, first and apart, as on the Mac.
                     if let suggested = r.suggestedSnooze, Date.now.ms < suggested.offeredTill {
-                        let until = Date(ms: suggested.until)
                         Section {
-                            Button(Snooze.suggested(until, because: suggested.because)) { act { try await store.snooze(r.key, until: until) } }
+                            Button(Snooze.suggested(suggested)) { act { try await store.snooze(r.key, until: Date(ms: suggested.until), room: suggested.why == .room) } }
                         }
                     }
                     ForEach(Snooze.choices()) { c in

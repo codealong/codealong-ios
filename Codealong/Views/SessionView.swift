@@ -610,8 +610,8 @@ struct SessionView: View {
                 // Read from the core where the list doesn't have it (an archived one, say); one its
                 // Mac doesn't list is still named, though it can't open, as the Mac's chip is.
                 let title = store.rows([owner.key]).first?.title
-                // Verbatim: a localized number would be written #1,244.
-                let words = "#\(owner.number)’s owner: \(title.map { "“\($0)”" } ?? "another session")"
+                // The core's words for its PRs ("#12 and #13"): a localized number would be #1,244.
+                let words = "\(owner.what)’s owner: \(title.map { "“\($0)”" } ?? "another session")"
                 Button(words, systemImage: "person.crop.circle.badge.checkmark") { follow(owner.key) }
                     .disabled(title == nil)
             }
@@ -651,9 +651,8 @@ struct SessionView: View {
         if row?.archived != true, !orchestrating {
             Menu("Snooze", systemImage: "moon.zzz") {
                 if let suggested = row?.suggestedSnooze, Date.now.ms < suggested.offeredTill {
-                    let until = Date(ms: suggested.until)
                     Section {
-                        Button(Snooze.suggested(until, because: suggested.because)) { Task { await snooze(until: until) } }
+                        Button(Snooze.suggested(suggested)) { Task { await snooze(until: Date(ms: suggested.until), room: suggested.why == .room) } }
                     }
                 }
                 ForEach(Snooze.choices()) { c in
@@ -744,7 +743,7 @@ struct SessionView: View {
             if let limit = row?.limit {
                 // Snoozed from here as from its Snooze menu: it goes on to what's next, if anything.
                 // Carried on as the box sends a message, as Try again is.
-                LimitLine(note: limit, suggested: row?.suggestedSnooze, carryOn: canAct && pending == nil ? { carryOn(limit) } : nil, sending: store.carriedOn[key] == limit.at || !(store.outgoing[key] ?? []).isEmpty) { until in Task { await snooze(until: until) } }
+                LimitLine(note: limit, suggested: row?.suggestedSnooze, carryOn: canAct && pending == nil ? { carryOn(limit) } : nil, sending: store.carriedOn[key] == limit.at || !(store.outgoing[key] ?? []).isEmpty) { s in Task { await snooze(until: Date(ms: s.until), room: s.why == .room) } }
                     // Its row is read again as the limit lifts, which brings Carry on then.
                     .task(id: limit.liftsAt) {
                         guard let at = limit.liftsAt else { return }
@@ -1703,11 +1702,11 @@ struct SessionView: View {
     }
 
     /// Snoozes it until `until`, as the Mac's Snooze does: off Needs you and Your turn everywhere
-    /// until then, so the screen goes on to what's next, or back to the list. Without a time, it
-    /// wakes and stays.
-    private func snooze(until: Date?) async {
+    /// until then, so the screen goes on to what's next, or back to the list. With `room`, until
+    /// its account has room again, `until` the latest. Without a time, it wakes and stays.
+    private func snooze(until: Date?, room: Bool = false) async {
         do {
-            try await store.snooze(key, until: until)
+            try await store.snooze(key, until: until, room: room)
         } catch {
             said = words(error)
             return
@@ -1716,7 +1715,7 @@ struct SessionView: View {
             said = "Awake: it waits on you again as it would."
             return
         }
-        let outcome = "Snoozed “\(title)” until \(Snooze.words(until))."
+        let outcome = "Snoozed “\(title)” until \(Snooze.ends(until, room: room))."
         store.dealtWith(key)
         if let onward {
             // Left as it was: it comes back as Your turn when the snooze ends.
@@ -2679,8 +2678,11 @@ private struct SnoozeSuggestionLine: View {
 /// lifts beside it while that's offered (the Mac's SessionHeader.tsx, since 2026-11-13; the
 /// core's `SuggestedSnooze` for a limit): a tap snoozes it until the limit lifts, as the first
 /// time in its Snooze menu does. It's back then, for the minute or few until its Mac tells it to
-/// carry on, where its Mac does. Once the limit has lifted, Carry on beside it tells it to now, in
-/// one tap rather than typing it, where this phone can act on it there.
+/// carry on, where its Mac does. Where its account is out of credits, or the limit says no time,
+/// the button is Snooze until it has room (a Mac since 0.34): its Mac wakes it once the account
+/// has room again, the lift (or a month on) at the latest. Once the limit has lifted, Carry on
+/// beside it tells it to now, in one tap rather than typing it, where this phone can act on it
+/// there.
 private struct LimitLine: View {
     let note: LimitNote
     let suggested: SuggestedSnooze?
@@ -2692,7 +2694,8 @@ private struct LimitLine: View {
     var sending = false
     /// A still page's (one sliding in): drawn as it is now, not kept ticking.
     var now: Date?
-    let snooze: (Date) -> Void
+    /// Snoozes it as the snooze offered says: until its time, or until its account has room.
+    let snooze: (SuggestedSnooze) -> Void
 
     var body: some View {
         if let now {
@@ -2705,7 +2708,7 @@ private struct LimitLine: View {
     }
 
     private func line(now: Date) -> some View {
-        let lifts = suggested.flatMap { $0.why == .limit && now.ms < $0.offeredTill ? $0 : nil }
+        let lifts = suggested.flatMap { $0.button != nil && now.ms < $0.offeredTill ? $0 : nil }
         let button = carryOn.flatMap { run in note.button.map { (label: $0, run: run) } }
         return HStack(alignment: .firstTextBaseline, spacing: 8) {
             Label {
@@ -2721,14 +2724,14 @@ private struct LimitLine: View {
                     .controlSize(.small)
                     .disabled(sending)
                     .accessibilityHint("Sends it a message saying the limit has lifted, to carry on where it left off")
-            } else if let lifts {
+            } else if let lifts, let label = lifts.button {
                 // Checked again as it's tapped: drawn up to 30 seconds ago, the offer may have ended.
-                Button("Snooze until it lifts") {
-                    if Date.now.ms < lifts.offeredTill { snooze(Date(ms: lifts.until)) }
+                Button(label) {
+                    if Date.now.ms < lifts.offeredTill { snooze(lifts) }
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .accessibilityHint("It leaves what waits on you until \(Snooze.words(Date(ms: lifts.until))), when the limit lifts")
+                .accessibilityHint(Text(Clock.text(lifts.does ?? "", now: now)))
             }
         }
     }

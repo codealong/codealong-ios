@@ -84,7 +84,8 @@ account on its row, and at the end of its
 conversation a tap goes to the copy that carries it on, which says what it was moved from. One
 that's been going back and forth with another session lately (four messages or more, the turn
 passing between them twice, in two hours) says how many on its row (↔ 6), and its menu lists the
-sessions it has been messaging and another that owns its PR, each a tap away. Scroll up to read
+sessions it has been messaging and the others that own its PRs (each once, with all it owns: "#12
+and #13’s owner"), each a tap away. Scroll up to read
 further back, with the prompt you're reading the answer to pinned at the top and a button at the
 foot that goes back down to the newest. A session running
 inside Codealong on your Mac streams its reply as it's written, and one that only waits on a command
@@ -187,7 +188,10 @@ device, and listed under *Moved to top*, until you send it something or see its 
 (off what waits on you until the time you pick, on every device; a session whose last reply says its
 work goes on later is offered a snooze until then, above its box and first in its menu, saying
 who read the reply so (Jev, or the agent that tagged it) and never beside a question it asks you, and one
-stopped at its usage limit a snooze until the limit lifts, beside the limit's note) and *Quiet* (its turns stop waiting
+stopped at its usage limit a snooze until the limit lifts, beside the limit's note; where its account
+is out of credits too, or the limit says no time, that's *Snooze until it has room*, which its Mac
+ends as soon as the account has room again, the lift (or a month on) at the latest, and its row says
+*Room* in place of a time, from a Mac on 0.34 or later) and *Quiet* (its turns stop waiting
 on you; it comes to you only when it needs you) work with any Mac, remote control or not, and so
 do *Labels*: the labels you put on a session there, as todos wear them, shown on its row and under
 its title, put on or taken off from its menu (*New label…* names one its Mac doesn't have yet), and

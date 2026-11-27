@@ -661,11 +661,12 @@ final class Store {
     }
 
     /// Snoozes a session until `until`, or wakes it with none, on its Mac: off Needs you and Your
-    /// turn everywhere until then.
-    func snooze(_ key: String, until: Date?) async throws {
+    /// turn everywhere until then. With `room`, until its account has room again, `until` at the
+    /// latest (the core's `SnoozeWhy.room`).
+    func snooze(_ key: String, until: Date?, room: Bool = false) async throws {
         let core = try running()
         let ms = until.map { Int64($0.timeIntervalSince1970 * 1000) }
-        try await Task.detached { try core.snooze(keys: [key], until: ms) }.value
+        try await Task.detached { try core.snooze(keys: [key], until: ms, room: room) }.value
     }
 
     /// Quiets a session, or makes it heard again, on its Mac: a quiet one's turns don't wait on

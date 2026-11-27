@@ -38,7 +38,12 @@ struct QuickSessionRow: View {
                             .accessibilityLabel("Moved to the top")
                     }
                     TimelineView(.periodic(from: .now, by: 30)) { context in
-                        if let until = row.snoozedUntil {
+                        if let until = row.snoozedUntil, row.snoozedForRoom {
+                            // Until its account has room, its time is only the latest: it says so
+                            // in place of the time, as the Mac's Room chip does.
+                            Label("Room", systemImage: "moon.zzz")
+                                .accessibilityLabel("Snoozed until its account has room, back in \(Clock.until(until, now: context.date)) at the latest")
+                        } else if let until = row.snoozedUntil {
                             Label(Clock.until(until, now: context.date), systemImage: "moon.zzz")
                                 .accessibilityLabel("Snoozed, back in \(Clock.until(until, now: context.date))")
                         } else if row.archived && row.mark == .archived {

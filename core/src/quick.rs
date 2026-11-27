@@ -390,19 +390,23 @@ pub struct PrPrimary {
     pub says: String,
 }
 
-/// Another session that owns a PR a session is on (the PR's primary, `PrRow::primary`), as the
+/// Another session that owns PRs a session is on (the PRs' primary, `PrRow::primary`), as the
 /// Mac's session header names it on a chip that goes to it (PeerTalkBits.tsx `OtherOwnerChips`),
-/// so which session has the PR is plain.
+/// so which session has the PR is plain. One for each owner, saying all it owns (41d89970).
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
 pub struct PrOwner {
     /// The owner's key here (`@<device>:<key>`).
     pub key: String,
-    /// The PR's number.
-    pub number: u64,
+    /// The PRs' numbers, as they came.
+    pub numbers: Vec<u64>,
+    /// Them in words, as the Mac's chip says what it owns: "#12", "#12 and #13", "#12, #13 and
+    /// #14".
+    pub what: String,
 }
 
-/// The other sessions that own the open PRs `session` is on, two at most, as the Mac's header
-/// names them: the PRs whose cards list it among the sessions that worked on them
+/// The other sessions that own the open PRs `session` is on, two at most, each once with every
+/// PR of those it owns, as the Mac's header names them: the PRs whose cards list it among the
+/// sessions that worked on them
 /// (`PrRow::worked_on`, as the Mac's board.rs `pr_items`), else its worktree's PR where it's on
 /// the worktree's branch (lanes.ts `sessionPrs`); none for a PR it owns itself, or that has no
 /// primary. The worktree's PR is found by any key its Macs name it by (`PrRow::known_as`), as
@@ -419,13 +423,26 @@ pub fn pr_owners(session: crate::SessionRow, prs: Vec<PrRow>) -> Vec<PrOwner> {
     let mut owners: Vec<PrOwner> = Vec::new();
     for p in on.into_iter().filter(|p| !matches!(p.state.as_str(), "merged" | "closed")) {
         let Some(key) = p.primary.as_ref().map(|o| o.key.clone()).filter(|k| *k != session.key) else { continue };
-        let owner = PrOwner { key, number: p.number };
-        if !owners.contains(&owner) {
-            owners.push(owner);
+        match owners.iter_mut().find(|o| o.key == key) {
+            Some(o) if !o.numbers.contains(&p.number) => o.numbers.push(p.number),
+            Some(_) => {}
+            None => owners.push(PrOwner { key, numbers: vec![p.number], what: String::new() }),
         }
     }
     owners.truncate(2);
+    for o in &mut owners {
+        o.what = listed_in_words(&o.numbers.iter().map(|n| format!("#{n}")).collect::<Vec<_>>());
+    }
     owners
+}
+
+/// Things in a list as words: "a", "a and b", "a, b and c" (the Mac's `OtherOwnerChips`).
+fn listed_in_words(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
 }
 
 /// A PR's primary session as a Mac's card names it, in the words the Mac's tag has for another
@@ -1305,6 +1322,7 @@ pub(crate) mod tests {
             hosted: false,
             section: crate::section(status, None, false),
             snoozed_until: None,
+            snoozed_for_room: false,
             started_at: Some(at),
             live: true,
             in_app: false,
@@ -2232,7 +2250,7 @@ pub(crate) mod tests {
         };
         let mut me = row("@d:a", "Fix", Status::Idle, 1);
         me.worktree_pr = Some(crate::WorktreePr { key: "o/r#9".into(), number: 9, url: String::new(), its: true });
-        let owners = |me: &crate::SessionRow, prs: Vec<PrRow>| pr_owners(me.clone(), prs).into_iter().map(|o| (o.key, o.number)).collect::<Vec<_>>();
+        let owners = |me: &crate::SessionRow, prs: Vec<PrRow>| pr_owners(me.clone(), prs).into_iter().map(|o| (o.key, o.numbers[0])).collect::<Vec<_>>();
         let listed = vec![
             pr("o/r#1", 1, "open", Some("@d:b"), &["@d:b", "@d:a"]),
             pr("o/r#2", 2, "approved", Some("@d:a"), &["@d:a"]),
@@ -2257,5 +2275,16 @@ pub(crate) mod tests {
         assert_eq!(owners(&me, vec![pr("O/r#9", 9, "open", Some("@d:z"), &["@d:z", "@d:a"])]), [("@d:z".to_string(), 9)]);
         // Another PR it worked on still counts.
         assert_eq!(owners(&me, vec![pr("o/r#1", 1, "open", Some("@d:b"), &["@d:a"])]), [("@d:b".to_string(), 1)]);
+        // One owner of several is named once, with all it owns; two owners at most.
+        let several = vec![
+            pr("o/r#12", 12, "open", Some("@d:b"), &["@d:a"]),
+            pr("o/r#13", 13, "open", Some("@d:c"), &["@d:a"]),
+            pr("o/r#14", 14, "open", Some("@d:b"), &["@d:a"]),
+            pr("o/r#15", 15, "open", Some("@d:b"), &["@d:a"]),
+            pr("o/r#16", 16, "open", Some("@d:e"), &["@d:a"]),
+        ];
+        let named = pr_owners(me.clone(), several).into_iter().map(|o| (o.key, o.what)).collect::<Vec<_>>();
+        assert_eq!(named, [("@d:b".to_string(), "#12, #14 and #15".to_string()), ("@d:c".to_string(), "#13".to_string())]);
+        assert_eq!(listed_in_words(&["#1".into(), "#2".into()]), "#1 and #2");
     }
 }

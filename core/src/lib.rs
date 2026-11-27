@@ -240,6 +240,11 @@ pub struct SessionRow {
     pub section: InboxSection,
     /// When it's back, while it's snoozed and not running.
     pub snoozed_until: Option<i64>,
+    /// Its snooze is until its account has room again (`Session::snoozed_for_room`): its Mac wakes
+    /// it once the usage limit that stopped it is over, so `snoozed_until` is only the latest, and
+    /// it says "until it has room" in place of a time (the Mac's `snoozedWords`, its row's Room
+    /// chip). False while it isn't snoozed, and from Macs before 0.34.
+    pub snoozed_for_room: bool,
     pub started_at: Option<i64>,
     /// Its process is running: a prompt reaches it as its next message.
     pub live: bool,
@@ -406,9 +411,9 @@ pub struct SessionRow {
     pub at_a_prompt: bool,
     /// What its status mark draws (`mark_of`), as the Mac's SessionGlyph does.
     pub mark: Mark,
-    /// A snooze to offer it, until the usage limit that stopped it lifts, else the time its last
-    /// reply says the work goes on (`suggested_snooze`). A reply's is none from Macs before
-    /// 2026-11-11.
+    /// A snooze to offer it, until the usage limit that stopped it lifts (or until its account has
+    /// room again, where its Mac can tell), else the time its last reply says the work goes on
+    /// (`suggested_snooze`). A reply's is none from Macs before 2026-11-11.
     pub suggested_snooze: Option<SuggestedSnooze>,
     /// The commands its agent left running in the background, as its harness lists them, which
     /// the Mac's session header counts on a chip and lists under it (`background_commands`). None
@@ -602,15 +607,16 @@ fn start_note(s: &Session) -> Option<String> {
     Some(format!("A helper it started waits in its terminal on its Mac before it starts.{what} Answer it there, from the helper's line under this session's title: what you send here goes to the session."))
 }
 
-/// A snooze offered for a session stopped at its usage limit, until the limit lifts, or one whose
-/// last reply says its work goes on at a later time, with nothing for you or it to do before then
-/// (snooze.ts `suggestedSnooze`): first in its Snooze menu, and for a reply on a line above its
-/// box, for a limit as a button beside what the page says of it. Only offered: nothing snoozes by
-/// itself.
+/// A snooze offered for a session stopped at its usage limit, until the limit lifts or until its
+/// account has room again, or one whose last reply says its work goes on at a later time, with
+/// nothing for you or it to do before then (snooze.ts `suggestedSnooze`): first in its Snooze
+/// menu, and for a reply on a line above its box, for a limit as a button beside what the page
+/// says of it. Only offered: nothing snoozes by itself.
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
 pub struct SuggestedSnooze {
-    /// When the snooze runs to: when the limit lifts; or when the work goes on, 9 that morning
-    /// where Jev read a day, any time an agent that tagged it said.
+    /// When the snooze runs to: when the limit lifts; the latest a snooze until room runs to (the
+    /// lift, else a month after the refusal); or when the work goes on, 9 that morning where Jev
+    /// read a day, any time an agent that tagged it said.
     pub until: i64,
     /// It's offered only before this, a little ahead of `until`: a snooze any shorter isn't worth
     /// it.
@@ -624,6 +630,17 @@ pub struct SuggestedSnooze {
     /// Who read the reply that way: "Jev’s read", or "Tagged by" the agent's session, with what it
     /// noted (insights.ts `readBy`). None for a limit, which its harness said.
     pub by: Option<String>,
+    /// Its line in a Snooze menu, the time as `{at:<ms>}` (snooze.ts `suggestedLabel`): "Until
+    /// {at:…}, when its limit lifts", "Until {at:…}, as Jev read its reply", or "Until it has
+    /// room", which says no time.
+    pub label: String,
+    /// For a limit's, the button beside what the page says of the limit (SessionHeader.tsx):
+    /// "Snooze until it lifts" or "Snooze until it has room". None for a reply's.
+    pub button: Option<String>,
+    /// What that button does, the time as `{at:<ms>}` (snooze.ts `limitSnoozeTitle`): until the
+    /// limit lifts, or until its account has room again, what brings that, and the latest. None
+    /// for a reply's.
+    pub does: Option<String>,
 }
 
 /// Why a snooze is offered until a time (snooze.ts `SuggestedSnooze.why`).
@@ -634,24 +651,38 @@ pub enum SnoozeWhy {
     /// The usage limit that stopped its turn lifts then: nothing goes on before it, and its Mac
     /// may tell it to carry on a few minutes after.
     Limit,
+    /// Its account has room again, which can be before the limit lifts: its extra usage was
+    /// refused too (out of credits, which buying more ends), or the limit doesn't say when it
+    /// lifts. Its Mac wakes it once it sees room (board::room_back), `until` the latest.
+    Room,
 }
 
 /// A suggested snooze less than this far off isn't worth one (snooze.ts `WORTH`).
 const SNOOZE_WORTH_MS: i64 = 5 * 60 * 1000;
 
+/// The longest a snooze until room runs, from the refusal, where the limit doesn't say when it
+/// lifts (snooze.ts `ROOM_LONGEST`): as long as its Mac counts a refusal as word that the account
+/// is out, which a monthly spend limit's month is inside.
+const ROOM_LONGEST_MS: i64 = 31 * 24 * 60 * 60 * 1000;
+
 /// The snooze to offer a session (`SuggestedSnooze`), while it's worth one, and for none that's
-/// snoozed already or archived (snooze.ts `suggestedSnooze`): until the usage limit that stopped
-/// its turn lifts, while it isn't working, where its harness said when; else until its read's
-/// `waits_until`.
-fn suggested_snooze(s: &Session, working: bool, snoozed: bool, now: i64) -> Option<SuggestedSnooze> {
+/// snoozed already or archived (snooze.ts `suggestedSnooze`): while it isn't working, until the
+/// usage limit that stopped its turn lifts, where its harness said when; where its Mac snoozes
+/// until room (`room`, 0.34 and later), until its account has room again where that can come
+/// sooner than anyone said (out of credits, or no time said); else until its read's
+/// `waits_until`. A Mac before 0.34 snoozes "until room" until the latest, a month for a limit
+/// that says no time, so it's offered only the lift, as before.
+fn suggested_snooze(s: &Session, working: bool, snoozed: bool, now: i64, room: bool) -> Option<SuggestedSnooze> {
     // An orchestrator's session isn't snoozed: it's quiet unless it asks you something, and its
     // Mac's menu offers no Snooze for it.
     if snoozed || s.archived || s.orchestrator.is_some() {
         return None;
     }
-    let lifts = s.limit.as_ref().and_then(|l| l.resets_at).filter(|_| !working);
-    if let Some(until) = lifts.filter(|t| t - SNOOZE_WORTH_MS > now) {
-        return Some(SuggestedSnooze { until, offered_till: until - SNOOZE_WORTH_MS, why: SnoozeWhy::Limit, because: "when its limit lifts".into(), by: None });
+    if let Some(limit) = s.limit.as_ref().filter(|_| !working) {
+        let latest = if room { Some(limit.resets_at.unwrap_or(limit.at + ROOM_LONGEST_MS)) } else { limit.resets_at };
+        if let Some(until) = latest.filter(|t| t - SNOOZE_WORTH_MS > now) {
+            return Some(limit_snooze(limit, until, room && (limit.spend_capped || limit.resets_at.is_none())));
+        }
     }
     let insight = s.insight.as_ref()?;
     let until = put_off_to(insight)?;
@@ -668,7 +699,41 @@ fn suggested_snooze(s: &Session, working: bool, snoozed: bool, now: i64) -> Opti
     };
     let read = if tag.is_some() { format!("Tagged by {reader}") } else { "Jev\u{2019}s read".to_string() };
     let note = insight.note.as_deref().filter(|n| tag.is_some() && !n.is_empty()).map(|n| format!(": {n}")).unwrap_or_default();
-    Some(SuggestedSnooze { until, offered_till, why: SnoozeWhy::Reply, because: format!("as {reader} read its reply"), by: Some(format!("{read}{note}")) })
+    let because = format!("as {reader} read its reply");
+    Some(SuggestedSnooze { until, offered_till, why: SnoozeWhy::Reply, label: format!("Until {{at:{until}}}, {because}"), because, by: Some(format!("{read}{note}")), button: None, does: None })
+}
+
+/// The snooze offered for a session its usage limit stopped, until `until`: until the limit lifts,
+/// or with `for_room` until its account has room again, `until` the latest, with what the page's
+/// button says and does (snooze.ts `suggestedLabel`, `limitSnoozeTitle`; SessionHeader.tsx).
+fn limit_snooze(limit: &SessionLimit, until: i64, for_room: bool) -> SuggestedSnooze {
+    let offered_till = until - SNOOZE_WORTH_MS;
+    let at = format!("{{at:{until}}}");
+    if !for_room {
+        let because = "when its limit lifts".to_string();
+        return SuggestedSnooze {
+            until,
+            offered_till,
+            why: SnoozeWhy::Limit,
+            label: format!("Until {at}, {because}"),
+            because,
+            by: None,
+            button: Some("Snooze until it lifts".into()),
+            does: Some(format!("It leaves what waits on you until {at}, when the limit lifts")),
+        };
+    }
+    let how = if limit.spend_capped { "credits are bought, its spend limit is raised or a reset is used" } else { "another turn on it goes through or its usage reads room" };
+    let latest = if limit.resets_at.is_some() { format!("when the limit lifts, {at},") } else { at };
+    SuggestedSnooze {
+        until,
+        offered_till,
+        why: SnoozeWhy::Room,
+        label: "Until it has room".into(),
+        because: "when its account has room".into(),
+        by: None,
+        button: Some("Snooze until it has room".into()),
+        does: Some(format!("It leaves what waits on you until its account has room again: once {how}, and {latest} at the latest")),
+    }
 }
 
 /// How sure a read has to be that a reply asks you something for it to wait on you now (the Mac's
@@ -1439,10 +1504,19 @@ impl Core {
     }
 
     /// Snoozes sessions until `until` (ms), or wakes them with none, on the Macs they're on: off
-    /// Needs you and Your turn everywhere until then. Macs before 2026-10-09 refuse it.
-    pub fn snooze(&self, keys: Vec<String>, until: Option<i64>) -> Result<(), CoreError> {
+    /// Needs you and Your turn everywhere until then. With `room`, until each one's account has
+    /// room again, `until` at the latest (`params::Snooze::room`), which a Mac before 0.34 reads
+    /// as until `until`; the phone offers it only from 0.34 (`SuggestedSnooze`). Macs before
+    /// 2026-10-09 refuse it.
+    pub fn snooze(&self, keys: Vec<String>, until: Option<i64>, room: bool) -> Result<(), CoreError> {
         self.sorted(&keys);
-        each_mac(&keys, |device, keys| self.client.snooze(device, keys, until))
+        each_mac(&keys, |device, keys| {
+            if !room || until.is_none() {
+                return self.client.snooze(device, keys, until);
+            }
+            let params = serde_json::to_value(params::Snooze { keys: keys.to_vec(), until, room: true }).unwrap_or_default();
+            self.client.ask(device, api::SESSION_SNOOZE, params, ACT_WAIT).map(|_| ())
+        })
     }
 
     /// Quiets sessions, or makes them heard again, on the Macs they're on: a quiet one's turns
@@ -1769,6 +1843,7 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 hosted: s.hosted,
                 section: section(status, snoozed_until, aside),
                 snoozed_until,
+                snoozed_for_room: s.snoozed_for_room && snoozed_until.is_some(),
                 started_at: s.started_at,
                 live: s.live,
                 in_app: s.surface == codealong_peer::model::Surface::App,
@@ -1838,7 +1913,7 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 at_a_prompt: s.waits_at_a_prompt(),
                 mark: mark_of(s, status, snoozed_until.is_some(), aside),
                 // Snoozed, working or not, as its Mac has it.
-                suggested_snooze: suggested_snooze(s, status == Status::Working, s.snoozed_until.is_some_and(|t| t > now), now),
+                suggested_snooze: suggested_snooze(s, status == Status::Working, s.snoozed_until.is_some_and(|t| t > now), now, builds_since(&d.app, ROOM_SNOOZE_SINCE)),
                 background: background_commands(s),
                 input_asked: input_note(s),
                 helper_waits: start_note(s),
@@ -5078,6 +5153,11 @@ const QUEUES_SWITCHES_SINCE: (u32, u32, u32) = (0, 32, 0);
 /// isn't running, picking it up again in its agent to (7c747d0a).
 const SWITCHES_STOPPED_SINCE: (u32, u32, u32) = (0, 33, 0);
 
+/// The first build whose Mac snoozes a session until its account has room again
+/// (`params::Snooze::room`, `Session::snoozed_for_room`; 9ba22bfb). One before snoozes it until
+/// the latest time, a month for a limit that says no time, so it's offered only from this one.
+const ROOM_SNOOZE_SINCE: (u32, u32, u32) = (0, 34, 0);
+
 /// The first build whose Mac moves or hands off a session of any harness to another account,
 /// another provider's included, so a usage limit's stop says who has room whatever its harness
 /// (daf8b3b1).
@@ -5375,6 +5455,7 @@ mod order_tests {
             hosted: false,
             section: section(status, snoozed_until, false),
             snoozed_until,
+            snoozed_for_room: false,
             started_at: None,
             live: true,
             in_app: false,
@@ -5848,32 +5929,44 @@ mod order_tests {
         const DAY: i64 = 24 * 60 * 60 * 1000;
         let read = |insight: SessionInsight| Session { insight: Some(insight), ..Session::new(Harness::Claude, "claude", "later") };
         let jev = read(SessionInsight { waits_until: Some(NOW + DAY), ..Default::default() });
-        assert_eq!(suggested_snooze(&jev, false, false, NOW), Some(SuggestedSnooze { until: NOW + DAY, offered_till: NOW + DAY - SNOOZE_WORTH_MS, why: SnoozeWhy::Reply, because: "as Jev read its reply".into(), by: Some("Jev\u{2019}s read".into()) }));
+        assert_eq!(
+            suggested_snooze(&jev, false, false, NOW, true),
+            Some(SuggestedSnooze {
+                until: NOW + DAY,
+                offered_till: NOW + DAY - SNOOZE_WORTH_MS,
+                why: SnoozeWhy::Reply,
+                because: "as Jev read its reply".into(),
+                by: Some("Jev\u{2019}s read".into()),
+                label: format!("Until {{at:{}}}, as Jev read its reply", NOW + DAY),
+                button: None,
+                does: None,
+            })
+        );
         // An agent's tag says who, and what it noted.
         let tagged = read(SessionInsight { waits_until: Some(NOW + DAY), by: Some("k".into()), by_title: Some("Orchestrator".into()), note: Some("The freeze lifts Monday.".into()), ..Default::default() });
-        assert_eq!(suggested_snooze(&tagged, false, false, NOW).map(|s| (s.because, s.by)), Some(("as Orchestrator read its reply".into(), Some("Tagged by Orchestrator: The freeze lifts Monday.".into()))));
+        assert_eq!(suggested_snooze(&tagged, false, false, NOW, true).map(|s| (s.because, s.by)), Some(("as Orchestrator read its reply".into(), Some("Tagged by Orchestrator: The freeze lifts Monday.".into()))));
         let unnamed = read(SessionInsight { waits_until: Some(NOW + DAY), by: Some("k".into()), ..Default::default() });
-        assert_eq!(suggested_snooze(&unnamed, false, false, NOW).map(|s| (s.because, s.by)), Some(("as an agent read its reply".into(), Some("Tagged by an agent".into()))));
+        assert_eq!(suggested_snooze(&unnamed, false, false, NOW, true).map(|s| (s.because, s.by)), Some(("as an agent read its reply".into(), Some("Tagged by an agent".into()))));
         // Jev's day under a tag that read something else is Jev's, without the agent's note.
         let jevs_under_tag = read(SessionInsight { waits_by_jev: true, ..tagged.insight.clone().unwrap() });
-        assert_eq!(suggested_snooze(&jevs_under_tag, false, false, NOW).map(|s| (s.because, s.by)), Some(("as Jev read its reply".into(), Some("Jev\u{2019}s read".into()))));
+        assert_eq!(suggested_snooze(&jevs_under_tag, false, false, NOW, true).map(|s| (s.because, s.by)), Some(("as Jev read its reply".into(), Some("Jev\u{2019}s read".into()))));
         // None beside a reply read as asking you something, which waits on you now, as a Mac
         // before the rule could send; one less sure it asks still offers it.
-        assert_eq!(suggested_snooze(&read(SessionInsight { asks_you: Some(0.7), ..jev.insight.clone().unwrap() }), false, false, NOW), None);
-        assert_eq!(suggested_snooze(&read(SessionInsight { asks_you: Some(0.9), ..tagged.insight.clone().unwrap() }), false, false, NOW), None);
-        assert_eq!(suggested_snooze(&read(SessionInsight { asks_you: Some(0.2), ..jev.insight.clone().unwrap() }), false, false, NOW).map(|s| s.until), Some(NOW + DAY));
+        assert_eq!(suggested_snooze(&read(SessionInsight { asks_you: Some(0.7), ..jev.insight.clone().unwrap() }), false, false, NOW, true), None);
+        assert_eq!(suggested_snooze(&read(SessionInsight { asks_you: Some(0.9), ..tagged.insight.clone().unwrap() }), false, false, NOW, true), None);
+        assert_eq!(suggested_snooze(&read(SessionInsight { asks_you: Some(0.2), ..jev.insight.clone().unwrap() }), false, false, NOW, true).map(|s| s.until), Some(NOW + DAY));
         // None once it's all but here or gone by, while it's snoozed or archived, and for a
         // reply that names no time.
-        assert_eq!(suggested_snooze(&read(SessionInsight { waits_until: Some(NOW + SNOOZE_WORTH_MS), ..Default::default() }), false, false, NOW), None);
-        assert_eq!(suggested_snooze(&read(SessionInsight { waits_until: Some(NOW - DAY), ..Default::default() }), false, false, NOW), None);
-        assert_eq!(suggested_snooze(&jev, false, true, NOW), None);
-        assert_eq!(suggested_snooze(&Session { archived: true, ..jev.clone() }, false, false, NOW), None);
-        assert_eq!(suggested_snooze(&read(SessionInsight::default()), false, false, NOW), None);
+        assert_eq!(suggested_snooze(&read(SessionInsight { waits_until: Some(NOW + SNOOZE_WORTH_MS), ..Default::default() }), false, false, NOW, true), None);
+        assert_eq!(suggested_snooze(&read(SessionInsight { waits_until: Some(NOW - DAY), ..Default::default() }), false, false, NOW, true), None);
+        assert_eq!(suggested_snooze(&jev, false, true, NOW, true), None);
+        assert_eq!(suggested_snooze(&Session { archived: true, ..jev.clone() }, false, false, NOW, true), None);
+        assert_eq!(suggested_snooze(&read(SessionInsight::default()), false, false, NOW, true), None);
         // Nor for an orchestrator's session, which isn't snoozed.
         let orchestrator = codealong_peer::model::Orchestrator { schedule: "s-1".into(), project: None, paused: false, looked_at: None };
-        assert_eq!(suggested_snooze(&Session { orchestrator: Some(orchestrator), ..jev.clone() }, false, false, NOW), None);
+        assert_eq!(suggested_snooze(&Session { orchestrator: Some(orchestrator), ..jev.clone() }, false, false, NOW, true), None);
         // A reply's time is offered while it works too.
-        assert_eq!(suggested_snooze(&jev, true, false, NOW).map(|s| s.why), Some(SnoozeWhy::Reply));
+        assert_eq!(suggested_snooze(&jev, true, false, NOW, true).map(|s| s.why), Some(SnoozeWhy::Reply));
     }
 
     #[test]
@@ -5885,22 +5978,59 @@ mod order_tests {
         let limit = SessionLimit { meter: Some("session".into()), resets_at: Some(NOW + 3 * HOUR), spend_capped: false, at: NOW - HOUR, move_to: None, continues: true, model: None };
         let stopped = Session { limit: Some(limit.clone()), ..Session::new(Harness::Claude, "claude", "limited") };
         assert_eq!(
-            suggested_snooze(&stopped, false, false, NOW),
-            Some(SuggestedSnooze { until: NOW + 3 * HOUR, offered_till: NOW + 3 * HOUR - SNOOZE_WORTH_MS, why: SnoozeWhy::Limit, because: "when its limit lifts".into(), by: None })
+            suggested_snooze(&stopped, false, false, NOW, true),
+            Some(SuggestedSnooze {
+                until: NOW + 3 * HOUR,
+                offered_till: NOW + 3 * HOUR - SNOOZE_WORTH_MS,
+                why: SnoozeWhy::Limit,
+                because: "when its limit lifts".into(),
+                by: None,
+                label: format!("Until {{at:{}}}, when its limit lifts", NOW + 3 * HOUR),
+                button: Some("Snooze until it lifts".into()),
+                does: Some(format!("It leaves what waits on you until {{at:{}}}, when the limit lifts", NOW + 3 * HOUR)),
+            })
         );
         // The limit's time comes ahead of a reply's (snooze.ts `suggestedSnooze`).
         let read_too = Session { insight: Some(SessionInsight { waits_until: Some(NOW + DAY), ..Default::default() }), ..stopped.clone() };
-        assert_eq!(suggested_snooze(&read_too, false, false, NOW).map(|s| (s.why, s.until)), Some((SnoozeWhy::Limit, NOW + 3 * HOUR)));
+        assert_eq!(suggested_snooze(&read_too, false, false, NOW, true).map(|s| (s.why, s.until)), Some((SnoozeWhy::Limit, NOW + 3 * HOUR)));
         // Working again, or with the limit all but lifted, a reply's time is offered, if any.
-        assert_eq!(suggested_snooze(&read_too, true, false, NOW).map(|s| s.why), Some(SnoozeWhy::Reply));
-        assert_eq!(suggested_snooze(&stopped, true, false, NOW), None);
+        assert_eq!(suggested_snooze(&read_too, true, false, NOW, true).map(|s| s.why), Some(SnoozeWhy::Reply));
+        assert_eq!(suggested_snooze(&stopped, true, false, NOW, true), None);
         let lifting = Session { limit: Some(SessionLimit { resets_at: Some(NOW + SNOOZE_WORTH_MS), ..limit.clone() }), ..read_too.clone() };
-        assert_eq!(suggested_snooze(&lifting, false, false, NOW).map(|s| s.why), Some(SnoozeWhy::Reply));
-        // A limit that doesn't say when it lifts offers none; nor does one snoozed or archived.
+        assert_eq!(suggested_snooze(&lifting, false, false, NOW, true).map(|s| s.why), Some(SnoozeWhy::Reply));
+        // A Mac before 0.34 offers the same lift, and none for a limit that doesn't say when it
+        // lifts; none is offered one snoozed or archived.
+        assert_eq!(suggested_snooze(&stopped, false, false, NOW, false).map(|s| (s.why, s.until)), Some((SnoozeWhy::Limit, NOW + 3 * HOUR)));
         let unsaid = Session { limit: Some(SessionLimit { resets_at: None, ..limit.clone() }), ..stopped.clone() };
-        assert_eq!(suggested_snooze(&unsaid, false, false, NOW), None);
-        assert_eq!(suggested_snooze(&stopped, false, true, NOW), None);
-        assert_eq!(suggested_snooze(&Session { archived: true, ..stopped.clone() }, false, false, NOW), None);
+        assert_eq!(suggested_snooze(&unsaid, false, false, NOW, false), None);
+        assert_eq!(suggested_snooze(&stopped, false, true, NOW, true), None);
+        assert_eq!(suggested_snooze(&Session { archived: true, ..stopped.clone() }, false, false, NOW, true), None);
+    }
+
+    #[test]
+    fn a_session_out_of_credits_or_told_no_time_is_offered_a_snooze_until_it_has_room() {
+        const NOW: i64 = 1_000_000_000_000;
+        const HOUR: i64 = 60 * 60 * 1000;
+        const DAY: i64 = 24 * HOUR;
+        let lifts = NOW + DAY;
+        let limit = SessionLimit { meter: Some("week".into()), resets_at: Some(lifts), spend_capped: true, at: NOW - HOUR, move_to: None, continues: false, model: None };
+        let stopped = Session { limit: Some(limit.clone()), status: PeerStatus::Error, ..Session::new(Harness::Claude, "claude", "limited") };
+        // Out of credits: buying more frees it before the limit lifts, which is the latest.
+        let room = suggested_snooze(&stopped, false, false, NOW, true).unwrap();
+        assert_eq!((room.why, room.until, room.label.as_str(), room.button.as_deref()), (SnoozeWhy::Room, lifts, "Until it has room", Some("Snooze until it has room")));
+        assert_eq!(room.does.unwrap(), format!("It leaves what waits on you until its account has room again: once credits are bought, its spend limit is raised or a reset is used, and when the limit lifts, {{at:{lifts}}}, at the latest"));
+        // No time said: a month after the refusal at the latest, and nothing once that's all but here.
+        let unsaid = Session { limit: Some(SessionLimit { resets_at: None, spend_capped: false, meter: None, ..limit.clone() }), ..stopped.clone() };
+        let month = NOW - HOUR + 31 * DAY;
+        let room = suggested_snooze(&unsaid, false, false, NOW, true).unwrap();
+        assert_eq!((room.why, room.until), (SnoozeWhy::Room, month));
+        assert_eq!(room.does.unwrap(), format!("It leaves what waits on you until its account has room again: once another turn on it goes through or its usage reads room, and {{at:{month}}} at the latest"));
+        let long_ago = Session { limit: Some(SessionLimit { at: NOW - 31 * DAY + 60_000, ..unsaid.limit.clone().unwrap() }), ..unsaid.clone() };
+        assert_eq!(suggested_snooze(&long_ago, false, false, NOW, true), None);
+        assert_eq!(suggested_snooze(&stopped, true, false, NOW, true), None);
+        // A Mac before 0.34 snoozes until the lift: offered as that, and nothing for no time.
+        assert_eq!(suggested_snooze(&stopped, false, false, NOW, false).map(|s| s.why), Some(SnoozeWhy::Limit));
+        assert_eq!(suggested_snooze(&unsaid, false, false, NOW, false), None);
     }
 
     #[test]
@@ -6132,6 +6262,31 @@ mod order_tests {
         assert!(room(&new, "limited") && room(&new, "claude-limited"));
         assert!(!room(&old, "limited") && room(&old, "claude-limited"));
         assert!(!row(&old, "limited").limit.unwrap().says.contains("No other account"));
+    }
+
+    #[test]
+    /// A session out of credits is offered a snooze until its account has room only on a Mac that
+    /// keeps one (0.34), and a row snoozed so says it while it's snoozed.
+    fn a_snooze_until_room_is_offered_and_shown_from_0_34() {
+        use codealong_peer::client::Device;
+        use codealong_peer::feed::Replica;
+        let mac = |app: &str| Device { key: app.into(), short: app.into(), name: "Mac".into(), online: true, since: None, last_seen: None, remote_control: true, app: app.into(), loading: false, linked_back: true };
+        let now = now_ms();
+        let limit = SessionLimit { meter: Some("week".into()), resets_at: Some(now + 86_400_000), spend_capped: true, at: now, move_to: None, continues: false, model: None };
+        let mut lane = codealong_peer::model::Lane::new("/src/app", "App", "app");
+        lane.sessions = vec![
+            Session { limit: Some(limit), status: PeerStatus::Error, ..Session::new(Harness::Claude, "claude", "capped") },
+            Session { snoozed_until: Some(now + 3_600_000), snoozed_for_room: true, ..Session::new(Harness::Claude, "claude", "snoozed") },
+            Session { snoozed_until: Some(now - 1), snoozed_for_room: true, ..Session::new(Harness::Claude, "claude", "woken") },
+        ];
+        let replica = Replica { lanes: vec![lane], ..Replica::default() };
+        let rows = |app: &str| session_rows(&[(mac(app), &replica)], true);
+        let row = |rows: &[SessionRow], id: &str| rows.iter().find(|r| r.key.ends_with(&format!(":{id}"))).cloned().unwrap();
+        let (new, old) = (rows("0.34.0"), rows("0.33.0"));
+        assert_eq!(row(&new, "capped").suggested_snooze.map(|s| s.why), Some(SnoozeWhy::Room));
+        assert_eq!(row(&old, "capped").suggested_snooze.map(|s| s.why), Some(SnoozeWhy::Limit));
+        assert!(row(&new, "snoozed").snoozed_for_room);
+        assert!(!row(&new, "woken").snoozed_for_room);
     }
 
     #[test]

@@ -1,9 +1,11 @@
 import Foundation
 
 /// The Mac writes live times into what a session says, `{ago:<ms>}` and `{for:<ms>}`, and code as
-/// backtick spans; the core writes `{in:<ms>}` for a time to come. This turns them into text for
-/// now, as the Mac's format.ts `withTimes` does: `{ago:}` is `4m ago`, `{for:}` how long since,
-/// `14m`, the Mac writing any "for" before it ("Stuck on `npm test` for {for:<ms>}").
+/// backtick spans; the core writes `{in:<ms>}` for a time to come, and `{at:<ms>}` for the time a
+/// snooze runs to. This turns them into text for now, as the Mac's format.ts `withTimes` does:
+/// `{ago:}` is `4m ago`, `{for:}` how long since, `14m`, the Mac writing any "for" before it
+/// ("Stuck on `npm test` for {for:<ms>}"), and `{at:}` as a snooze's time is said, `tomorrow 9 AM`
+/// (`Snooze.words`).
 enum Clock {
     static func text(_ s: String, now: Date) -> AttributedString {
         var out = ""
@@ -20,6 +22,8 @@ enum Clock {
                     out += duration(ms, now: now)
                 } else if token.hasPrefix("in:") {
                     out += "in " + until(ms, now: now)
+                } else if token.hasPrefix("at:") {
+                    out += Snooze.words(Date(ms: ms), now: now)
                 } else {
                     out += rest[open...close]
                 }
