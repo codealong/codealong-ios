@@ -1717,8 +1717,11 @@ struct SessionView: View {
         }
         let outcome = "Snoozed “\(title)” until \(Snooze.ends(until, room: room))."
         if let onward {
-            // Left as it was: it comes back as Your turn when the snooze ends.
-            moveOn(to: onward, outcome: Outcome(.snoozed, outcome), seen: false)
+            // Left as it was: it comes back as Your turn when the snooze ends. One until room isn't
+            // left out of the end of what waits as it is now: its Mac can wake it in the very
+            // board that snoozes it (its account had room already), which looks the same as before
+            // the snooze, and its Mac answered only once that board was out.
+            moveOn(to: onward, outcome: Outcome(.snoozed, outcome), seen: false, leftAtEnd: !room)
         } else {
             store.notice = outcome
             dismiss()
@@ -2032,10 +2035,10 @@ struct SessionView: View {
 
     /// Shows `next` in this one's place, saying there how this one went once you've acted here.
     /// Left without a reply while it needs you, this one comes round again after the rest.
-    private func moveOn(to next: Onward, outcome: Outcome? = nil, speed: CGFloat = 0, seen: Bool = true) {
+    private func moveOn(to next: Onward, outcome: Outcome? = nil, speed: CGFloat = 0, seen: Bool = true, leftAtEnd: Bool = true) {
         guard swipe.to == nil else { return }
         if next.key != key { store.trail.append(key) }
-        if next == .end { store.goingToEnd(from: key) }
+        if next == .end && leftAtEnd { store.goingToEnd(from: key) }
         store.outcome = outcome ?? saidOn
         slide(to: next.key, back: false, speed: speed, seen: seen)
     }

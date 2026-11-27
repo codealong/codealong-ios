@@ -431,12 +431,13 @@ pub fn pr_owners(session: crate::SessionRow, prs: Vec<PrRow>) -> Vec<PrOwner> {
         }
     }
     owners.truncate(2);
+    // A number two of the PRs named share (in two repos, or two forks of one), the same owner's or
+    // not, is said as each one's whole key, so neither is lost and each entry says which it means.
+    let named: Vec<&PrRow> = owners.iter().flat_map(|(_, owned)| owned.iter().copied()).collect();
+    let shared = |n: u64| named.iter().filter(|q| q.number == n).count() > 1;
     owners
         .into_iter()
         .map(|(key, owned)| {
-            // A number two of its PRs share (in two repos, or two forks of one) is said as each
-            // one's whole key, so neither is lost from the words.
-            let shared = |n: u64| owned.iter().filter(|q| q.number == n).count() > 1;
             let names: Vec<String> = owned.iter().map(|q| if shared(q.number) { q.key.clone() } else { format!("#{}", q.number) }).collect();
             PrOwner { key, numbers: owned.iter().map(|q| q.number).collect(), what: listed_in_words(&names) }
         })
@@ -2301,5 +2302,9 @@ pub(crate) mod tests {
         ];
         let named = pr_owners(me.clone(), twins).into_iter().map(|o| o.what).collect::<Vec<_>>();
         assert_eq!(named, ["northwind/app#12, kestrel/app#12 and #3"]);
+        // So are two owners' PRs with one number: each entry says which it owns.
+        let apart = vec![pr("northwind/app#12", 12, "open", Some("@d:b"), &["@d:a"]), pr("kestrel/app#12", 12, "open", Some("@d:c"), &["@d:a"])];
+        let named = pr_owners(me.clone(), apart).into_iter().map(|o| o.what).collect::<Vec<_>>();
+        assert_eq!(named, ["northwind/app#12", "kestrel/app#12"]);
     }
 }
