@@ -821,11 +821,10 @@ struct SessionView: View {
             }
             // It goes on as its copy, which its Mac sends to in its place: the copy's box is what
             // you write in, over this page, as the Mac's panel gives it the copy's box.
+            // What was written here goes into the copy's box, where nothing is written there yet
+            // (`Store.carryMovedDrafts`); else it's offered to copy.
             if let copy = row?.goesOnAs {
-                MovedNote(copy: copy) { follow(copy.key) }
-                    // What was written here, and the images with it, go into the copy's box, which
-                    // the line opens, rather than stay in one that's gone.
-                    .onChange(of: copy.key, initial: true) { _, to in store.carryDraft(from: key, to: to) }
+                MovedNote(copy: copy, written: draft.isEmpty ? nil : draft) { follow(copy.key) }
             } else {
                 ReplyBox(open: replyOpen, size: sendSize, attach: canAttach ? { picking = true } : nil, attachDisabled: sending) {
                     // The images going with the reply sit in the box, over what's written.
@@ -2818,10 +2817,24 @@ private struct AccountLimitLine: View {
 /// gives it the copy's box under a line saying so (MovedNote.tsx).
 private struct MovedNote: View {
     let copy: MovedTo
+    /// What was written here and not sent, where the copy's box had its own: offered to copy, as
+    /// nothing joins it onto what's there.
+    var written: String?
     /// Opens the copy over this page; none on a glance.
     let open: (() -> Void)?
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            line
+            if let written {
+                Button("Copy what you wrote here", systemImage: "doc.on.doc") { UIPasteboard.general.string = written }
+                    .font(.footnote)
+                    .accessibilityHint("Its box has its own words, so these stay here")
+            }
+        }
+    }
+
+    private var line: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Label {
                 Text("\(copy.says). It goes on there, so write to it there.")
@@ -3952,6 +3965,11 @@ struct SessionGlance: View {
 
     private var row: SessionRow? { store.row(key) }
     private var why: String? { store.cannotReach(row) }
+    /// Its Mac is connected, as the page's snooze buttons wait for.
+    private var online: Bool {
+        guard let row else { return false }
+        return store.devices.contains { $0.key == row.device && $0.online }
+    }
     private var rules: ReplyRules {
         ReplyRules(row: row, way: kept.way, choices: row.flatMap { store.choices[$0.device] }, resumePlace: nil)
     }
@@ -4041,10 +4059,10 @@ struct SessionGlance: View {
             }
             let movedOn = row?.goesOnAs != nil
             if let limit = row?.limit {
-                LimitLine(note: limit, suggested: row?.suggestedSnooze, carryOn: canAct && pending == nil && !movedOn ? {} : nil, now: .now) { _ in }
+                LimitLine(note: limit, suggested: row?.suggestedSnooze, carryOn: canAct && pending == nil && !movedOn ? {} : nil, snoozes: online, now: .now) { _ in }
             }
             if let limit = row?.accountLimit {
-                AccountLimitLine(note: limit, now: .now) { _ in }
+                AccountLimitLine(note: limit, snoozes: online, now: .now) { _ in }
             }
             if let error = row?.apiError {
                 ApiErrorLine(note: error, tryAgain: canAct && pending == nil && !movedOn ? {} : nil)
