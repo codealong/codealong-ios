@@ -433,8 +433,9 @@ struct SessionView: View {
                     }
                     // Moved to another account: the conversation goes on in the copy there (on its
                     // Mac's board, or the core wouldn't name it), which opens over this page, as the
-                    // Mac's row goes to it from its Moved to chip.
-                    if let moved = row?.movedTo, !(loading && items.isEmpty) {
+                    // Mac's row goes to it from its Moved to chip. Where its Mac says it goes on as
+                    // that copy, the line in place of the box says so.
+                    if let moved = row?.movedTo, row?.goesOnAs == nil, !(loading && items.isEmpty) {
                         Button(moved.says) { follow(moved.key) }
                             .font(.caption)
                             .frame(maxWidth: .infinity)
@@ -743,8 +744,18 @@ struct SessionView: View {
             if let limit = row?.limit {
                 // Snoozed from here as from its Snooze menu: it goes on to what's next, if anything.
                 // Carried on as the box sends a message, as Try again is.
-                LimitLine(note: limit, suggested: row?.suggestedSnooze, carryOn: canAct && pending == nil ? { carryOn(limit) } : nil, sending: store.carriedOn[key] == limit.at || !(store.outgoing[key] ?? []).isEmpty) { s in Task { await snooze(until: Date(ms: s.until), room: s.why == .room) } }
+                LimitLine(note: limit, suggested: row?.suggestedSnooze, carryOn: canAct && pending == nil && !movedOn ? { carryOn(limit) } : nil, sending: store.carriedOn[key] == limit.at || !(store.outgoing[key] ?? []).isEmpty) { s in Task { await snooze(until: Date(ms: s.until), room: s.why == .room) } }
                     // Its row is read again as the limit lifts, which brings Carry on then.
+                    .task(id: limit.liftsAt) {
+                        guard let at = limit.liftsAt else { return }
+                        try? await Task.sleep(for: .seconds(max(0, Date(ms: at).timeIntervalSinceNow) + 1))
+                        if !Task.isCancelled { store.refresh() }
+                    }
+            }
+            if let limit = row?.accountLimit {
+                // Snoozed from here as from the Mac's line: it goes on to what's next, if anything.
+                AccountLimitLine(note: limit) { s in Task { await snooze(until: Date(ms: s.until)) } }
+                    // Its row is read again as the limit lifts, which takes the line away then.
                     .task(id: limit.liftsAt) {
                         guard let at = limit.liftsAt else { return }
                         try? await Task.sleep(for: .seconds(max(0, Date(ms: at).timeIntervalSinceNow) + 1))
@@ -754,7 +765,7 @@ struct SessionView: View {
             if let error = row?.apiError {
                 // Sent as the box sends a message, so one that isn't running goes on where the box
                 // would take it, as the Mac's goes on where Carry on would.
-                ApiErrorLine(note: error, tryAgain: canAct && pending == nil ? { Task { await send(text: error.message) } } : nil, sending: !(store.outgoing[key] ?? []).isEmpty)
+                ApiErrorLine(note: error, tryAgain: canAct && pending == nil && !movedOn ? { Task { await send(text: error.message) } } : nil, sending: !(store.outgoing[key] ?? []).isEmpty)
             }
             // Its account signs in on its Mac: nothing here signs it in.
             if let out = row?.signedOut {
@@ -793,10 +804,10 @@ struct SessionView: View {
             }
             // Snoozed from here as from its Snooze menu: it goes on to what's next, if anything. A
             // limit's is the button beside what its note says of it.
-            if let suggested = row?.suggestedSnooze, suggested.why == .reply, Date.now.ms < suggested.offeredTill {
+            if let suggested = row?.suggestedSnooze, suggested.why == .reply, Date.now.ms < suggested.offeredTill, !movedOn {
                 SnoozeSuggestionLine(suggested: suggested) { Task { await snooze(until: Date(ms: suggested.until)) } }
             }
-            if let suggestions = row?.suggestions {
+            if let suggestions = row?.suggestions, !movedOn {
                 SuggestedRepliesView(suggestions: suggestions, blocked: canAct && !waitsElsewhere ? nil : whyNot ?? "It waits on you where it runs: answer that there first") { reply in
                     Task { await send(text: reply) }
                 } edit: { reply in
@@ -808,68 +819,74 @@ struct SessionView: View {
                     }
                 }
             }
-            ReplyBox(open: replyOpen, size: sendSize, attach: canAttach ? { picking = true } : nil, attachDisabled: sending) {
-                // The images going with the reply sit in the box, over what's written.
-                if canAttach && !attached.isEmpty {
-                    AttachedRow(images: attached) { id in
-                        store.detach(id, from: key)
+            // It goes on as its copy, which its Mac sends to in its place: the copy's box is what
+            // you write in, over this page, as the Mac's panel gives it the copy's box.
+            if let copy = row?.goesOnAs {
+                MovedNote(copy: copy) { follow(copy.key) }
+            } else {
+                ReplyBox(open: replyOpen, size: sendSize, attach: canAttach ? { picking = true } : nil, attachDisabled: sending) {
+                    // The images going with the reply sit in the box, over what's written.
+                    if canAttach && !attached.isEmpty {
+                        AttachedRow(images: attached) { id in
+                            store.detach(id, from: key)
+                        }
                     }
-                }
-            } field: {
-                ZStack(alignment: .leading) {
-                    if draft.isEmpty {
-                        Text(placeholder(full: replyOpen))
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(2)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .allowsHitTesting(false)
-                            .accessibilityHidden(true)
+                } field: {
+                    ZStack(alignment: .leading) {
+                        if draft.isEmpty {
+                            Text(placeholder(full: replyOpen))
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(2)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                        // A copied image pasted here goes with the reply, as a photo picked with + does.
+                        WritingField(text: Binding(get: { draft }, set: { draft = $0 }), focused: $typing, label: placeholder(full: true), editable: canAct && !sending, pasted: canAttach ? { data in
+                            if let data { attach(data) } else { said = "The image you copied couldn't be read." }
+                        } : nil, reading: $loadingPhotos) {
+                            // ⌘⏎ on a keyboard sends and goes on, as on the Mac.
+                            guard canSend else { return }
+                            Task { await send(thenNext: true) }
+                        }
                     }
-                    // A copied image pasted here goes with the reply, as a photo picked with + does.
-                    WritingField(text: Binding(get: { draft }, set: { draft = $0 }), focused: $typing, label: placeholder(full: true), editable: canAct && !sending, pasted: canAttach ? { data in
-                        if let data { attach(data) } else { said = "The image you copied couldn't be read." }
-                    } : nil, reading: $loadingPhotos) {
-                        // ⌘⏎ on a keyboard sends and goes on, as on the Mac.
-                        guard canSend else { return }
-                        Task { await send(thenNext: true) }
+                } tools: {
+                    // Where one that isn't running goes on is said here too, under its model.
+                    if canAct && (resuming || showsModel) {
+                        ModelMenu(rules: rules, resumePlace: $resumePlace, resumeModel: $resumeModel, resumeEffort: $resumeEffort, switching: switching, height: sendSize, modePicked: modePicked) { model in
+                            Task { await switchModel(model) }
+                        } switchEffort: { effort in
+                            Task { await switchEffort(effort) }
+                        } switchMode: { mode in
+                            Task { await switchMode(mode) }
+                        }
                     }
-                }
-            } tools: {
-                // Where one that isn't running goes on is said here too, under its model.
-                if canAct && (resuming || showsModel) {
-                    ModelMenu(rules: rules, resumePlace: $resumePlace, resumeModel: $resumeModel, resumeEffort: $resumeEffort, switching: switching, height: sendSize, modePicked: modePicked) { model in
-                        Task { await switchModel(model) }
-                    } switchEffort: { effort in
-                        Task { await switchEffort(effort) }
-                    } switchMode: { mode in
-                        Task { await switchMode(mode) }
+                    if canSendNow {
+                        // Into the turn it's taking, at once: Claude Code's send now, Codex's steer.
+                        Button {
+                            Task { await send(now: true) }
+                        } label: {
+                            SendNowMark(size: sendSize)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!canSend)
+                        .accessibilityLabel("Send now")
+                        .accessibilityHint("Into the turn it's taking, rather than once the step it's on ends")
                     }
-                }
-                if canSendNow {
-                    // Into the turn it's taking, at once: Claude Code's send now, Codex's steer.
-                    Button {
-                        Task { await send(now: true) }
-                    } label: {
-                        SendNowMark(size: sendSize)
+                } action: {
+                    if stopsHere {
+                        Button {
+                            Task { await stop() }
+                        } label: {
+                            StopMark(stopping: stopping, size: sendSize)
+                                .contentShape(.circle.inset(by: -replyInset))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(stopping)
+                        .accessibilityLabel(stopping ? "Stopping" : "Stop this turn")
+                    } else {
+                        sendButton
                     }
-                    .buttonStyle(.plain)
-                    .disabled(!canSend)
-                    .accessibilityLabel("Send now")
-                    .accessibilityHint("Into the turn it's taking, rather than once the step it's on ends")
-                }
-            } action: {
-                if stopsHere {
-                    Button {
-                        Task { await stop() }
-                    } label: {
-                        StopMark(stopping: stopping, size: sendSize)
-                            .contentShape(.circle.inset(by: -replyInset))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(stopping)
-                    .accessibilityLabel(stopping ? "Stopping" : "Stop this turn")
-                } else {
-                    sendButton
                 }
             }
         }
@@ -951,6 +968,10 @@ struct SessionView: View {
 
     /// Only a Mac with remote control on takes a reply or an answer from here.
     private var canAct: Bool { whyNot == nil }
+
+    /// Its Mac says it moved and goes on as a copy (`SessionRow.goesOnAs`), which it sends to in
+    /// its place: nothing here sends to it.
+    private var movedOn: Bool { row?.goesOnAs != nil }
 
     /// Its Mac is connected: naming it changes only how it's listed, so it needs no remote control.
     private var online: Bool {
@@ -2739,6 +2760,76 @@ private struct LimitLine: View {
     }
 }
 
+/// That its account is at a usage limit a new turn on it would stop at, though its own last turn
+/// didn't (`SessionRow.accountLimit`): another session's turn was refused there, or its usage reads
+/// the limit full. The Mac's header warns of it in amber before you send it something, with Snooze
+/// until it lifts beside it while that's worth it; its Move… is the Mac's.
+private struct AccountLimitLine: View {
+    let note: AccountLimitNote
+    /// A still page's (one sliding in): drawn as it is now, not kept ticking.
+    var now: Date?
+    let snooze: (SuggestedSnooze) -> Void
+
+    var body: some View {
+        if let now {
+            line(now: now)
+        } else {
+            TimelineView(.periodic(from: .now, by: 30)) { context in
+                line(now: context.date)
+            }
+        }
+    }
+
+    private func line(now: Date) -> some View {
+        let offer = note.snooze.flatMap { now.ms < $0.offeredTill ? $0 : nil }
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Label {
+                Text(Clock.text(note.says, now: now))
+            } icon: {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            }
+            .font(.footnote)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if let offer, let label = offer.button {
+                // Checked again as it's tapped: drawn up to 30 seconds ago, the offer may have ended.
+                Button(label) {
+                    if Date.now.ms < offer.offeredTill { snooze(offer) }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityHint(Snooze.timed(offer.does ?? "", until: offer.until, now: now))
+            }
+        }
+    }
+}
+
+/// In place of the box of a session its Mac says moved to another account or harness and goes on
+/// as the copy there (`SessionRow.goesOnAs`): its Mac neither sends to it nor resumes it, so the
+/// line says where it went and opens the copy, whose box is what you write in, as the Mac's panel
+/// gives it the copy's box under a line saying so (MovedNote.tsx).
+private struct MovedNote: View {
+    let copy: MovedTo
+    /// Opens the copy over this page; none on a glance.
+    let open: (() -> Void)?
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Label {
+                Text("\(copy.says). It goes on there, so write to it there.")
+            } icon: {
+                Image(systemName: "arrow.turn.right.up").foregroundStyle(.secondary)
+            }
+            .font(.footnote)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button("Open it") { open?() }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .accessibilityHint("Opens the session it goes on as, to write to it there")
+        }
+        .padding(.vertical, 6)
+    }
+}
+
 /// Replies another session suggested for this one (a supervisor going over what waits on you),
 /// above the box as on the Mac, in a solid card: a tap sends one as it is, as your own message (denying the call it
 /// waits on, or declining its questions, and saying this instead, as the box would); held, one goes
@@ -3939,11 +4030,15 @@ struct SessionGlance: View {
             if let waits = row?.helperWaits {
                 SessionNote(words: waits, symbol: "terminal", tint: .orange)
             }
+            let movedOn = row?.goesOnAs != nil
             if let limit = row?.limit {
-                LimitLine(note: limit, suggested: row?.suggestedSnooze, carryOn: canAct && pending == nil ? {} : nil, now: .now) { _ in }
+                LimitLine(note: limit, suggested: row?.suggestedSnooze, carryOn: canAct && pending == nil && !movedOn ? {} : nil, now: .now) { _ in }
+            }
+            if let limit = row?.accountLimit {
+                AccountLimitLine(note: limit, now: .now) { _ in }
             }
             if let error = row?.apiError {
-                ApiErrorLine(note: error, tryAgain: canAct && pending == nil ? {} : nil)
+                ApiErrorLine(note: error, tryAgain: canAct && pending == nil && !movedOn ? {} : nil)
             }
             if let out = row?.signedOut {
                 SessionNote(words: out, symbol: "person.crop.circle.badge.exclamationmark", tint: .orange)
@@ -3974,44 +4069,48 @@ struct SessionGlance: View {
                 let replied = !(store.outgoing[key] ?? []).isEmpty
                 GoOnBar(next: next, left: after.count, going: Going.of(SwipeOn.swipe(row: row), row: row, pending: pending, acted: replied), offers: SwipeOn.offers(row: row, pending: pending, acted: replied)) { _ in }
             }
-            if let suggested = row?.suggestedSnooze, suggested.why == .reply, Date.now.ms < suggested.offeredTill {
+            if let suggested = row?.suggestedSnooze, suggested.why == .reply, Date.now.ms < suggested.offeredTill, !movedOn {
                 SnoozeSuggestionLine(suggested: suggested) {}
             }
-            if let suggestions = row?.suggestions {
+            if let suggestions = row?.suggestions, !movedOn {
                 SuggestedRepliesView(suggestions: suggestions, blocked: canAct && pending?.cannot == nil ? nil : why ?? "It waits on you where it runs: answer that there first") { _ in } edit: { _ in } dismiss: {}
             }
             // Folded unless something's written or attached, and buttons as the screen's are,
             // dimmed as theirs are while there's nothing to send.
-            ReplyBox(open: open, size: sendSize, attach: canAct && pending == nil ? {} : nil) {
-                if canAct && pending == nil && !attached.isEmpty {
-                    AttachedRow(images: attached) { _ in }
-                }
-            } field: {
-                let placeholder = replyWords(why: why, pending: pending, account: row?.account) {
-                    let words = store.replyPlaceholder(key, way: kept.way, resumePlace: rules.resuming ? rules.resumeAt?.id : nil, behind: rules.resuming && rules.resumeAt?.behind == true)
-                    return open ? words.full : words.short
-                }
-                Text(draft.isEmpty ? placeholder : draft)
-                    .foregroundStyle(draft.isEmpty ? .tertiary : .primary)
-                    .lineLimit(draft.isEmpty ? 2 : 6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } tools: {
-                if canAct && (rules.resuming || rules.showsModel) {
-                    ModelMenu(rules: rules, resumePlace: .constant(nil), resumeModel: .constant(nil), resumeEffort: .constant(nil), switching: false, height: sendSize) { _ in }
-                }
-                if canAct && row?.steerable == true && pending == nil {
-                    Button {} label: { SendNowMark(size: sendSize) }
-                        .buttonStyle(.plain)
-                        .disabled(!ready)
-                }
-            } action: {
-                if canAct && row?.stoppable == true && !words && attached.isEmpty {
-                    Button {} label: { StopMark(stopping: false, size: sendSize) }
-                        .buttonStyle(.plain)
-                } else {
-                    Button {} label: { SendMark(ready: ready, size: sendSize) }
-                        .buttonStyle(.plain)
-                        .disabled(!ready)
+            if let copy = row?.goesOnAs {
+                MovedNote(copy: copy, open: nil)
+            } else {
+                ReplyBox(open: open, size: sendSize, attach: canAct && pending == nil ? {} : nil) {
+                    if canAct && pending == nil && !attached.isEmpty {
+                        AttachedRow(images: attached) { _ in }
+                    }
+                } field: {
+                    let placeholder = replyWords(why: why, pending: pending, account: row?.account) {
+                        let words = store.replyPlaceholder(key, way: kept.way, resumePlace: rules.resuming ? rules.resumeAt?.id : nil, behind: rules.resuming && rules.resumeAt?.behind == true)
+                        return open ? words.full : words.short
+                    }
+                    Text(draft.isEmpty ? placeholder : draft)
+                        .foregroundStyle(draft.isEmpty ? .tertiary : .primary)
+                        .lineLimit(draft.isEmpty ? 2 : 6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } tools: {
+                    if canAct && (rules.resuming || rules.showsModel) {
+                        ModelMenu(rules: rules, resumePlace: .constant(nil), resumeModel: .constant(nil), resumeEffort: .constant(nil), switching: false, height: sendSize) { _ in }
+                    }
+                    if canAct && row?.steerable == true && pending == nil {
+                        Button {} label: { SendNowMark(size: sendSize) }
+                            .buttonStyle(.plain)
+                            .disabled(!ready)
+                    }
+                } action: {
+                    if canAct && row?.stoppable == true && !words && attached.isEmpty {
+                        Button {} label: { StopMark(stopping: false, size: sendSize) }
+                            .buttonStyle(.plain)
+                    } else {
+                        Button {} label: { SendMark(ready: ready, size: sendSize) }
+                            .buttonStyle(.plain)
+                            .disabled(!ready)
+                    }
                 }
             }
         }

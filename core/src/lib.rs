@@ -18,6 +18,7 @@ uniffi::setup_scaffolding!();
 
 mod github;
 mod kept;
+mod limits;
 mod md;
 mod merge;
 mod prs;
@@ -28,6 +29,7 @@ mod review;
 mod run;
 mod sounds;
 mod turns;
+pub use limits::AccountLimitNote;
 pub use lists::*;
 pub use md::*;
 pub use quick::*;
@@ -310,6 +312,16 @@ pub struct SessionRow {
     /// board (the Mac's lineage.ts `movedTargets`): the Mac's row shows a Moved to chip that goes
     /// to it.
     pub moved_to: Option<MovedTo>,
+    /// Its Mac says it moved to another account or harness and goes on as this copy, which its Mac
+    /// lists (`Session::moved_to`, 0.35 and later): it's neither sent to nor resumed there, so its
+    /// page has no box of its own, only a line that opens the copy, whose box is what you write in,
+    /// as the Mac's panel gives it the copy's box (MovedNote.tsx). Not one handed off with the
+    /// original kept open, which goes on as itself. None from a Mac before, which still turns a send
+    /// away saying where it went.
+    pub goes_on_as: Option<MovedTo>,
+    /// Its account is already at a usage limit a new turn on it would stop at, though its own last
+    /// turn didn't (the Mac's accountLimit.ts `accountLimitFor`), while it isn't working.
+    pub account_limit: Option<AccountLimitNote>,
     /// The other sessions it has been messaging lately (`peer_talk`), each opening where it's
     /// listed, as the Mac's header shows them.
     pub peers: Vec<PeerTalk>,
@@ -645,7 +657,7 @@ pub enum SnoozeWhy {
 }
 
 /// A suggested snooze less than this far off isn't worth one (snooze.ts `WORTH`).
-const SNOOZE_WORTH_MS: i64 = 5 * 60 * 1000;
+pub(crate) const SNOOZE_WORTH_MS: i64 = 5 * 60 * 1000;
 
 /// The longest a snooze until room runs, from the refusal, where the limit doesn't say when it
 /// lifts (snooze.ts `ROOM_LONGEST`): as long as its Mac counts a refusal as word that the account
@@ -1189,6 +1201,38 @@ pub struct MovedTo {
     /// The same with the copy's title, as the Mac's chip's tooltip says it: "Moved to “Fix the
     /// header” on work".
     pub says: String,
+}
+
+impl MovedTo {
+    /// The copy `to` on the Mac `device` names.
+    fn of(device: &str, to: &Session) -> MovedTo {
+        MovedTo {
+            key: remote_key(device, &to.key),
+            account: to.account.clone(),
+            words: format!("Moved to {}", to.account),
+            says: format!("Moved to \u{201c}{}\u{201d} on {}", to.title, to.account),
+        }
+    }
+}
+
+/// Where a session came from, as its Mac's session panel says it (lineage.ts `lineageOf`): the
+/// session whose helper it is, where its Mac lists that one (`Helper::parent`, which a Mac of 0.35
+/// or later follows to the copy that session moved to, so a helper's line goes there rather than
+/// to the original left behind); else its origin. A PR's automatic review goes by its origin.
+fn origin_of(s: &Session, by_key: &std::collections::HashMap<&str, &Session>, device: &str) -> Option<SessionOrigin> {
+    let parent = s.helper.as_ref().filter(|h| h.pr.is_none()).and_then(|h| h.parent.as_deref()).and_then(|k| by_key.get(k));
+    if let Some(p) = parent {
+        return Some(SessionOrigin { key: remote_key(device, &p.key), title: Some(p.title.clone()), words: format!("{} \u{201c}{}\u{201d}", Kin::Helper.word(), p.title) });
+    }
+    let o = s.origin.as_ref()?;
+    let from = by_key.get(o.key.as_str()).copied();
+    // One its Mac no longer lists goes by the keys.
+    let kin = from.map_or_else(|| Kin::of_key(o.how, &o.key, &s.key), |f| Kin::of(o.how, f, s));
+    let words = match from {
+        Some(f) => format!("{} \u{201c}{}\u{201d}", kin.word(), f.title),
+        None => format!("{} another session", kin.word()),
+    };
+    Some(SessionOrigin { key: remote_key(device, &o.key), title: from.map(|f| f.title.clone()), words })
 }
 
 /// Where each session that moved to another account on a Mac went, by its key there: the copy
@@ -1855,22 +1899,11 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 sides: matches!(s.harness, Harness::Claude | Harness::Codex | Harness::Antigravity),
                 renames: renames(s),
                 name: s.name.clone(),
-                origin: s.origin.as_ref().map(|o| {
-                    let from = by_key.get(o.key.as_str()).copied();
-                    // One its Mac no longer lists goes by the keys.
-                    let kin = from.map_or_else(|| Kin::of_key(o.how, &o.key, &s.key), |f| Kin::of(o.how, f, s));
-                    let words = match from {
-                        Some(f) => format!("{} \u{201c}{}\u{201d}", kin.word(), f.title),
-                        None => format!("{} another session", kin.word()),
-                    };
-                    SessionOrigin { key: remote_key(&d.short, &o.key), title: from.map(|f| f.title.clone()), words }
-                }),
-                moved_to: moved.get(s.key.as_str()).map(|to| MovedTo {
-                    key: remote_key(&d.short, &to.key),
-                    account: to.account.clone(),
-                    words: format!("Moved to {}", to.account),
-                    says: format!("Moved to \u{201c}{}\u{201d} on {}", to.title, to.account),
-                }),
+                origin: origin_of(s, &by_key, &d.short),
+                moved_to: moved.get(s.key.as_str()).map(|to| MovedTo::of(&d.short, to)),
+                goes_on_as: s.moved_to.as_deref().and_then(|k| by_key.get(k)).map(|to| MovedTo::of(&d.short, to)),
+                // One that goes on as its copy takes no new turn here.
+                account_limit: limits::account_limit_note(s, status, snoozed_until.is_some(), &replica.lanes, &replica.usage, now).filter(|_| s.moved_to.is_none()),
                 peers: talk.0,
                 chatter: talk.1,
                 queues_switches: s.hosted && builds_since(&d.app, QUEUES_SWITCHES_SINCE),
@@ -2112,15 +2145,19 @@ const CARRY_ON_LIMIT: &str = "Your last turn stopped at your account's usage lim
 /// What a usage limit that stopped a session comes to (`LimitNote`), while it isn't working.
 /// `moves` says its Mac moves it to another account: any session on a Mac of 0.33 or later, which
 /// hands one off to another provider where its own has no account with room (start.rs
-/// `limit_moves`), and only Claude Code's on one before (its harness.ts `MOVES_ACCOUNTS`).
+/// `limit_moves`), and only Claude Code's on one before (its harness.ts `MOVES_ACCOUNTS`). One its
+/// Mac says moved on as a copy (`Session::moved_to`) moves no further, as its Mac offers it no
+/// move, and takes nothing sent here, so it's told nothing of room, nor to send it something, and
+/// has no Carry on.
 fn limit_note(s: &Session, status: Status, moves: bool, now: i64) -> Option<LimitNote> {
     let limit = s.limit.as_ref().filter(|_| status != Status::Working)?;
     let lifted = limit.resets_at.is_some_and(|t| t <= now);
-    let (says, says_alone) = limit_words(&s.account, limit, moves, now);
+    let moved_on = s.moved_to.is_some();
+    let (says, says_alone) = limit_words(&s.account, limit, moves && !moved_on, now);
     Some(LimitNote {
+        says_alone: if moved_on { says.clone() } else { says_alone },
         says,
-        says_alone,
-        button: (lifted && !s.archived).then(|| "Carry on".to_string()),
+        button: (lifted && !s.archived && !moved_on).then(|| "Carry on".to_string()),
         message: CARRY_ON_LIMIT.to_string(),
         lifts_at: limit.resets_at.filter(|t| *t > now),
         at: limit.at,
@@ -2133,12 +2170,7 @@ fn limit_note(s: &Session, status: Status, moves: bool, now: i64) -> Option<Limi
 /// that account is made on the Mac, which opens a terminal there.
 fn limit_words(account: &str, limit: &SessionLimit, moves: bool, now: i64) -> (String, String) {
     let lifted = limit.resets_at.is_some_and(|t| t <= now);
-    let name = match limit.meter.as_deref() {
-        Some("session") => "5-hour limit".to_string(),
-        Some("week") => "weekly limit".to_string(),
-        Some(m) if m.starts_with("model:") => format!("weekly {} limit", &m["model:".len()..]),
-        _ => "usage limit".to_string(),
-    };
+    let name = limit_name(limit.meter.as_deref());
     let spent = if limit.spend_capped { ", with no extra usage to carry it" } else { "" };
     let then = if limit.continues { ", and Codealong tells it to carry on then" } else { "" };
     let stopped = format!("It stopped at {account}\u{2019}s {name}{spent}.");
@@ -2157,6 +2189,17 @@ fn limit_words(account: &str, limit: &SessionLimit, moves: bool, now: i64) -> (S
     };
     let words = format!("{stopped}{when}{room}");
     (words.clone(), words)
+}
+
+/// A limit in words, by its meter's key (lanes.ts `limitName`): `session` is the 5-hour limit,
+/// `model:Opus` Opus's own week.
+pub(crate) fn limit_name(meter: Option<&str>) -> String {
+    match meter {
+        Some("session") => "5-hour limit".to_string(),
+        Some("week") => "weekly limit".to_string(),
+        Some(m) if m.starts_with("model:") => format!("weekly {} limit", &m["model:".len()..]),
+        _ => "usage limit".to_string(),
+    }
 }
 
 /// Projects lined up across Macs, as a Mac lines another device's worktrees up with its own
@@ -4442,6 +4485,16 @@ mod tests {
         assert_eq!(limit_note(&unsaid, Status::Unread, true, 9_000).and_then(|n| n.button), None);
         assert_eq!(limit_note(&Session { archived: true, ..stopped.clone() }, Status::Unread, true, 9_000).and_then(|n| n.button), None);
         assert_eq!(limit_note(&stopped, Status::Working, true, 9_000), None);
+        // One that moved on as a copy is told nothing to do here: no room, no send, no button.
+        let moved = Session { moved_to: Some("codex:codex:copy".into()), limit: Some(SessionLimit { move_to: Some("work".into()), ..limit_of(&stopped) }), ..stopped.clone() };
+        let gone = limit_note(&moved, Status::Unread, true, 9_000).unwrap();
+        assert_eq!((gone.says.as_str(), gone.says_alone.as_str(), gone.button), ("It stopped at claude\u{2019}s 5-hour limit. It has lifted since.", "It stopped at claude\u{2019}s 5-hour limit. It has lifted since.", None));
+        let waiting = limit_note(&moved, Status::Unread, true, 1_000).unwrap();
+        assert!(!waiting.says_alone.contains("has room"), "{}", waiting.says_alone);
+    }
+
+    fn limit_of(s: &Session) -> SessionLimit {
+        s.limit.clone().unwrap()
     }
 
     #[test]
@@ -5461,6 +5514,8 @@ mod order_tests {
             name: None,
             origin: None,
             moved_to: None,
+            goes_on_as: None,
+            account_limit: None,
             peers: Vec::new(),
             chatter: None,
             queues_switches: false,
@@ -6351,6 +6406,52 @@ mod order_tests {
         assert_eq!(came("lost-start"), Some("Started by another session"));
         // Another harness's is a move too, even under an account of the same name.
         assert_eq!(came("handed"), Some("Moved from another session"));
+        // A Mac before 0.35 says nothing of where one goes on, so its box stays its own.
+        assert!(rows.iter().all(|r| r.goes_on_as.is_none()));
+    }
+
+    #[test]
+    fn a_session_its_mac_says_moved_goes_on_as_its_copy_and_its_helpers_follow_it() {
+        use codealong_peer::client::Device;
+        use codealong_peer::feed::Replica;
+        use codealong_peer::model::{Helper, SessionOrigin as Origin};
+        let mac = Device { key: "m".into(), short: "m".into(), name: "Mac".into(), online: true, since: None, last_seen: None, remote_control: true, app: "0.35.0".into(), loading: false, linked_back: true };
+        let from = |key: &str, how: OriginHow| Some(Origin { key: key.into(), how });
+        let helper = |parent: &str, pr: Option<&str>| Some(Helper { parent: Some(parent.into()), pr: pr.map(str::to_string), ..Helper::default() });
+        let mut lane = codealong_peer::model::Lane::new("/src/app", "App", "app");
+        lane.sessions = vec![
+            // Moved from claude to codex, which its Mac says; one handed off and kept open isn't.
+            Session { archived: true, title: "Lead the docs".into(), moved_to: Some("codex:codex:copy".into()), ..Session::new(Harness::Claude, "claude", "lead") },
+            Session { live: true, title: "Lead the docs".into(), origin: from("claude:claude:lead", OriginHow::Fork), ..Session::new(Harness::Codex, "codex", "copy") },
+            Session { title: "Kept open".into(), ..Session::new(Harness::Claude, "claude", "kept") },
+            Session { origin: from("claude:claude:kept", OriginHow::Fork), ..Session::new(Harness::Codex, "codex", "kept-copy") },
+            // Its Mac names a copy it no longer lists: nothing to go on as here.
+            Session { moved_to: Some("codex:codex:gone".into()), ..Session::new(Harness::Claude, "claude", "lost") },
+            // Helpers the lead started before it moved: their Mac follows the move.
+            Session { title: "Write the guide".into(), origin: from("claude:claude:lead", OriginHow::Started), helper: helper("codex:codex:copy", None), ..Session::new(Harness::Claude, "claude", "helper") },
+            // One forked from an earlier helper is still the lead's.
+            Session { origin: from("claude:claude:helper", OriginHow::Fork), helper: helper("codex:codex:copy", None), ..Session::new(Harness::Claude, "claude", "forked-helper") },
+            // A PR's automatic review goes by where it came from.
+            Session { origin: from("claude:claude:lead", OriginHow::Started), helper: helper("codex:codex:copy", Some("northwind/app#7")), ..Session::new(Harness::Claude, "claude", "review") },
+            // A parent its Mac no longer lists: by its origin, as before.
+            Session { origin: from("claude:claude:lead", OriginHow::Started), helper: helper("claude:claude:elsewhere", None), ..Session::new(Harness::Claude, "claude", "orphan-helper") },
+            // A helper with no origin written down still says whose it is.
+            Session { helper: helper("codex:codex:copy", None), ..Session::new(Harness::Claude, "claude", "unwritten") },
+        ];
+        let replica = Replica { lanes: vec![lane], ..Replica::default() };
+        let rows = session_rows(&[(mac, &replica)], true);
+        let row = |id: &str| rows.iter().find(|r| r.key.ends_with(&format!(":{id}"))).unwrap();
+        let goes = |id: &str| row(id).goes_on_as.as_ref().map(|m| (m.key.as_str(), m.words.as_str(), m.says.as_str()));
+        assert_eq!(goes("lead"), Some(("@m:codex:codex:copy", "Moved to codex", "Moved to “Lead the docs” on codex")));
+        assert_eq!(goes("copy"), None);
+        assert_eq!(goes("kept"), None);
+        assert_eq!(goes("lost"), None);
+        let came = |id: &str| row(id).origin.as_ref().map(|o| (o.key.as_str(), o.words.as_str()));
+        assert_eq!(came("helper"), Some(("@m:codex:codex:copy", "Helper of “Lead the docs”")));
+        assert_eq!(came("forked-helper"), Some(("@m:codex:codex:copy", "Helper of “Lead the docs”")));
+        assert_eq!(came("unwritten"), Some(("@m:codex:codex:copy", "Helper of “Lead the docs”")));
+        assert_eq!(came("review"), Some(("@m:claude:claude:lead", "Started by “Lead the docs”")));
+        assert_eq!(came("orphan-helper"), Some(("@m:claude:claude:lead", "Started by “Lead the docs”")));
     }
 
     #[test]

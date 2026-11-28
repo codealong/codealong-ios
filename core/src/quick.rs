@@ -1357,6 +1357,8 @@ pub(crate) mod tests {
             name: None,
             origin: None,
             moved_to: None,
+            goes_on_as: None,
+            account_limit: None,
             peers: Vec::new(),
             chatter: None,
             queues_switches: false,

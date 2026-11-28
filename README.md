@@ -81,7 +81,11 @@ another session's message is a card that names who sent it, as a link to that se
 first lines (one its own side conversation sent links to that side conversation). A session moved
 to another account on its Mac, or handed off to another provider's, says *Moved to* and the
 account on its row, and at the end of its
-conversation a tap goes to the copy that carries it on, which says what it was moved from. One
+conversation a tap goes to the copy that carries it on, which says what it was moved from. Where its
+Mac (0.35 or later) says it goes on as that copy, which it no longer sends to or resumes, its page has
+no box of its own: a line in its place says where it went, and *Open it* opens the copy, whose box is
+the one to write in. A helper says whose helper it is, the session that started it, and once that
+session has moved, its copy. One
 that's been going back and forth with another session lately (four messages or more, the turn
 passing between them twice, in two hours) says how many on its row (↔ 6), and its menu lists the
 sessions it has been messaging and the others that own its PRs (each once, with all it owns: "#12
@@ -99,7 +103,10 @@ the question, to answer there, and one whose helper waits in its terminal there 
 Mac. One whose last turn ended on an API error says so under its
 conversation, in its harness's words, with *Try again* beside it; one stopped at its account's
 usage limit says which, when it lifts and whether another account has room (another provider's
-too, from a Mac of 0.33 or later), and once it has lifted,
+too, from a Mac of 0.33 or later); one whose own turn didn't stop there, but whose account is at a
+limit its model spends (another session's turn was refused at it, or its usage reads it full with
+no extra usage to carry a turn past it), says so before you send it a turn that would only stop
+there, with *Snooze until it lifts* beside it; and once a limit has lifted,
 *Carry on* beside it tells it to carry on in one tap, without waiting for its Mac to (where it
 does) or typing it; one its
 account's sign-in was turned down for says so too, and whether Codealong carries it on once the
