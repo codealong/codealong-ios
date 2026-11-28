@@ -220,10 +220,8 @@ final class Store {
         tick &+= 1
         if snap.devices != devices { devices = snap.devices }
         let waits = snap.sessions != sessions || snap.prs != prs
-        let listChanged = snap.sessions != sessions
-        if listChanged { sessions = snap.sessions }
+        if snap.sessions != sessions { sessions = snap.sessions }
         readOthers()
-        carryMovedDrafts(listChanged: listChanged)
         settleRemovals()
         if snap.prs != prs {
             prs = snap.prs
@@ -1150,7 +1148,7 @@ final class Store {
         Task {
             do {
                 let reference = try await keep(bytes, on: mac)
-                // Under the key it went to meanwhile, if it went (`carryMovedDrafts`).
+                // Under the key it went to meanwhile, if it went (`carryDraft`).
                 let now = attachedKey(of: image.id) ?? key
                 if let at = attached[now]?.firstIndex(where: { $0.id == image.id }) {
                     attached[now]?[at].state = .kept(reference: reference)
@@ -1172,25 +1170,21 @@ final class Store {
         if attached[key]?.isEmpty == true { attached[key] = nil }
     }
 
-    /// What's written to a session its Mac says moved on as a copy (`SessionRow.goesOnAs`), and the
-    /// images with it, go into the copy's box as they are, where nothing is written or attached
-    /// there yet: its own box has given way to the line that opens the copy, on the same Mac, which
-    /// keeps the images for either. Where something is, both stay as they are, so nothing joins
-    /// onto what you wrote there (a `!` command, say), and the moved page offers its words to copy.
-    /// At every change, for whichever page wrote them, so a send turned away or a photo read after
-    /// the move goes too; the Macs are asked for one the list doesn't have only when it changed,
-    /// as it does when a session moves.
-    private func carryMovedDrafts(listChanged: Bool) {
-        let keys = Set(drafts.keys).union(attached.keys).filter { !$0.hasPrefix(PrView.prefix) }
-        guard !keys.isEmpty else { return }
-        let known = keys.compactMap { row($0) }
-        let missing = listChanged ? keys.filter { row($0) == nil } : []
-        let read = missing.isEmpty ? [] : core?.sessions(keys: Array(missing)) ?? []
-        for r in known + read {
-            guard let to = r.goesOnAs?.key, to != r.key, drafts[to] == nil, attached[to] == nil else { continue }
-            if let words = drafts.removeValue(forKey: r.key) { drafts[to] = words }
-            if let images = attached.removeValue(forKey: r.key) { attached[to] = images }
-        }
+    /// Nothing is written or attached in a session's box.
+    func boxEmpty(_ key: String) -> Bool {
+        drafts[key] == nil && attached[key] == nil
+    }
+
+    /// Takes what's written to a session its Mac says moved on as a copy (`SessionRow.goesOnAs`),
+    /// and the images with it, into the copy's box as they are, as its page opens the copy, where
+    /// that box is empty: its own box has given way to the line that opens the copy, on the same
+    /// Mac, which keeps the images for either. Where it isn't, nothing moves, so nothing joins onto
+    /// what's written there (a `!` command, say), and the page offers its words to copy. Only as
+    /// you open it, so nothing comes back into the copy's box after.
+    func carryDraft(from: String, to: String) {
+        guard boxEmpty(to) else { return }
+        if let words = drafts.removeValue(forKey: from) { drafts[to] = words }
+        if let images = attached.removeValue(forKey: from) { attached[to] = images }
     }
 
     /// Keeps the images held for a new session's prompt on the Mac it starts on, answering how

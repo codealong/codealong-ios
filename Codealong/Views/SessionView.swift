@@ -821,10 +821,14 @@ struct SessionView: View {
             }
             // It goes on as its copy, which its Mac sends to in its place: the copy's box is what
             // you write in, over this page, as the Mac's panel gives it the copy's box.
-            // What was written here goes into the copy's box, where nothing is written there yet
-            // (`Store.carryMovedDrafts`); else it's offered to copy.
+            // What was written here goes into the copy's box as it opens, where nothing is written
+            // there yet (`Store.carryDraft`); else it stays, offered to copy.
             if let copy = row?.goesOnAs {
-                MovedNote(copy: copy, written: draft.isEmpty ? nil : draft) { follow(copy.key) }
+                let left = !draft.isEmpty || !attached.isEmpty
+                MovedNote(copy: copy, written: left ? draft : nil, goesWith: store.boxEmpty(copy.key)) {
+                    store.carryDraft(from: key, to: copy.key)
+                    follow(copy.key)
+                }
             } else {
                 ReplyBox(open: replyOpen, size: sendSize, attach: canAttach ? { picking = true } : nil, attachDisabled: sending) {
                     // The images going with the reply sit in the box, over what's written.
@@ -2817,9 +2821,11 @@ private struct AccountLimitLine: View {
 /// gives it the copy's box under a line saying so (MovedNote.tsx).
 private struct MovedNote: View {
     let copy: MovedTo
-    /// What was written here and not sent, where the copy's box had its own: offered to copy, as
-    /// nothing joins it onto what's there.
+    /// What's written here and not sent (empty for images alone), none for nothing.
     var written: String?
+    /// The copy's box is empty, so what's here goes into it as it opens; else it stays here,
+    /// offered to copy, as nothing joins it onto what's there.
+    var goesWith = true
     /// Opens the copy over this page; none on a glance.
     let open: (() -> Void)?
 
@@ -2827,9 +2833,19 @@ private struct MovedNote: View {
         VStack(alignment: .leading, spacing: 6) {
             line
             if let written {
-                Button("Copy what you wrote here", systemImage: "doc.on.doc") { UIPasteboard.general.string = written }
-                    .font(.footnote)
-                    .accessibilityHint("Its box has its own words, so these stay here")
+                if goesWith {
+                    Text("What you wrote here goes into its box as it opens.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Its box has words of its own, so what you wrote here stays here.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    if !written.isEmpty {
+                        Button("Copy what you wrote here", systemImage: "doc.on.doc") { UIPasteboard.general.string = written }
+                            .font(.footnote)
+                    }
+                }
             }
         }
     }
