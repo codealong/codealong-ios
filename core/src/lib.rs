@@ -124,22 +124,12 @@ pub struct DeviceRow {
 /// choosing where to start something, as the Mac's machine menu says it (machineLoad.ts, LoadTag.tsx).
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
 pub struct MachineLoad {
-    pub level: LoadWord,
-    /// In a word: "Calm", "Busy" or "Strained".
+    /// In a word, from the most room to the least (`LoadLevel`): "Calm" (CPUs to spare and memory
+    /// enough), "Busy" (every CPU busy, or memory getting short, but keeping up) or "Strained" (far
+    /// more work than CPUs, or memory critical: everything there waits, a new session too).
     pub word: String,
     /// Its numbers, as the Mac's tooltip says them: "load 2.5 per CPU of 10, 40% of memory free".
     pub numbers: String,
-}
-
-/// A Mac's load in a word, from the most room to the least (`LoadLevel`).
-#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LoadWord {
-    /// CPUs to spare and memory enough: a session started there gets going at once.
-    Calm,
-    /// Every CPU busy, or memory getting short, but keeping up.
-    Busy,
-    /// Far more work than CPUs, or memory critical: everything there waits, a new session too.
-    Strained,
 }
 
 /// Whether a Mac is connected and a feed has come since the connection opened (its first always
@@ -155,10 +145,10 @@ fn fed_since_connected(d: &codealong_peer::client::Device) -> bool {
 fn machine_load(load: Option<&codealong_peer::model::Load>, current: bool) -> Option<MachineLoad> {
     use codealong_peer::model::LoadLevel;
     let l = load.filter(|_| current)?;
-    let (level, word) = match l.level {
-        LoadLevel::Calm => (LoadWord::Calm, "Calm"),
-        LoadLevel::Busy => (LoadWord::Busy, "Busy"),
-        LoadLevel::Strained => (LoadWord::Strained, "Strained"),
+    let word = match l.level {
+        LoadLevel::Calm => "Calm",
+        LoadLevel::Busy => "Busy",
+        LoadLevel::Strained => "Strained",
     };
     let mut parts = Vec::new();
     if let Some(per) = l.per_cpu {
@@ -170,7 +160,7 @@ fn machine_load(load: Option<&codealong_peer::model::Load>, current: bool) -> Op
     if l.memory_short {
         parts.push("memory getting short".to_string());
     }
-    Some(MachineLoad { level, word: word.into(), numbers: parts.join(", ") })
+    Some(MachineLoad { word: word.into(), numbers: parts.join(", ") })
 }
 
 /// The inbox's sections, in order, as the Mac's Sessions view has them. What waits on you is the
@@ -4334,7 +4324,7 @@ mod tests {
         let strained = Load { level: LoadLevel::Strained, per_cpu: Some(2.5), cpus: 10, memory_free: Some(40), memory_short: true };
         assert_eq!(
             machine_load(Some(&strained), true),
-            Some(MachineLoad { level: LoadWord::Strained, word: "Strained".into(), numbers: "load 2.5 per CPU of 10, 40% of memory free, memory getting short".into() })
+            Some(MachineLoad { word: "Strained".into(), numbers: "load 2.5 per CPU of 10, 40% of memory free, memory getting short".into() })
         );
         // Windows keeps no load average; a Mac away, or back but not yet heard from, says nothing
         // of now.
