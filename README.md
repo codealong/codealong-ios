@@ -333,8 +333,9 @@ sessions here* on that Mac as well.
   it. It reads conversations by asking the Mac they're on; transcripts stay on that Mac.
 - **Your Macs decide.** Acting on a session needs remote control turned on at that Mac, and each
   request is logged there.
-- **Connected only while it's open.** The app connects when you open it and disconnects when you
-  leave it.
+- **Connected while it's open, and briefly after.** The app connects when you open it and disconnects 20
+  seconds after you leave it (sooner when iOS wants that time back), so it's up to date at once
+  when you come straight back.
 
 ## FAQ
 
@@ -371,7 +372,7 @@ so the two can't drift apart.
 ```
 Codealong/          SwiftUI: the quick search, a session, the Macs sheet, the store
 core/               Rust: a thin layer over codealong-peer's client, exported with UniFFI
-scripts/            build-core.sh (core → XCFramework + Swift bindings), build.sh, run.sh, install-device.sh
+scripts/            build-core.sh (core → XCFramework + Swift bindings), build.sh, run.sh, install-device.sh, make-sounds.swift
 project.yml         XcodeGen's spec; Codealong.xcodeproj is generated from it
 ```
 
