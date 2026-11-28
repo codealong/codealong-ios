@@ -2639,9 +2639,6 @@ pub struct Pending {
     pub message: bool,
     /// Questions it asks you: answered with your picks (`answer_questions`), or declined.
     pub questions: Vec<Question>,
-    /// What the session wrote with this isn't in its conversation yet, only where it runs: its
-    /// harness writes it once it's answered.
-    pub unwritten: bool,
     /// It's its harness asking, as the session exits, whether to keep the worktree it made for it
     /// (`Pending::exiting`): its choices are all it takes, words of your own are refused, and
     /// declining calls the exit off, leaving it at its prompt. False from Macs before 2026-11-10,
@@ -2686,7 +2683,6 @@ fn pending_of(p: api::Pending, hosted: bool, named: Named) -> Pending {
         no_once: p.no_once,
         plan: p.plan,
         message: p.message,
-        unwritten: p.unwritten,
         exiting: p.exiting,
         dialog: p.dialog,
     }
@@ -4028,7 +4024,6 @@ mod tests {
             plan: false,
             message: false,
             questions: qs.iter().map(|q| question_of(q, None)).collect(),
-            unwritten: false,
             exiting: false,
             dialog: false,
             form: false,
@@ -4072,7 +4067,6 @@ mod tests {
             plan: false,
             message: false,
             questions: vec![],
-            unwritten: false,
             exiting: false,
             dialog: false,
             form: false,
