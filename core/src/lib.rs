@@ -834,8 +834,6 @@ pub struct WaitsOn {
     /// The command as its Mac sent it, its lines and spacing as written, to copy: one line of it
     /// would be another command.
     pub written: Option<String>,
-    /// It runs in a terminal of yours, not in the background of the session's turn.
-    pub in_terminal: bool,
     /// What each of the agents its turn left running in the background is for, oldest first,
     /// where it waits on several (`Session::agents`), which the Mac's line counts and its hover
     /// names; "" left out. None for one, which its Mac's line names itself.
@@ -872,17 +870,17 @@ fn waits_on(s: &Session) -> Option<WaitsOn> {
     let written = |c: &str| Some(c.trim().to_string()).filter(|c| !c.is_empty());
     if let Some(run) = &s.running {
         let (lead, then) = if run.yours { (format!("Your command in {}", run.terminal), Some(format!("What it prints goes to {} when it ends", s.account))) } else { (format!("Running in {}", run.terminal), None) };
-        return Some(WaitsOn { lead, command: one_line(&run.command), written: written(&run.command), in_terminal: true, agents: Vec::new(), then });
+        return Some(WaitsOn { lead, command: one_line(&run.command), written: written(&run.command), agents: Vec::new(), then });
     }
     if !s.agents.is_empty() {
         let lead = s.excerpt.clone().filter(|e| !e.trim().is_empty()).unwrap_or_else(|| "Waiting on its background agents".into());
         let agents = if s.agents.len() < 2 { Vec::new() } else { s.agents.iter().map(|a| a.trim().to_string()).filter(|a| !a.is_empty()).collect() };
-        return Some(WaitsOn { lead, command: None, written: None, in_terminal: false, agents, then: None });
+        return Some(WaitsOn { lead, command: None, written: None, agents, then: None });
     }
     let background = s.background.as_deref()?;
     let command = one_line(background);
     let lead = if command.is_some() { "Waiting on" } else { "Waiting on a command in the background" };
-    Some(WaitsOn { lead: lead.into(), command, written: written(background), in_terminal: false, agents: Vec::new(), then: None })
+    Some(WaitsOn { lead: lead.into(), command, written: written(background), agents: Vec::new(), then: None })
 }
 
 /// A session moved to the top of what waits on you (`Session::raised`).
@@ -5712,20 +5710,20 @@ mod order_tests {
         let both = Session { running: Some(run), background: Some("make watch".into()), ..working("both") };
         assert_eq!(
             waits_on(&both),
-            Some(WaitsOn { lead: "Running in Ghostty".into(), command: Some("echo first echo 'a b'".into()), written: Some("echo first\n  echo 'a  b'".into()), in_terminal: true, agents: vec![], then: None })
+            Some(WaitsOn { lead: "Running in Ghostty".into(), command: Some("echo first echo 'a b'".into()), written: Some("echo first\n  echo 'a  b'".into()), agents: vec![], then: None })
         );
         // A command you ran for it says it's yours, and where what it prints goes.
         let yours = Session { running: Some(RunningIn { terminal: "Codealong".into(), command: "npm test".into(), yours: true }), ..working("yours") };
         assert_eq!(
             waits_on(&yours),
-            Some(WaitsOn { lead: "Your command in Codealong".into(), command: Some("npm test".into()), written: Some("npm test".into()), in_terminal: true, agents: vec![], then: Some("What it prints goes to claude when it ends".into()) })
+            Some(WaitsOn { lead: "Your command in Codealong".into(), command: Some("npm test".into()), written: Some("npm test".into()), agents: vec![], then: Some("What it prints goes to claude when it ends".into()) })
         );
         let background = Session { background: Some("make watch".into()), ..working("bg") };
-        assert_eq!(waits_on(&background), Some(WaitsOn { lead: "Waiting on".into(), command: Some("make watch".into()), written: Some("make watch".into()), in_terminal: false, agents: vec![], then: None }));
+        assert_eq!(waits_on(&background), Some(WaitsOn { lead: "Waiting on".into(), command: Some("make watch".into()), written: Some("make watch".into()), agents: vec![], then: None }));
         // Agents it left running in the background, in its Mac's words for them, what each is
         // for listed where there are several; ahead of a command, as the Mac's thread has them.
         let agents = Session { agents: vec!["Review the diff".into(), " ".into(), "Run the tests".into()], excerpt: Some("Waiting on 3 background agents".into()), ..background.clone() };
-        assert_eq!(waits_on(&agents), Some(WaitsOn { lead: "Waiting on 3 background agents".into(), command: None, written: None, in_terminal: false, agents: vec!["Review the diff".into(), "Run the tests".into()], then: None }));
+        assert_eq!(waits_on(&agents), Some(WaitsOn { lead: "Waiting on 3 background agents".into(), command: None, written: None, agents: vec!["Review the diff".into(), "Run the tests".into()], then: None }));
         assert_eq!(waits_on(&Session { excerpt: None, ..agents.clone() }).map(|w| w.lead), Some("Waiting on its background agents".into()));
         // One, its Mac's line names.
         let one = Session { agents: vec!["Review the diff".into()], excerpt: Some("Waiting on a background agent · Review the diff".into()), ..agents };
