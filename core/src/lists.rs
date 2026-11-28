@@ -679,7 +679,7 @@ mod tests {
     fn orchestrators_lead_what_they_keep_watch_over_and_go_among_nothing() {
         let watching = |key: &str, project: Option<&str>| {
             let mut s = in_worktree(key, crate::ELSEWHERE, "chats", Status::Idle, NOW - HOUR);
-            s.orchestrator = Some(crate::OrchestratorOf { project: project.map(str::to_string), words: String::new(), paused: false, looked_at: None, header: String::new() });
+            s.orchestrator = Some(crate::OrchestratorOf { project: project.map(str::to_string), words: String::new(), header: String::new() });
             s
         };
         let all = watching("all", None);
@@ -713,7 +713,6 @@ mod tests {
         assert_eq!(of(Some("Northwind"), false).words, "Keeps watch over Northwind");
         assert_eq!(of(None, false).words, "Keeps watch over All projects");
         assert_eq!(of(Some(" "), false).project, None);
-        assert!(of(None, true).paused);
         assert_eq!(of(None, true).words, "Paused: keeps watch over nothing in All projects");
         // Its page's line says when it last looked, as a live time, or that it's off; before its
         // first look, and from Macs that don't say, only what it keeps watch over.

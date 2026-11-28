@@ -447,15 +447,12 @@ pub struct OrchestratorOf {
     /// from a chat of its own: "Keeps watch over Northwind", "Keeps watch over All projects", or
     /// that it's paused.
     pub words: String,
-    /// It's paused: it keeps watch over nothing until it's started again on its Mac.
-    pub paused: bool,
-    /// When it last looked: its latest run that went to its session. None before its first, and
-    /// from Macs before 2026-11-17.
-    pub looked_at: Option<i64>,
     /// What its session's page says under its title, as the Mac's header says it over its title
-    /// (SessionHeader.tsx `OrchestratorOf`): when it last looked, as a live time (`{ago:<ms>}`),
-    /// or that it's off, then "Orchestrator for Northwind". The time leads, since the phone's line
-    /// is short and the title most often names what it keeps watch over already.
+    /// (SessionHeader.tsx `OrchestratorOf`): when it last looked (its latest run that went to its
+    /// session), as a live time (`{ago:<ms>}`), or that it's off, then "Orchestrator for
+    /// Northwind". The time leads, since the phone's line is short and the title most often names
+    /// what it keeps watch over already; before its first look, and from Macs before 2026-11-17,
+    /// which don't say when it looked, it has no time.
     pub header: String,
 }
 
@@ -473,7 +470,7 @@ pub(crate) fn orchestrator_of(o: &codealong_peer::model::Orchestrator, here: imp
         Some(when) => format!("{when} \u{b7} Orchestrator for {over}"),
         None => format!("Orchestrator for {over}"),
     };
-    OrchestratorOf { project, words, paused: o.paused, looked_at: o.looked_at, header }
+    OrchestratorOf { project, words, header }
 }
 
 /// What a session's agent left running in the background (`Session::tasks`), as the Mac's session
