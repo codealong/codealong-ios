@@ -13,8 +13,6 @@ use crate::{Core, CoreError};
 pub struct PrDetail {
     /// The description as written, in Markdown.
     pub body: String,
-    /// `MERGEABLE`, `CONFLICTING` or `UNKNOWN`.
-    pub mergeable: Option<String>,
     pub commits: u64,
     /// Each reviewer's standing review.
     pub reviews: Vec<PrReview>,
@@ -217,7 +215,6 @@ impl Core {
         let d = self.client.pr_detail(&device, &repo, number).map_err(CoreError::Failed)?;
         Ok(PrDetail {
             body: readable(&d.body),
-            mergeable: d.mergeable,
             commits: d.commits,
             reviews: d.reviews.into_iter().map(|r| PrReview { author: r.author, state: r.state, at: r.at, mine: r.mine }).collect(),
             requested: d.requested,
