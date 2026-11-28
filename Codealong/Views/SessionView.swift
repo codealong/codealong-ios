@@ -797,8 +797,8 @@ struct SessionView: View {
             }
             OutcomeLines(outcomes: $outcomes)
             // Not while you write here, or your own answer to a question: the room is theirs, and
-            // what's next waits.
-            if let onward, draft.isEmpty && attached.isEmpty && !writingAnswer {
+            // what's next waits. A moved page has no box, so what it keeps written holds nothing up.
+            if let onward, movedOn || (draft.isEmpty && attached.isEmpty), !writingAnswer {
                 GoOnBar(next: onward, left: after.count, going: going(swipeDoes), offers: SwipeOn.offers(row: row, pending: pending, acted: replied), pickTime: pickSnooze) { goOn(to: onward, doing: $0 ?? swipeDoes) }
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -4108,7 +4108,7 @@ struct SessionGlance: View {
                 BackgroundLine(background: commands) {}
             }
             OutcomeLines(outcomes: .constant(outcome.map { [$0] } ?? []), fading: false)
-            if let next = onward, !open {
+            if let next = onward, movedOn || !open {
                 let replied = !(store.outgoing[key] ?? []).isEmpty
                 GoOnBar(next: next, left: after.count, going: Going.of(SwipeOn.swipe(row: row), row: row, pending: pending, acted: replied), offers: SwipeOn.offers(row: row, pending: pending, acted: replied)) { _ in }
             }
