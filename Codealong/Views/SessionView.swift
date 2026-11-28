@@ -400,7 +400,7 @@ struct SessionView: View {
                     // at the conversation's end.
                     ConversationRows(shown: laid.rows(items, status: row?.status ?? .idle, inCard: cardLine), open: $turnsOpen) { item in
                         if item.kind == .you {
-                            ItemView(item: item, putBack: canAct ? { putBack($0) } : nil, editFrom: canAct && item.editable && row?.edits == true ? { editing = item } : nil)
+                            ItemView(item: item, putBack: canAct && !movedOn ? { putBack($0) } : nil, editFrom: canAct && item.editable && row?.edits == true ? { editing = item } : nil)
                                 .onGeometryChange(for: PromptPlace.self) { [viewTop] geo in
                                     PromptPlace(geo.frame(in: .global), top: viewTop)
                                 } action: { place in
@@ -409,7 +409,7 @@ struct SessionView: View {
                                 .id(item.id)
                         } else {
                             // A message the session took back can go back in the box, whoever sent it.
-                            ItemView(item: item, putBack: canAct && item.withdrawn ? { putBack($0) } : nil)
+                            ItemView(item: item, putBack: canAct && item.withdrawn && !movedOn ? { putBack($0) } : nil)
                         }
                     }
                     // A reply being written, or what it works on while it only waits on a command,
@@ -429,7 +429,7 @@ struct SessionView: View {
                     // One taken out that's no longer held to say why under: its words are still
                     // yours to write again.
                     if let unheld, unheld.removing, !heldShown.contains(where: { $0.id == unheld.id }) {
-                        UnheldView(unheld: unheld, putInBox: unheld.words.map { w in { addToBox(w) } }) { self.unheld = nil }
+                        UnheldView(unheld: unheld, putInBox: movedOn ? nil : unheld.words.map { w in { addToBox(w) } }) { self.unheld = nil }
                     }
                     // Moved to another account: the conversation goes on in the copy there (on its
                     // Mac's board, or the core wouldn't name it), which opens over this page, as the
@@ -744,7 +744,7 @@ struct SessionView: View {
             if let limit = row?.limit {
                 // Snoozed from here as from its Snooze menu: it goes on to what's next, if anything.
                 // Carried on as the box sends a message, as Try again is.
-                LimitLine(note: limit, suggested: row?.suggestedSnooze, carryOn: canAct && pending == nil && !movedOn ? { carryOn(limit) } : nil, sending: store.carriedOn[key] == limit.at || !(store.outgoing[key] ?? []).isEmpty) { s in Task { await snooze(until: Date(ms: s.until), room: s.why == .room) } }
+                LimitLine(note: limit, suggested: row?.suggestedSnooze, carryOn: canAct && pending == nil && !movedOn ? { carryOn(limit) } : nil, sending: store.carriedOn[key] == limit.at || !(store.outgoing[key] ?? []).isEmpty, snoozes: online) { s in Task { await snooze(until: Date(ms: s.until), room: s.why == .room) } }
                     // Its row is read again as the limit lifts, which brings Carry on then.
                     .task(id: limit.liftsAt) {
                         guard let at = limit.liftsAt else { return }
@@ -754,7 +754,7 @@ struct SessionView: View {
             }
             if let limit = row?.accountLimit {
                 // Snoozed from here as from the Mac's line: it goes on to what's next, if anything.
-                AccountLimitLine(note: limit) { s in Task { await snooze(until: Date(ms: s.until)) } }
+                AccountLimitLine(note: limit, snoozes: online) { s in Task { await snooze(until: Date(ms: s.until)) } }
                     // Its row is read again as the limit lifts, which takes the line away then.
                     .task(id: limit.liftsAt) {
                         guard let at = limit.liftsAt else { return }
@@ -823,6 +823,9 @@ struct SessionView: View {
             // you write in, over this page, as the Mac's panel gives it the copy's box.
             if let copy = row?.goesOnAs {
                 MovedNote(copy: copy) { follow(copy.key) }
+                    // What was written here, and the images with it, go into the copy's box, which
+                    // the line opens, rather than stay in one that's gone.
+                    .onChange(of: copy.key, initial: true) { _, to in store.carryDraft(from: key, to: to) }
             } else {
                 ReplyBox(open: replyOpen, size: sendSize, attach: canAttach ? { picking = true } : nil, attachDisabled: sending) {
                     // The images going with the reply sit in the box, over what's written.
@@ -2715,6 +2718,8 @@ private struct LimitLine: View {
     /// A message to it is on its way: the button waits, so a second tap doesn't send another
     /// before its Mac says the turn is going.
     var sending = false
+    /// Its Mac is there to snooze it: the button waits for it otherwise, as its Snooze menu does.
+    var snoozes = true
     /// A still page's (one sliding in): drawn as it is now, not kept ticking.
     var now: Date?
     /// Snoozes it as the snooze offered says: until its time, or until its account has room.
@@ -2754,6 +2759,7 @@ private struct LimitLine: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .disabled(!snoozes)
                 .accessibilityHint(Snooze.timed(lifts.does ?? "", until: lifts.until, now: now))
             }
         }
@@ -2766,6 +2772,8 @@ private struct LimitLine: View {
 /// until it lifts beside it while that's worth it; its Move… is the Mac's.
 private struct AccountLimitLine: View {
     let note: AccountLimitNote
+    /// Its Mac is there to snooze it: the button waits for it otherwise, as its Snooze menu does.
+    var snoozes = true
     /// A still page's (one sliding in): drawn as it is now, not kept ticking.
     var now: Date?
     let snooze: (SuggestedSnooze) -> Void
@@ -2797,6 +2805,7 @@ private struct AccountLimitLine: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .disabled(!snoozes)
                 .accessibilityHint(Snooze.timed(offer.does ?? "", until: offer.until, now: now))
             }
         }

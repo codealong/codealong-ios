@@ -1148,19 +1148,41 @@ final class Store {
         Task {
             do {
                 let reference = try await keep(bytes, on: mac)
-                if let at = attached[key]?.firstIndex(where: { $0.id == image.id }) {
-                    attached[key]?[at].state = .kept(reference: reference)
+                // Under the key it went to meanwhile, if it went (`carryDraft`).
+                let now = attachedKey(of: image.id) ?? key
+                if let at = attached[now]?.firstIndex(where: { $0.id == image.id }) {
+                    attached[now]?[at].state = .kept(reference: reference)
                 }
             } catch {
-                detach(image.id, from: key)
+                detach(image.id, from: attachedKey(of: image.id) ?? key)
                 failed(words(error))
             }
         }
     }
 
+    /// The session whose reply an attached image is with now.
+    private func attachedKey(of id: UUID) -> String? {
+        attached.first { entry in entry.value.contains { $0.id == id } }?.key
+    }
+
     func detach(_ id: UUID, from key: String) {
         attached[key]?.removeAll { $0.id == id }
         if attached[key]?.isEmpty == true { attached[key] = nil }
+    }
+
+    /// What's written to a session that moved on as a copy, and the images with it, go into the
+    /// copy's box after what's there: its own box has given way to the line that opens the copy
+    /// (`SessionRow.goesOnAs`), on the same Mac, which keeps the images for either.
+    func carryDraft(from: String, to: String) {
+        if let words = drafts[from]?.trimmingCharacters(in: .whitespacesAndNewlines), !words.isEmpty {
+            let there = (drafts[to] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            drafts[to] = there.isEmpty ? words : there + "\n\n" + words
+        }
+        drafts[from] = nil
+        if let images = attached[from] {
+            attached[to, default: []].append(contentsOf: images)
+            attached[from] = nil
+        }
     }
 
     /// Keeps the images held for a new session's prompt on the Mac it starts on, answering how

@@ -1818,6 +1818,7 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
     for (d, replica) in feeds {
         let by_key: std::collections::HashMap<&str, &Session> = replica.lanes.iter().flat_map(|l| l.sessions.iter()).map(|s| (s.key.as_str(), s)).collect();
         let moved = moved_targets(&by_key);
+        let mut account_limits = limits::Board::new(&replica.lanes, &replica.usage, now);
         let mut seen = std::collections::HashSet::new();
         // A session shows under every lane it worked in; its own lane lists it without a
         // visitor note, so that one goes first.
@@ -1842,6 +1843,7 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
             let working_since = s.status_since.map(|t| t.max(s.last_prompt_at)).filter(|_| status == Status::Working || aside);
             let (place, place_across) = place_words(lane, project.as_deref().unwrap_or(&lane.project));
             let talk = peer_talk(&s.peers, &d.short, |k| by_key.get(k).map(|f| f.title.clone()));
+            let goes_on_as = s.moved_to.as_deref().and_then(|k| by_key.get(k)).map(|to| MovedTo::of(&d.short, to));
             let row = SessionRow {
                 key: remote_key(&d.short, &s.key),
                 device: d.key.clone(),
@@ -1900,10 +1902,12 @@ pub(crate) fn session_rows(feeds: &Feeds, every: bool) -> Vec<SessionRow> {
                 renames: renames(s),
                 name: s.name.clone(),
                 origin: origin_of(s, &by_key, &d.short),
-                moved_to: moved.get(s.key.as_str()).map(|to| MovedTo::of(&d.short, to)),
-                goes_on_as: s.moved_to.as_deref().and_then(|k| by_key.get(k)).map(|to| MovedTo::of(&d.short, to)),
+                // Where its Mac says where it went, that copy; else as its lineage reads, as the
+                // Mac's row's chip does, so the menu and the line in place of its box go to one.
+                moved_to: goes_on_as.clone().or_else(|| moved.get(s.key.as_str()).map(|to| MovedTo::of(&d.short, to))),
+                goes_on_as,
                 // One that goes on as its copy takes no new turn here.
-                account_limit: limits::account_limit_note(s, status, snoozed_until.is_some(), &replica.lanes, &replica.usage, now).filter(|_| s.moved_to.is_none()),
+                account_limit: account_limits.note(s, status, snoozed_until.is_some()).filter(|_| s.moved_to.is_none()),
                 peers: talk.0,
                 chatter: talk.1,
                 queues_switches: s.hosted && builds_since(&d.app, QUEUES_SWITCHES_SINCE),
@@ -2076,6 +2080,11 @@ fn api_error_note(s: &Session, status: Status) -> Option<ApiErrorNote> {
         None => "Its last turn ended because it couldn\u{2019}t reach its API: the machine slept, or the network dropped.".to_string(),
     };
     let continues = s.connection_lost.as_ref().is_some_and(|l| l.continues);
+    // One its Mac says moved on as a copy takes nothing sent here, and its Mac carries it on no
+    // more: it's only said what ended its turn.
+    if s.moved_to.is_some() {
+        return Some(ApiErrorNote { says: what.clone(), says_alone: what, lost: s.connection_lost.is_some(), button: None, message: TRY_AGAIN.to_string() });
+    }
     let (says, says_alone) = if continues {
         let words = format!("{what} Codealong tells it to carry on once the API can be reached again.");
         (words.clone(), words)
@@ -6421,10 +6430,15 @@ mod order_tests {
         let mut lane = codealong_peer::model::Lane::new("/src/app", "App", "app");
         lane.sessions = vec![
             // Moved from claude to codex, which its Mac says; one handed off and kept open isn't.
-            Session { archived: true, title: "Lead the docs".into(), moved_to: Some("codex:codex:copy".into()), ..Session::new(Harness::Claude, "claude", "lead") },
+            Session { archived: true, title: "Lead the docs".into(), moved_to: Some("codex:codex:copy".into()), api_error: Some(codealong_peer::model::ApiError { at: 1, said: "529 Overloaded.".into() }), ..Session::new(Harness::Claude, "claude", "lead") },
             Session { live: true, title: "Lead the docs".into(), origin: from("claude:claude:lead", OriginHow::Fork), ..Session::new(Harness::Codex, "codex", "copy") },
             Session { title: "Kept open".into(), ..Session::new(Harness::Claude, "claude", "kept") },
             Session { origin: from("claude:claude:kept", OriginHow::Fork), ..Session::new(Harness::Codex, "codex", "kept-copy") },
+            // Handed off and kept open to one account, then moved to another: the copy its Mac
+            // names goes first, though the kept one worked later.
+            Session { title: "Twice".into(), moved_to: Some("codex:codex:moved-on".into()), ..Session::new(Harness::Claude, "claude", "twice") },
+            Session { live: true, last_activity: 50, title: "Twice kept".into(), origin: from("claude:claude:twice", OriginHow::Fork), ..Session::new(Harness::Claude, "work", "kept-on") },
+            Session { last_activity: 10, title: "Twice moved".into(), origin: from("claude:claude:twice", OriginHow::Fork), ..Session::new(Harness::Codex, "codex", "moved-on") },
             // Its Mac names a copy it no longer lists: nothing to go on as here.
             Session { moved_to: Some("codex:codex:gone".into()), ..Session::new(Harness::Claude, "claude", "lost") },
             // Helpers the lead started before it moved: their Mac follows the move.
@@ -6446,6 +6460,11 @@ mod order_tests {
         assert_eq!(goes("copy"), None);
         assert_eq!(goes("kept"), None);
         assert_eq!(goes("lost"), None);
+        let moved = |id: &str| row(id).moved_to.as_ref().map(|m| m.key.as_str());
+        assert_eq!((goes("twice").map(|m| m.0), moved("twice")), (Some("@m:codex:codex:moved-on"), Some("@m:codex:codex:moved-on")));
+        // What ended its turn is said, but nothing to send it, nor a button: it takes nothing here.
+        let error = row("lead").api_error.clone().unwrap();
+        assert_eq!((error.says.as_str(), error.says_alone.as_str(), error.button), ("Its last turn ended on an API error: 529 Overloaded.", "Its last turn ended on an API error: 529 Overloaded.", None));
         let came = |id: &str| row(id).origin.as_ref().map(|o| (o.key.as_str(), o.words.as_str()));
         assert_eq!(came("helper"), Some(("@m:codex:codex:copy", "Helper of “Lead the docs”")));
         assert_eq!(came("forked-helper"), Some(("@m:codex:codex:copy", "Helper of “Lead the docs”")));

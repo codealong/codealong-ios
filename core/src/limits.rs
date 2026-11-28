@@ -5,6 +5,8 @@
 //! spends, and nothing since says it has lifted; or the account's usage reads such a limit full,
 //! with no extra usage to carry a turn past it.
 
+use std::collections::HashMap;
+
 use codealong_peer::model::{Lane, Meter, Session, Status as PeerStatus, Usage};
 
 use crate::{SnoozeWhy, Status, SuggestedSnooze, SNOOZE_WORTH_MS};
@@ -38,7 +40,7 @@ pub struct AccountLimitNote {
 }
 
 /// The limit itself (accountLimit.ts `AccountLimit`).
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct AccountLimit {
     /// As a meter keys it (`session`, `week`, `model:Opus`), or none for a limit that wasn't named.
     meter: Option<String>,
@@ -47,10 +49,44 @@ struct AccountLimit {
     spend_capped: bool,
 }
 
-/// The note for `s`, whose Mac's board has `lanes` and its accounts' `usage`, as its Mac's header
-/// would show it now; `snoozed` while it's snoozed.
-pub(crate) fn account_limit_note(s: &Session, status: Status, snoozed: bool, lanes: &[Lane], usage: &[Usage], now: i64) -> Option<AccountLimitNote> {
-    let limit = account_limit(s, status, lanes, usage, now)?;
+/// A Mac's board as the rule reads it, for the rows of one pass: its sessions by account, its
+/// accounts' usage, and the limit found for each account and model so far. Past the session's own
+/// state, the limit depends only on those two, so each is worked out once a pass rather than once
+/// a row, which went over every session of the account for every row.
+pub(crate) struct Board<'a> {
+    by_account: HashMap<&'a str, Vec<&'a Session>>,
+    usage: &'a [Usage],
+    now: i64,
+    found: HashMap<(&'a str, Option<&'a str>), Option<AccountLimit>>,
+}
+
+impl<'a> Board<'a> {
+    pub(crate) fn new(lanes: &'a [Lane], usage: &'a [Usage], now: i64) -> Board<'a> {
+        let mut by_account: HashMap<&str, Vec<&Session>> = HashMap::new();
+        for s in lanes.iter().flat_map(|l| l.sessions.iter()) {
+            by_account.entry(s.account.as_str()).or_default().push(s);
+        }
+        Board { by_account, usage, now, found: HashMap::new() }
+    }
+
+    /// The note for `s`, as its Mac's header would show it now; `snoozed` while it's snoozed.
+    pub(crate) fn note(&mut self, s: &'a Session, status: Status, snoozed: bool) -> Option<AccountLimitNote> {
+        // None for one its own limit stopped (its note says that), one that's working or one
+        // archived.
+        if s.limit.is_some() || status == Status::Working || s.archived {
+            return None;
+        }
+        let (by_account, usage, now) = (&self.by_account, self.usage, self.now);
+        let limit = self.found.entry((s.account.as_str(), s.model.as_deref())).or_insert_with(|| {
+            let same = by_account.get(s.account.as_str()).map_or(&[][..], Vec::as_slice);
+            account_limit(&s.account, s.model.as_deref(), same, usage, now)
+        });
+        note_of(s, limit.clone()?, snoozed, now)
+    }
+}
+
+/// What `limit` comes to for `s`, now.
+fn note_of(s: &Session, limit: AccountLimit, snoozed: bool, now: i64) -> Option<AccountLimitNote> {
     let name = crate::limit_name(limit.meter.as_deref());
     let lifts = limit.resets_at.filter(|&t| t > now);
     let spent = if limit.spend_capped { ", with no extra usage to carry it" } else { "" };
@@ -74,29 +110,25 @@ pub(crate) fn account_limit_note(s: &Session, status: Status, snoozed: bool, lan
     Some(AccountLimitNote { says, lifts_at: lifts, snooze })
 }
 
-/// The limit a new turn on `s` would stop at (accountLimit.ts `accountLimitFor`): none for one its
-/// own limit stopped (its note says that), one that's working or one archived.
-fn account_limit(s: &Session, status: Status, lanes: &[Lane], usage: &[Usage], now: i64) -> Option<AccountLimit> {
-    if s.limit.is_some() || status == Status::Working || s.archived {
-        return None;
-    }
-    let read = usage.iter().find(|u| u.account == s.account);
+/// The limit a new turn on `model` on `account` would stop at (accountLimit.ts `accountLimitFor`),
+/// whose sessions on the board are `same`.
+fn account_limit(account: &str, model: Option<&str>, same: &[&Session], usage: &[Usage], now: i64) -> Option<AccountLimit> {
+    let read = usage.iter().find(|u| u.account == account);
     let meters: &[Meter] = read.map_or(&[], |u| &u.meters);
-    let same: Vec<&Session> = lanes.iter().flat_map(|l| l.sessions.iter()).filter(|o| o.account == s.account).collect();
 
     // Another session of the account refused at a limit this one's model spends, which nothing
     // since has cleared: a later turn that ended without one on a model that spends it, or a usage
     // read since that has its extra usage back (for a spend cap) or the limit's meter below near
     // full. The latest to lift, then the latest refused.
     let mut best: Option<(i64, AccountLimit)> = None;
-    for other in &same {
+    for other in same {
         let Some(lim) = other.limit.as_ref() else { continue };
         let Some(resets) = lim.resets_at.filter(|&t| t > now) else { continue };
         if now - lim.at >= REFUSED_FOR_MS {
             continue;
         }
         let family = limit_model(lim.meter.as_deref());
-        if !spends(s.model.as_deref(), family, meters) {
+        if !spends(model, family, meters) {
             continue;
         }
         let cleared_by_turn = same.iter().any(|o| o.limit.is_none() && o.status != PeerStatus::Working && o.last_activity > lim.at && (family.is_none() || o.model.as_deref().is_some_and(|m| spends(Some(m), family, meters))));
@@ -131,7 +163,7 @@ fn account_limit(s: &Session, status: Status, lanes: &[Lane], usage: &[Usage], n
     if u.needs_sign_in || u.loading || u.no_limits || u.extra_usable == Some(true) {
         return None;
     }
-    let full: Vec<&Meter> = meters_for(u, s.model.as_deref()).into_iter().filter(|m| m.percent >= 100.0 && m.resets_at.is_none_or(|t| t > now)).collect();
+    let full: Vec<&Meter> = meters_for(u, model).into_iter().filter(|m| m.percent >= 100.0 && m.resets_at.is_none_or(|t| t > now)).collect();
     let mut binding = *full.first()?;
     // The one that binds: one that says when it lifts, the latest of those.
     for m in &full[1..] {
@@ -213,7 +245,12 @@ mod tests {
     }
 
     fn note(s: &Session, all: Vec<Session>, usage: &[Usage]) -> Option<AccountLimitNote> {
-        account_limit_note(s, s.status.into(), false, &lanes(all), usage, NOW)
+        noted(s, all, usage, false)
+    }
+
+    fn noted(s: &Session, all: Vec<Session>, usage: &[Usage], snoozed: bool) -> Option<AccountLimitNote> {
+        let lanes = lanes(all);
+        Board::new(&lanes, usage, NOW).note(s, s.status.into(), snoozed)
     }
 
     #[test]
@@ -244,12 +281,30 @@ mod tests {
         assert_eq!(note(&me, vec![me.clone(), old], &[]), None);
 
         // No snooze while one's on, or for a lift under five minutes off.
-        let snoozed = account_limit_note(&me, Status::Idle, true, &lanes(vec![me.clone(), other.clone()]), &[], NOW).unwrap();
+        let snoozed = noted(&me, vec![me.clone(), other.clone()], &[], true).unwrap();
         assert_eq!(snoozed.snooze, None);
         let soon = refused("other", "work", Some("session"), NOW - HOUR, NOW + 4 * 60_000);
         let n = note(&me, vec![me.clone(), soon], &[]).unwrap();
         assert!(n.says.starts_with("work is at its 5-hour limit. It lifts"), "{}", n.says);
         assert_eq!(n.snooze, None);
+    }
+
+    #[test]
+    fn one_pass_finds_each_account_and_models_limit_once_for_all_its_rows() {
+        let opus = refused("other", "work", Some("model:Opus"), NOW - HOUR, NOW + 30 * HOUR);
+        let a = session("a", "work", Some("claude-opus-5-5"));
+        let b = session("b", "work", Some("claude-opus-5-5"));
+        let sonnet = session("c", "work", Some("claude-sonnet-5-5"));
+        let home = session("d", "home", Some("claude-opus-5-5"));
+        let working = Session { status: PeerStatus::Working, ..session("e", "work", Some("claude-opus-5-5")) };
+        let lanes = lanes(vec![opus.clone(), a.clone(), b.clone(), sonnet.clone(), home.clone(), working.clone()]);
+        let mut board = Board::new(&lanes, &[], NOW);
+        let ones = &lanes[0].sessions;
+        let noted: Vec<bool> = ones.iter().map(|s| board.note(s, s.status.into(), false).is_some()).collect();
+        // The refused one has its own note; Opus turns on work warn, Sonnet's and home's don't, nor
+        // one at work.
+        assert_eq!(noted, vec![false, true, true, false, false, false]);
+        assert_eq!(board.found.len(), 3);
     }
 
     #[test]
